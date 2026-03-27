@@ -77,6 +77,11 @@ AUDIO_RULES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dat
 SHOP_ROOM_IDS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "shop_room_ids.json")
 CLIENTMEDIA_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "clientmedia")
 
+# Temporary pathfinder denylist for incomplete areas we do not want AUTO/map pathing to use.
+PATHFIND_BLOCKED_EXIT_KEYS = {
+    "go_burghal",
+}
+
 # ── FORCED PANEL LAYOUT ──────────────────────────────────────────────────────
 # Left zone:  status (top, small) + room (mid) + experience (bottom)
 # Right zone: map only — takes the entire right column top to bottom
@@ -953,6 +958,9 @@ class RoomGraph:
     def get(self, room_id: int) -> Optional[dict]:
         return self.rooms.get(int(room_id))
 
+    def _is_blocked_path_edge(self, current_room_id: int, exit_key: str, next_room_id: int) -> bool:
+        return str(exit_key or "").strip().lower() in PATHFIND_BLOCKED_EXIT_KEYS
+
     def find_path(self, from_id: int, to_id: int) -> Optional[List[str]]:
         """BFS. Returns list of direction strings, or None if unreachable."""
         from_id, to_id = int(from_id), int(to_id)
@@ -1011,6 +1019,72 @@ class RoomGraph:
                     break
             for nxt_id in room.get("exits", {}).values():
                 nxt_id = int(nxt_id)
+                if nxt_id not in visited and nxt_id in self.rooms:
+                    visited.add(nxt_id)
+                    q.append(nxt_id)
+        return found
+
+    def find_path(self, from_id: int, to_id: int) -> Optional[List[str]]:
+        """BFS. Returns list of direction strings, or None if unreachable."""
+        from_id, to_id = int(from_id), int(to_id)
+        if from_id == to_id:
+            return []
+        if from_id not in self.rooms or to_id not in self.rooms:
+            return None
+
+        visited = {from_id}
+        q: deque = deque([(from_id, [])])
+
+        while q:
+            cur_id, path = q.popleft()
+            for direction, nxt_id in self.rooms.get(cur_id, {}).get("exits", {}).items():
+                nxt_id = int(nxt_id)
+                if self._is_blocked_path_edge(cur_id, direction, nxt_id):
+                    continue
+                cmd = direction.replace("_", " ")
+                new_path = path + [cmd]
+                if nxt_id == to_id:
+                    return new_path
+                if nxt_id not in visited and nxt_id in self.rooms:
+                    visited.add(nxt_id)
+                    q.append((nxt_id, new_path))
+        return None
+
+    def find_tagged_rooms(self, tag: str, from_id: Optional[int] = None,
+                          limit: Optional[int] = None) -> List[int]:
+        """Return room ids with the given tag, nearest-first when from_id is known."""
+        needle = str(tag or "").strip().lower()
+        if not needle:
+            return []
+
+        if from_id is None:
+            matches = [
+                rid for rid, room in self.rooms.items()
+                if needle in (room.get("tags") or [])
+            ]
+            return matches[:limit] if limit else matches
+
+        try:
+            from_id = int(from_id)
+        except (TypeError, ValueError):
+            return []
+        if from_id not in self.rooms:
+            return []
+
+        found: List[int] = []
+        visited = {from_id}
+        q: deque = deque([from_id])
+        while q:
+            cur_id = q.popleft()
+            room = self.rooms.get(cur_id, {})
+            if needle in (room.get("tags") or []):
+                found.append(cur_id)
+                if limit and len(found) >= limit:
+                    break
+            for direction, nxt_id in room.get("exits", {}).items():
+                nxt_id = int(nxt_id)
+                if self._is_blocked_path_edge(cur_id, direction, nxt_id):
+                    continue
                 if nxt_id not in visited and nxt_id in self.rooms:
                     visited.add(nxt_id)
                     q.append(nxt_id)
