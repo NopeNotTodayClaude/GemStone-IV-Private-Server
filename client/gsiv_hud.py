@@ -906,6 +906,7 @@ INV_WEAR_RE = re.compile(r"^You are wearing (.+)\.$", re.I)
 INV_CONT_RE = re.compile(r"^\s*In (.*?):\s*$", re.I)
 # Item line inside container: "    light leather armor"  (indented, no colon)
 INV_ITEM_RE = re.compile(r"^  {2,}(\S.+)$")
+ITEM_MARKER_SUFFIX_RE = re.compile(r"\s+\{L\}\s*$", re.I)
 # "Total items: N"
 INV_TOTAL_RE    = re.compile(r"^Total items:", re.I)
 INV_UNPLACED_RE = re.compile(r"^Unplaced items", re.I)
@@ -2589,9 +2590,11 @@ class HUDApp:
             elif stype == "sync_closed":
                 self._sync_connected = False
             elif stype == "sync_error":
-                pass  # connection noise, ignore
-        except Exception:
-            pass  # never propagate sync errors to the poll loop
+                self._sync_connected = False
+                self._sys(f"Sync {payload}")
+        except Exception as e:
+            self._sync_connected = False
+            self._sys(f"Sync apply error: {e}")
 
     def _apply_sync_state(self, snap: dict):
         """
@@ -2609,7 +2612,10 @@ class HUDApp:
             except (TypeError, ValueError):
                 room_id = None
             if room_id is not None:
-                self._update_room(room_id)
+                try:
+                    self._update_room(room_id)
+                except Exception:
+                    pass
 
         # ── Vitals ──────────────────────────────────────────────────────────
         v = snap.get("vitals", {})
@@ -2852,7 +2858,7 @@ class HUDApp:
         if shape not in ("skull", "zzz", "blood_drop"):
             fs = 7 if len(symbol) > 1 else 10
             c.create_text(SZ//2+1, SZ//2+1, text=symbol,
-                          fill="#00000099", font=("Courier New", fs, "bold"))
+                          fill="#111111", font=("Courier New", fs, "bold"))
             c.create_text(SZ//2,   SZ//2,   text=symbol,
                           fill="#ffffff",  font=("Courier New", fs, "bold"))
 
@@ -2870,7 +2876,7 @@ class HUDApp:
                           fill=col, font=("Courier New", 5), anchor="se")
             if rem < 5:
                 c.create_rectangle(p, p, SZ-p, SZ-p,
-                                   fill="#00000044", outline="")
+                                   fill="#111111", outline="", stipple="gray50")
 
         # ── Tooltip ───────────────────────────────────────────────────────────
         tip_lines = [defn.get("tip", effect_id.replace("_"," ").title())]
@@ -4899,6 +4905,7 @@ class HUDApp:
             return
         # Stop any existing sync connection first
         self._stop_sync()
+        self._sync_connected = False
         self._sync = SyncClient(self.host, port, self.sync_q)
         self._sync.connect(token)
 
@@ -5958,12 +5965,13 @@ class HUDApp:
         key = self._item_key(full_name)
         if not key:
             return
+        clean_full_name = ITEM_MARKER_SUFFIX_RE.sub("", full_name).strip()
         if not itype:
             itype = self._guess_type(key)
         noun = key.split()[-1]
 
         self._known_items[key] = {
-            'full_name': full_name.strip(),
+            'full_name': clean_full_name,
             'noun':      noun,
             'state':     state,
             'container': container,
@@ -6059,6 +6067,7 @@ class HUDApp:
             if im:
                 raw_name = im.group(1).strip()
                 raw_name = re.sub(r'\x1b\[[0-9;]*m', '', raw_name).strip()
+                raw_name = ITEM_MARKER_SUFFIX_RE.sub("", raw_name).strip()
                 self._register_item(raw_name, 'in_container', self._inv_cur_cont)
 
     @staticmethod
@@ -6076,7 +6085,8 @@ class HUDApp:
     def _item_key(self, full_name: str) -> str:
         """Derive a lowercase lookup key from an item full name.
         Strips ALL leading articles (a/an/the/some) and lowercases."""
-        name = re.sub(r'\x1b\[[0-9;]*m', '', full_name).strip().lower()
+        name = re.sub(r'\x1b\[[0-9;]*m', '', full_name).strip()
+        name = ITEM_MARKER_SUFFIX_RE.sub("", name).strip().lower()
         name = self._strip_articles(name)
         return name
 

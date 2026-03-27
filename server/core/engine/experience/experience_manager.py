@@ -54,8 +54,9 @@ XP_GAIN_MULTIPLIER = 3
 XP_POOL_CAP_MULTIPLIER = 10
 
 # Multiplier applied to the amount of XP drained from the pool each tick.
-# x1 = vanilla drain speed.  x2 = double throughput per tick.
-XP_ABSORB_AMOUNT_MULTIPLIER = 2
+# Current solo server target is x18 total absorption throughput:
+# SP_ABSORB_MULTIPLIER (x3) * XP_ABSORB_AMOUNT_MULTIPLIER (x6).
+XP_ABSORB_AMOUNT_MULTIPLIER = 6
 
 _FAME_SOURCE_DIVISORS = {
     "kill": 12,
@@ -304,6 +305,13 @@ class ExperienceManager:
 
     async def award_kill_xp(self, session, creature):
         """Called on creature death. XP goes straight into the pool."""
+        try:
+            guild_engine = getattr(self.server, "guild", None)
+            if guild_engine:
+                await guild_engine.record_bounty_kill(session, creature)
+        except Exception:
+            log.exception("Failed to record bounty kill progress")
+
         xp = self.calculate_kill_xp(session, creature)
         if xp <= 0:
             if get_mind_fill_pct(session) >= 1.0:

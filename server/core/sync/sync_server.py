@@ -105,7 +105,7 @@ class SyncServer:
                                   writer: asyncio.StreamWriter):
         """New TCP connection handler — authenticate then keep alive."""
         peer = writer.get_extra_info("peername", ("?", 0))
-        log.debug("SyncServer: new connection from %s:%d", peer[0], peer[1])
+        log.info("SyncServer: new connection from %s:%d", peer[0], peer[1])
 
         character_id = await self._authenticate(reader, writer, peer)
         if character_id is None:
@@ -122,7 +122,7 @@ class SyncServer:
         self._writers[character_id] = writer
 
         char_name = self._get_char_name(character_id)
-        log.debug("SyncServer: %s (id=%d) sync connected from %s:%d",
+        log.info("SyncServer: %s (id=%d) sync connected from %s:%d",
                  char_name, character_id, peer[0], peer[1])
 
         # Push an immediate snapshot so the client doesn't have to wait 1s
@@ -134,13 +134,16 @@ class SyncServer:
             while True:
                 # Wait for any data (client shouldn't send anything after auth)
                 # A zero-length read means disconnect
-                data = await asyncio.wait_for(reader.read(64), timeout=30.0)
+                try:
+                    data = await asyncio.wait_for(reader.read(64), timeout=30.0)
+                except asyncio.TimeoutError:
+                    # Normal idle case: sync clients are receive-only after auth.
+                    # Keep the connection alive and continue serving push updates.
+                    continue
                 if not data:
                     break
                 # Ignore any unexpected client data silently
-        except (asyncio.TimeoutError, asyncio.CancelledError):
-            # Timeout is normal — just means client is alive and silent
-            # Re-enter the loop (ideally we'd loop, but keep simple: disconnect on timeout)
+        except asyncio.CancelledError:
             pass
         except (ConnectionResetError, BrokenPipeError):
             pass
@@ -149,7 +152,7 @@ class SyncServer:
         self._writers.pop(character_id, None)
         if not writer.is_closing():
             writer.close()
-        log.debug("SyncServer: %s sync disconnected", char_name)
+        log.info("SyncServer: %s sync disconnected", char_name)
 
     async def _authenticate(self, reader, writer, peer) -> Optional[int]:
         """
@@ -252,13 +255,13 @@ class SyncServer:
             for s in sessions:
                 if s.character_id == character_id:
                     import json as _json
-                    from server.core.sync.sync_broadcaster import build_snapshot
-                    snap = build_snapshot(s, self._server)
+                    from server.core.sync.sync_broadcaster import build_snapshot, _json_safe
+                    snap = _json_safe(build_snapshot(s, self._server))
                     line = _json.dumps(snap, separators=(",", ":")) + "\n"
                     await self.send(character_id, line)
                     return
         except Exception as e:
-            log.debug("SyncServer: immediate push failed: %s", e)
+            log.exception("SyncServer: immediate push failed: %s", e)
 
     # ── Token cache management (called by game_server at login/logout) ────────
 

@@ -1332,6 +1332,17 @@ def get_guild_npc_response(session, npc, topic, server):
     return None
 
 
+async def maybe_handle_adventurer_guild_npc_response(session, npc, topic, server):
+    """Allow Adventurer's Guild taskmasters to perform live registration/bounty actions."""
+    engine = getattr(server, "guild", None)
+    if not engine or not hasattr(engine, "handle_adventurer_guild_topic"):
+        return False
+    try:
+        return await engine.handle_adventurer_guild_topic(session, npc, topic)
+    except Exception:
+        return False
+
+
 def get_quest_npc_response(session, npc, topic, server):
     """Provide dynamic generic quest responses for quest-aware NPCs."""
     quest_engine = getattr(server, "guild", None)

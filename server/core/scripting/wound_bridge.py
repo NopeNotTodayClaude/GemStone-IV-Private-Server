@@ -314,9 +314,31 @@ class WoundBridge:
 
         try:
             # Find herb data from Lua herb table
-            noun = (item_dict.get('noun') or item_dict.get('name') or '').lower()
+            noun = (item_dict.get('noun') or '').lower()
             noun_key = noun.replace(' ', '_').replace('-', '_')
             herb_data = self._herbs.find_by_noun(noun_key)
+
+            if herb_data is None:
+                for candidate in (
+                    item_dict.get('short_name'),
+                    item_dict.get('base_name'),
+                    item_dict.get('name'),
+                ):
+                    text = str(candidate or '').strip().lower()
+                    if not text:
+                        continue
+                    if text.startswith('some '):
+                        text = text[5:]
+                    elif text.startswith('a '):
+                        text = text[2:]
+                    elif text.startswith('an '):
+                        text = text[3:]
+                    key = text.replace(' ', '_').replace('-', '_')
+                    herb_data = self._herbs.find_by_noun(key)
+                    if herb_data is None and hasattr(self._herbs, "find_by_name"):
+                        herb_data, _ = self._herbs.find_by_name(text)
+                    if herb_data is not None:
+                        break
 
             if herb_data is None:
                 # Try DB heal_type field as fallback
@@ -352,12 +374,149 @@ class WoundBridge:
         """Fallback herb handler using raw DB item fields."""
         heal_type   = item_dict.get('heal_type') or item_dict.get('herb_heal_type') or 'blood'
         heal_amount = int(item_dict.get('heal_amount') or item_dict.get('herb_heal_amount') or 0)
+        heal_rank   = int(item_dict.get('heal_rank') or 1)
         msg = "You feel the herb working."
         hp_restore = heal_amount if heal_type in ('blood', 'health') else 0
+
+        if heal_type in ('blood', 'health'):
+            return {
+                'ok': True, 'message': msg,
+                'hp_restore': hp_restore, 'mana_restore': 0,
+                'cure_poison': False, 'scar_added': False,
+            }
+
+        if heal_type == 'poison':
+            return {
+                'ok': True, 'message': msg,
+                'hp_restore': 0, 'mana_restore': 0,
+                'cure_poison': True, 'scar_added': False,
+            }
+
+        if heal_type == 'mana':
+            return {
+                'ok': True, 'message': msg,
+                'hp_restore': 0,
+                'mana_restore': heal_amount,
+                'cure_poison': False,
+                'scar_added': False,
+            }
+
+        location_groups = {
+            'nerves': ['nervous_system'],
+            'head': ['head', 'neck'],
+            'torso': ['chest', 'abdomen', 'back', 'right_eye', 'left_eye'],
+            'limb': ['right_arm', 'left_arm', 'right_hand', 'left_hand', 'right_leg', 'left_leg'],
+            'eye': ['right_eye', 'left_eye'],
+            'eye_regen': ['right_eye', 'left_eye'],
+            'limb_regen': ['right_arm', 'left_arm', 'right_hand', 'left_hand', 'right_leg', 'left_leg'],
+        }
+        display_names = {
+            'nervous_system': 'nervous system',
+            'right_eye': 'right eye',
+            'left_eye': 'left eye',
+            'right_arm': 'right arm',
+            'left_arm': 'left arm',
+            'right_hand': 'right hand',
+            'left_hand': 'left hand',
+            'right_leg': 'right leg',
+            'left_leg': 'left leg',
+        }
+
+        locations = location_groups.get(str(heal_type).lower(), [])
+        if not locations:
+            return {
+                'ok': True, 'message': msg,
+                'hp_restore': hp_restore, 'mana_restore': 0,
+                'cure_poison': False, 'scar_added': False,
+            }
+
+        def _display(loc):
+            return display_names.get(loc, str(loc).replace('_', ' '))
+
+        if heal_type in ('eye', 'eye_regen', 'limb_regen'):
+            target = None
+            for loc in locations:
+                entry = wounds.get(loc) or {}
+                if int(entry.get('wound_rank', 0) or 0) >= 3:
+                    target = loc
+                    break
+            if not target:
+                return {
+                    'ok': False,
+                    'message': "You have no injury that this herb can restore.",
+                    'hp_restore': 0,
+                    'mana_restore': 0,
+                    'cure_poison': False,
+                    'scar_added': False,
+                }
+            wounds[target] = {'wound_rank': 0, 'scar_rank': 0, 'is_bleeding': False, 'bandaged': False}
+            self._set_wounds(session, wounds)
+            self.sync_session_state(session)
+            return {
+                'ok': True,
+                'message': f"You feel the herb restoring your {_display(target)}.",
+                'hp_restore': 0,
+                'mana_restore': 0,
+                'cure_poison': False,
+                'scar_added': False,
+            }
+
+        best_loc = None
+        best_score = -1
+        scar_added = False
+
+        wound_limit = 1 if heal_rank <= 1 else 3
+        scar_limit = 1 if heal_rank <= 3 else 3
+        wants_scar = heal_rank >= 3
+
+        for loc in locations:
+            entry = wounds.get(loc) or {}
+            wr = int(entry.get('wound_rank', 0) or 0)
+            sr = int(entry.get('scar_rank', 0) or 0)
+            if wants_scar:
+                if wr == 0 and sr > 0 and sr <= scar_limit and sr > best_score:
+                    best_loc = loc
+                    best_score = sr
+            else:
+                if wr > 0 and wr <= wound_limit and wr > best_score:
+                    best_loc = loc
+                    best_score = wr
+
+        if not best_loc:
+            return {
+                'ok': False,
+                'message': "You have no injury that this herb can treat.",
+                'hp_restore': 0,
+                'mana_restore': 0,
+                'cure_poison': False,
+                'scar_added': False,
+            }
+
+        entry = dict(wounds.get(best_loc) or {})
+        wr = int(entry.get('wound_rank', 0) or 0)
+        sr = int(entry.get('scar_rank', 0) or 0)
+
+        if wants_scar:
+            entry['scar_rank'] = max(0, sr - 1)
+            msg = f"You feel the herb easing the scar on your {_display(best_loc)}."
+        else:
+            new_wr = max(0, wr - 1)
+            entry['wound_rank'] = new_wr
+            if wr > 0:
+                entry['scar_rank'] = max(sr, new_wr if new_wr > 0 else 1)
+                scar_added = entry['scar_rank'] > sr
+            if new_wr == 0:
+                entry['is_bleeding'] = False
+                entry['bandaged'] = False
+            msg = f"You feel the herb working on your {_display(best_loc)}."
+
+        wounds[best_loc] = entry
+        self._set_wounds(session, wounds)
+        self.sync_session_state(session)
         return {
             'ok': True, 'message': msg,
             'hp_restore': hp_restore, 'mana_restore': 0,
-            'cure_poison': heal_type == 'poison', 'scar_added': False,
+            'cure_poison': False, 'scar_added': scar_added,
         }
 
     # ──────────────────────────────────────────────────────────────────
@@ -578,12 +737,25 @@ class WoundBridge:
             )
             wounds = {}
             for row in (rows or []):
-                loc = row.get('location') or row[0]
+                if isinstance(row, dict):
+                    loc = row.get('location') or row.get(0)
+                    wound_rank = row.get('wound_rank', row.get(1, 0))
+                    scar_rank = row.get('scar_rank', row.get(2, 0))
+                    is_bleeding = row.get('is_bleeding', row.get(3, False))
+                    bandaged = row.get('bandaged', row.get(4, False))
+                else:
+                    loc = row[0] if len(row) > 0 else None
+                    wound_rank = row[1] if len(row) > 1 else 0
+                    scar_rank = row[2] if len(row) > 2 else 0
+                    is_bleeding = row[3] if len(row) > 3 else False
+                    bandaged = row[4] if len(row) > 4 else False
+                if not loc:
+                    continue
                 wounds[loc] = {
-                    'wound_rank':  int(row.get('wound_rank',  row[1])),
-                    'scar_rank':   int(row.get('scar_rank',   row[2])),
-                    'is_bleeding': bool(row.get('is_bleeding', row[3])),
-                    'bandaged':    bool(row.get('bandaged',    row[4])),
+                    'wound_rank':  int(wound_rank),
+                    'scar_rank':   int(scar_rank),
+                    'is_bleeding': bool(is_bleeding),
+                    'bandaged':    bool(bandaged),
                 }
             session.wounds = wounds
             self.sync_session_state(session)

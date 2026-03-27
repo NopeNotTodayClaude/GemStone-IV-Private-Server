@@ -11,6 +11,7 @@ APPRAISE <item> - Get the sell value of an item in your hands
 
 import json
 import logging
+from decimal import Decimal
 from server.core.protocol.colors import (
     colorize, TextPresets, roundtime_msg, npc_speech, npc_emote,
     YELLOW, CYAN, BRIGHT_CYAN, MAGENTA, BRIGHT_GREEN,
@@ -84,7 +85,13 @@ async def _send_npc_response(session, npc, topic, server):
             log.exception("Failed recording NPC topic event for %s/%s", getattr(npc, "template_id", "unknown"), topic_key)
 
     try:
-        from server.core.commands.player.guild import get_guild_npc_response, get_quest_npc_response
+        from server.core.commands.player.guild import (
+            get_guild_npc_response,
+            get_quest_npc_response,
+            maybe_handle_adventurer_guild_npc_response,
+        )
+        if await maybe_handle_adventurer_guild_npc_response(session, npc, topic, server):
+            return
         guild_response = get_guild_npc_response(session, npc, topic, server)
         if guild_response:
             await session.send_line(npc_speech(npc.display_name, f'says, "{guild_response}"'))
@@ -157,8 +164,19 @@ def _pawn_category_for_item(item: dict) -> str:
 
 
 def _pawn_snapshot(item: dict) -> dict:
+    def _normalize(value):
+        if isinstance(value, Decimal):
+            return int(value) if value == value.to_integral_value() else float(value)
+        if isinstance(value, dict):
+            return {k: _normalize(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_normalize(v) for v in value]
+        if isinstance(value, tuple):
+            return [_normalize(v) for v in value]
+        return value
+
     return {
-        key: value
+        key: _normalize(value)
         for key, value in dict(item or {}).items()
         if key not in {"inv_id", "slot", "container_id"}
     }

@@ -156,6 +156,7 @@ def enrich_room_from_lich_wayto(room) -> None:
 
     room.lich_exit_aliases = {}
     room.lich_preferred_exit_names = {}
+    room.local_exits = dict(getattr(room, "exits", {}) or {})
 
     if not entry:
         return
@@ -165,13 +166,15 @@ def enrich_room_from_lich_wayto(room) -> None:
         return
 
     local_by_target: Dict[int, list] = {}
-    for key, target in getattr(room, "exits", {}).items():
+    original_exits = dict(getattr(room, "exits", {}) or {})
+    for key, target in original_exits.items():
         try:
             local_by_target.setdefault(int(target), []).append(str(key))
         except Exception:
             continue
 
     hidden_exits = getattr(room, "hidden_exits", {}) or {}
+    authoritative_exits: Dict[str, int] = {}
 
     for dest_str, raw_command in wayto.items():
         try:
@@ -204,6 +207,7 @@ def enrich_room_from_lich_wayto(room) -> None:
         if not alias_key:
             continue
 
+        authoritative_exits[alias_key] = dest_room_id
         room.lich_exit_aliases[alias_key] = dest_room_id
 
         local_keys = local_by_target.get(dest_room_id, [])
@@ -212,5 +216,25 @@ def enrich_room_from_lich_wayto(room) -> None:
         )
         if alias_key.startswith(("go_", "climb_", "swim_")) and not has_local_special:
             room.lich_preferred_exit_names[dest_room_id] = alias_key
+
+    if authoritative_exits:
+        preserved_exits: Dict[str, int] = {}
+        authoritative_targets = {int(target) for target in authoritative_exits.values()}
+        for key, target in original_exits.items():
+            normalized_key = _normalize_exit_key(key)
+            if normalized_key in authoritative_exits:
+                continue
+            try:
+                target_id = int(target)
+            except Exception:
+                continue
+            if target_id in authoritative_targets:
+                continue
+            # Preserve local-only special exits that Lich does not model, but
+            # drop stray compass/outdoor directions so bad legacy room files do
+            # not override the authoritative wayto data.
+            if "_" in normalized_key:
+                preserved_exits[normalized_key] = target_id
+        room.exits = {**authoritative_exits, **preserved_exits}
 
     room.hidden_exits = hidden_exits

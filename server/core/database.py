@@ -6,12 +6,24 @@ Character persistence, account management, auto-save.
 import logging
 import json
 import datetime
+from decimal import Decimal
 import mysql.connector
 from mysql.connector import pooling
 import bcrypt
 import time
 
 log = logging.getLogger(__name__)
+
+
+def _json_safe_snapshot(value):
+    """Normalize common DB/python values before storing item snapshots as JSON."""
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, dict):
+        return {str(k): _json_safe_snapshot(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe_snapshot(v) for v in value]
+    return value
 
 
 class Database:
@@ -508,6 +520,258 @@ class Database:
                 LIMIT 1000
             """)
             return cur.fetchall()
+        finally:
+            conn.close()
+
+    # =========================================================
+    # ADVENTURER'S GUILD / BOUNTIES
+    # =========================================================
+
+    def get_character_adventurer_guild(self, character_id):
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                """
+                SELECT *
+                FROM character_adventurer_guild
+                WHERE character_id = %s
+                LIMIT 1
+                """,
+                (character_id,),
+            )
+            return cur.fetchone()
+        except Exception as e:
+            log.error("Failed to load Adventurer's Guild profile for char %s: %s", character_id, e)
+            return None
+        finally:
+            conn.close()
+
+    def ensure_character_adventurer_guild(self, character_id, town_name=None):
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO character_adventurer_guild (
+                    character_id, registered_town_name, rank_level, rank_title, rank_points, lifetime_bounties
+                ) VALUES (%s, %s, 1, 'Associate', 0, 0)
+                ON DUPLICATE KEY UPDATE
+                    registered_town_name = COALESCE(registered_town_name, VALUES(registered_town_name)),
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (character_id, town_name),
+            )
+            conn.commit()
+        except Exception as e:
+            log.error("Failed to ensure Adventurer's Guild profile for char %s: %s", character_id, e)
+            return None
+        finally:
+            conn.close()
+        return self.get_character_adventurer_guild(character_id)
+
+    def update_character_adventurer_guild(self, character_id, *, town_name=None, rank_level=None,
+                                          rank_title=None, rank_points=None, lifetime_bounties=None):
+        profile = self.ensure_character_adventurer_guild(character_id, town_name=town_name)
+        if not profile:
+            return None
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE character_adventurer_guild
+                SET registered_town_name = COALESCE(%s, registered_town_name),
+                    rank_level = COALESCE(%s, rank_level),
+                    rank_title = COALESCE(%s, rank_title),
+                    rank_points = COALESCE(%s, rank_points),
+                    lifetime_bounties = COALESCE(%s, lifetime_bounties),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE character_id = %s
+                """,
+                (town_name, rank_level, rank_title, rank_points, lifetime_bounties, character_id),
+            )
+            if rank_points is not None:
+                try:
+                    cur.execute(
+                        "UPDATE characters SET bounty_points = %s WHERE id = %s",
+                        (int(rank_points), character_id),
+                    )
+                except Exception:
+                    pass
+            conn.commit()
+        except Exception as e:
+            log.error("Failed to update Adventurer's Guild profile for char %s: %s", character_id, e)
+            return None
+        finally:
+            conn.close()
+        return self.get_character_adventurer_guild(character_id)
+
+    def get_character_bounty(self, character_id, *, include_completed=True):
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor(dictionary=True)
+            statuses = ("active", "completed") if include_completed else ("active",)
+            placeholders = ", ".join(["%s"] * len(statuses))
+            cur.execute(
+                f"""
+                SELECT *
+                FROM character_bounties
+                WHERE character_id = %s
+                  AND status IN ({placeholders})
+                  AND (expires_at IS NULL OR expires_at >= NOW())
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (character_id, *statuses),
+            )
+            return cur.fetchone()
+        except Exception as e:
+            log.error("Failed to load active bounty for char %s: %s", character_id, e)
+            return None
+        finally:
+            conn.close()
+
+    def expire_character_bounties(self, character_id):
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE character_bounties
+                SET status = 'expired'
+                WHERE character_id = %s
+                  AND status IN ('active', 'completed')
+                """,
+                (character_id,),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            log.error("Failed to expire bounty rows for char %s: %s", character_id, e)
+            return False
+        finally:
+            conn.close()
+
+    def assign_character_bounty(self, character_id, bounty_row, *, town_name=None,
+                                taskmaster_template_id=None, taskmaster_room_id=None, expires_hours=72):
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE character_bounties
+                SET status = 'expired'
+                WHERE character_id = %s
+                  AND status IN ('active', 'completed')
+                """,
+                (character_id,),
+            )
+            cur.execute(
+                """
+                INSERT INTO character_bounties (
+                    character_id, bounty_type, target, target_count, current_count, zone_id,
+                    town_name, taskmaster_template_id, taskmaster_room_id, target_template_id,
+                    target_display_name, status, assigned_at, expires_at,
+                    reward_silver, reward_experience, reward_fame, reward_points
+                ) VALUES (
+                    %s, %s, %s, %s, 0, NULL,
+                    %s, %s, %s, %s,
+                    %s, 'active', NOW(), DATE_ADD(NOW(), INTERVAL %s HOUR),
+                    %s, %s, %s, %s
+                )
+                """,
+                (
+                    character_id,
+                    str(bounty_row.get("type") or "cull"),
+                    str(bounty_row.get("target_name") or bounty_row.get("target_template_id") or "target"),
+                    int(bounty_row.get("target_count") or 1),
+                    town_name,
+                    taskmaster_template_id,
+                    taskmaster_room_id,
+                    str(bounty_row.get("target_template_id") or ""),
+                    str(bounty_row.get("target_name") or ""),
+                    int(expires_hours),
+                    int(bounty_row.get("reward_silver") or 0),
+                    int(bounty_row.get("reward_experience") or 0),
+                    int(bounty_row.get("reward_fame") or 0),
+                    int(bounty_row.get("reward_points") or 0),
+                ),
+            )
+            conn.commit()
+            bounty_id = cur.lastrowid
+        except Exception as e:
+            log.error("Failed to assign bounty for char %s: %s", character_id, e)
+            return None
+        finally:
+            conn.close()
+
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute("SELECT * FROM character_bounties WHERE id = %s LIMIT 1", (bounty_id,))
+            return cur.fetchone()
+        except Exception:
+            return None
+        finally:
+            conn.close()
+
+    def record_character_bounty_kill(self, bounty_id, increment=1):
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE character_bounties
+                SET current_count = LEAST(target_count, current_count + %s),
+                    status = CASE
+                        WHEN LEAST(target_count, current_count + %s) >= target_count THEN 'completed'
+                        ELSE 'active'
+                    END,
+                    completed_at = CASE
+                        WHEN LEAST(target_count, current_count + %s) >= target_count THEN COALESCE(completed_at, NOW())
+                        ELSE completed_at
+                    END
+                WHERE id = %s
+                  AND status IN ('active', 'completed')
+                """,
+                (increment, increment, increment, bounty_id),
+            )
+            conn.commit()
+        except Exception as e:
+            log.error("Failed to record bounty progress for bounty %s: %s", bounty_id, e)
+            return None
+        finally:
+            conn.close()
+
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute("SELECT * FROM character_bounties WHERE id = %s LIMIT 1", (bounty_id,))
+            return cur.fetchone()
+        except Exception:
+            return None
+        finally:
+            conn.close()
+
+    def close_character_bounty(self, bounty_id):
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE character_bounties
+                SET status = 'expired',
+                    completed_at = COALESCE(completed_at, NOW())
+                WHERE id = %s
+                """,
+                (bounty_id,),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            log.error("Failed to close bounty %s: %s", bounty_id, e)
+            return False
         finally:
             conn.close()
 
@@ -1315,10 +1579,10 @@ class Database:
         conn = self._get_conn()
         try:
             cur = conn.cursor()
-            snapshot = {
+            snapshot = _json_safe_snapshot({
                 key: value for key, value in dict(item_snapshot or {}).items()
                 if key not in {"inv_id", "slot", "container_id", "locker_item_id", "stored_at"}
-            }
+            })
             cur.execute(
                 """
                 INSERT INTO character_locker_items

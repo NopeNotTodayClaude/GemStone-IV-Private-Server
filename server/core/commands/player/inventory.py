@@ -95,6 +95,7 @@ CONTAINER_SLOTS = {
 }
 
 TREASURE_CONTAINER_NOUNS = {'box', 'coffer', 'chest', 'strongbox', 'trunk', 'crate'}
+LOCKED_ITEM_MARKER = " {L}"
 
 
 # =========================================================
@@ -111,7 +112,11 @@ def _ensure_hands(session):
 def _item_display(item):
     """Formatted display name (colored)."""
     name = item.get('short_name') or item.get('name') or 'something'
-    return fmt_item_name(name)
+    display = fmt_item_name(name)
+    noun = (item.get('noun') or '').lower()
+    if item.get('is_locked') and (noun in TREASURE_CONTAINER_NOUNS or item.get('item_type') == 'container'):
+        display += colorize(LOCKED_ITEM_MARKER, TextPresets.SYSTEM)
+    return display
 
 
 def _item_full_name(item):
@@ -535,6 +540,8 @@ def restore_inventory_state(server, session):
         if item.get('item_type') == 'container' and item.get('slot'):
             item['opened'] = True
 
+    _normalize_loose_inventory(server, session)
+
     for stale_id in stale_inv_ids:
         try:
             server.db.execute_update(
@@ -544,6 +551,72 @@ def restore_inventory_state(server, session):
             log.warning("Purged stale hand-slot record inv_id=%s for %s", stale_id, session.character_name)
         except Exception as e:
             log.error("Failed to purge stale hand-slot record %s: %s", stale_id, e)
+
+
+def _normalize_loose_inventory(server, session):
+    """Repair legacy loose inventory rows into valid slots/containers when possible."""
+    loose_items = [
+        item for item in session.inventory
+        if not item.get('slot') and not item.get('container_id')
+    ]
+    if not loose_items:
+        return
+
+    normalized = 0
+    hand_moved = []
+
+    def _best_container():
+        best = None
+        best_free = 0
+        for cont in _get_worn_containers(session):
+            cont_inv_id = cont.get('inv_id')
+            if cont_inv_id is None:
+                continue
+            contents = [i for i in session.inventory if i.get('container_id') == cont_inv_id]
+            capacity = cont.get('container_capacity', 10) or 10
+            free = capacity - len(contents)
+            if free <= 0:
+                continue
+            is_backpack = (cont.get('noun') or '').lower() == 'backpack'
+            if is_backpack:
+                return cont
+            if free > best_free:
+                best = cont
+                best_free = free
+        return best
+
+    for item in loose_items:
+        noun = (item.get('noun') or '').lower()
+        inv_id = item.get('inv_id')
+
+        if item.get('item_type') == 'container' and noun in CONTAINER_SLOTS and noun not in TREASURE_CONTAINER_NOUNS:
+            slot = _get_worn_slot(item)
+            if slot:
+                item['slot'] = slot
+                _db_update_slot(server, inv_id, slot)
+                normalized += 1
+                continue
+
+        cont = _best_container()
+        if cont and cont.get('inv_id') is not None:
+            item['container_id'] = cont.get('inv_id')
+            _db_update_container(server, inv_id, cont.get('inv_id'))
+            normalized += 1
+            continue
+
+        hand = _pick_up_to_hand(session, item)
+        if hand:
+            hand_slot = 'right_hand' if hand == 'right' else 'left_hand'
+            item['slot'] = hand_slot
+            _db_update_slot(server, inv_id, hand_slot)
+            hand_moved.append(item)
+            normalized += 1
+
+    if hand_moved:
+        session.inventory = [item for item in session.inventory if item not in hand_moved]
+
+    if normalized:
+        log.warning("Normalized %d loose inventory item(s) for %s", normalized, session.character_name)
 
 
 # =========================================================

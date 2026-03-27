@@ -163,6 +163,10 @@ class LuaManager:
         from server.core.scripting.loaders.crafting_loader import load_crafting
         return self._load_once("crafting", lambda: load_crafting(self._engine))
 
+    def get_adventurers_guild(self) -> Optional[dict]:
+        from server.core.scripting.loaders.adventurers_guild_loader import load_adventurers_guild
+        return self._load_once("adventurers_guild", lambda: load_adventurers_guild(self._engine))
+
     # ── Spell seeding ─────────────────────────────────────────────────────────
 
     async def seed_spells(self) -> dict:

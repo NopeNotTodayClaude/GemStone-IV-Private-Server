@@ -226,6 +226,12 @@ async def award_party_kill_xp(session, creature, server):
 
     for member in recipients:
         try:
+            try:
+                guild_engine = getattr(server, 'guild', None)
+                if guild_engine:
+                    await guild_engine.record_bounty_kill(member, creature)
+            except Exception:
+                log.exception("award_party_kill_xp: failed to record bounty kill for %s", getattr(member, 'character_name', '?'))
             xp = server.experience.calculate_kill_xp(member, creature)
             if xp <= 0:
                 continue

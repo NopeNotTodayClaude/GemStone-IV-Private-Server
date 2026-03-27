@@ -62,6 +62,7 @@ Snapshot schema (sent as a single JSON line + newline):
 import time
 import json
 import logging
+from decimal import Decimal
 
 log = logging.getLogger(__name__)
 
@@ -78,6 +79,17 @@ MIND_STATES = [
     "you must rest!",     # 95%
     "fried",              # 100%
 ]
+
+
+def _json_safe(value):
+    """Recursively normalize common non-JSON-native values for sync snapshots."""
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    return value
 
 
 def build_snapshot(session, server) -> dict:
@@ -582,10 +594,17 @@ def _extend_quest_actions(actions: list[dict], seen: set[tuple[str, str, bool]],
 
     offers = quest_engine.get_npc_startable_quests(session, npc)
     related = quest_engine.get_npc_related_active_quests(session, npc)
+
+    npc_name = getattr(npc, "name", "npc")
+    authority = getattr(guild_engine := getattr(server, "guild", None), "_get_adventurer_authority", lambda _npc: None)(npc) if guild_engine else None
+    if authority:
+        add("Register", f"ask {npc_name} about register")
+        add("Bounty", f"ask {npc_name} about bounty")
+        add("Rank", f"ask {npc_name} about rank")
+
     if not offers and not related:
         return
 
-    npc_name = getattr(npc, "name", "npc")
     add("Ask about work", f"ask {npc_name} about work")
     add("Quest status", "quest")
 
@@ -603,6 +622,7 @@ def _extend_quest_actions(actions: list[dict], seen: set[tuple[str, str, bool]],
         if len(title) > 24:
             title = title[:21] + "..."
         add(f"Start {title}", f"quest start {row.get('key_name')}")
+
 
 
 def _build_wounds(session) -> dict:
@@ -702,9 +722,9 @@ class SyncBroadcaster:
             if not sync_srv.is_connected(session.character_id):
                 continue
             try:
-                snapshot = build_snapshot(session, self._server)
+                snapshot = _json_safe(build_snapshot(session, self._server))
                 line     = json.dumps(snapshot, separators=(",", ":")) + "\n"
                 await sync_srv.send(session.character_id, line)
             except Exception as e:
-                log.debug("SyncBroadcaster: error pushing to %s: %s",
-                          session.character_name, e)
+                log.exception("SyncBroadcaster: error pushing to %s: %s",
+                              session.character_name, e)

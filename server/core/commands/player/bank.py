@@ -30,7 +30,7 @@ LOCKER_HELP = """
 [Locker Commands]
   LOCKER INFO            View the status of the local public locker.
   LOCKER MANIFEST        List the items currently stored there.
-  OPEN LOCKER            Open the locker while standing in the locker room.
+  OPEN LOCKER            Open the locker while near the bank counter or locker room.
   LOOK IN LOCKER         View the locker contents while it is open.
   PUT {item} IN LOCKER   Store an item from your person.
   GET {item} FROM LOCKER Retrieve an item from the open locker.
@@ -145,6 +145,11 @@ def _locker_is_open(session, location):
     return bool(location and getattr(session, "locker_open_location_id", None) == int(location["id"]))
 
 
+def _locker_is_usable_here(location):
+    roles = set((location or {}).get("roles") or [])
+    return bool({"locker", "bank"} & roles)
+
+
 def _get_locker_entry_commands(session, server, location):
     room = getattr(session, "current_room", None)
     if not room or not getattr(server, "db", None) or not location:
@@ -221,8 +226,7 @@ async def cmd_locker(session, cmd, args, server):
             f"  Capacity      : {count} / {int(location.get('capacity') or 50)} items",
             f"  Locker status : {'open' if _locker_is_open(session, location) else 'closed'}",
         ]
-        roles = set(location.get("roles") or [])
-        if "locker" in roles:
+        if _locker_is_usable_here(location):
             lines.append("  Access        : OPEN LOCKER")
         else:
             entry_cmds = _get_locker_entry_commands(session, server, location)
@@ -253,7 +257,7 @@ async def maybe_handle_locker_open(session, target, server):
     if not location:
         await session.send_line("You see no locker here.")
         return True
-    if "locker" not in set(location.get("roles") or []):
+    if not _locker_is_usable_here(location):
         entry_cmds = _get_locker_entry_commands(session, server, location)
         if entry_cmds:
             await session.send_line("You will need to step into the locker first.  Try: " + ", ".join(entry_cmds))

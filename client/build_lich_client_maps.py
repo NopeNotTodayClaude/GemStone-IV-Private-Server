@@ -24,6 +24,7 @@ DEFAULT_LICH_JSON_CANDIDATES = [
     r"N:\Ruby4Lich5\R4LInstall\Lich5.15.1\data\GSIV\map-1773601222.json",
     os.path.join(ROOT_DIR, "map-1773601222.json"),
 ]
+DEFAULT_ROOM_EXITS_TSV = os.path.join(ROOT_DIR, "tmp_room_exits.tsv")
 
 
 def load_json(path: str) -> dict:
@@ -96,6 +97,20 @@ def image_coords_to_box(coords: object) -> Optional[Tuple[int, int, int, int]]:
     return left, top, width, height
 
 
+def parse_visible_paths(raw_paths: object) -> List[str]:
+    values = raw_paths if isinstance(raw_paths, list) else [raw_paths]
+    tokens: List[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if ":" in text:
+            text = text.split(":", 1)[1].strip()
+        for part in text.split(","):
+            key = slugify_command(part)
+            if key:
+                tokens.append(key)
+    return tokens
+
+
 def load_existing_graph(path: str) -> Dict[int, dict]:
     if not os.path.exists(path):
         return {}
@@ -160,6 +175,37 @@ def load_local_room_exit_overrides(root_dir: str) -> Dict[int, Dict[str, int]]:
     return overrides
 
 
+def load_room_exits_tsv(path: str) -> Dict[int, List[dict]]:
+    result: Dict[int, List[dict]] = defaultdict(list)
+    if not path or not os.path.exists(path):
+        return result
+    with open(path, "r", encoding="utf-8-sig", errors="ignore") as f:
+        for line in f:
+            line = line.rstrip("\r\n")
+            if not line:
+                continue
+            parts = line.split("\t")
+            if len(parts) < 7:
+                continue
+            try:
+                room_id = int(parts[0])
+                target_room_id = int(parts[3])
+                is_hidden = int(parts[4] or "0")
+                is_special = int(parts[5] or "0")
+                search_dc = int(parts[6] or "0")
+            except (TypeError, ValueError):
+                continue
+            result[room_id].append({
+                "direction": str(parts[1] or "").strip(),
+                "exit_verb": str(parts[2] or "").strip(),
+                "target_room_id": target_room_id,
+                "is_hidden": bool(is_hidden),
+                "is_special": bool(is_special),
+                "search_dc": search_dc,
+            })
+    return result
+
+
 def build_from_lich_json(path: str) -> Tuple[Dict[int, dict], Dict[str, dict]]:
     data = load_json(path)
     if not isinstance(data, list):
@@ -193,6 +239,7 @@ def build_from_lich_json(path: str) -> Tuple[Dict[int, dict], Dict[str, dict]]:
             "climate": entry.get("climate"),
             "terrain": entry.get("terrain"),
             "tags": [str(tag).strip().lower() for tag in (entry.get("tags") or []) if str(tag).strip()],
+            "visible_paths": parse_visible_paths(entry.get("paths")),
             "exits": {},
             "edges": [],
         }
@@ -281,6 +328,94 @@ def apply_local_exit_overrides(rooms: Dict[int, dict], overrides: Dict[int, Dict
         room["exits"] = rebuilt_exits
 
 
+def apply_room_exit_fallbacks(rooms: Dict[int, dict], db_room_exits: Dict[int, List[dict]]) -> None:
+    for rid, rows in db_room_exits.items():
+        room = rooms.get(rid)
+        if not room or not rows:
+            continue
+
+        existing_edges = list(room.get("edges") or [])
+        existing_keys = {str(edge.get("key") or "").strip() for edge in existing_edges}
+        existing_targets = {int(edge.get("to")) for edge in existing_edges if edge.get("to") is not None}
+
+        add_rows = []
+        for row in rows:
+            if row.get("is_hidden"):
+                continue
+            direction = slugify_command(row.get("direction") or "")
+            target_id = int(row.get("target_room_id"))
+            if not direction:
+                continue
+            # Prefer Lich simple wayto data whenever it exists, but backfill
+            # rooms/targets that the Lich script left disconnected.
+            if direction in existing_keys or target_id in existing_targets:
+                continue
+            add_rows.append({
+                "to": target_id,
+                "command": str(row.get("direction") or "").replace("_", " "),
+                "key": direction,
+                "cost": 0.2,
+            })
+
+        if not add_rows:
+            continue
+
+        room["edges"] = existing_edges + add_rows
+        rebuilt_exits = dict(room.get("exits") or {})
+        for edge in add_rows:
+            rebuilt_exits.setdefault(edge["key"], edge["to"])
+        room["exits"] = rebuilt_exits
+
+
+def apply_reciprocal_compass_inference(rooms: Dict[int, dict]) -> None:
+    opposites = {
+        "north": "south",
+        "south": "north",
+        "east": "west",
+        "west": "east",
+        "northeast": "southwest",
+        "southwest": "northeast",
+        "northwest": "southeast",
+        "southeast": "northwest",
+        "up": "down",
+        "down": "up",
+        "in": "out",
+        "out": "in",
+    }
+    incoming: Dict[int, List[Tuple[int, str]]] = defaultdict(list)
+    for rid, room in rooms.items():
+        for edge in room.get("edges") or []:
+            try:
+                target_id = int(edge.get("to"))
+            except (TypeError, ValueError):
+                continue
+            key = str(edge.get("key") or "").strip()
+            if key in opposites:
+                incoming[target_id].append((rid, key))
+
+    for rid, room in rooms.items():
+        visible = set(room.get("visible_paths") or [])
+        if not visible:
+            continue
+        exits = dict(room.get("exits") or {})
+        edges = list(room.get("edges") or [])
+        existing_keys = set(exits.keys())
+        for source_id, source_key in incoming.get(rid, []):
+            reverse_key = opposites.get(source_key)
+            if not reverse_key or reverse_key not in visible or reverse_key in existing_keys:
+                continue
+            exits[reverse_key] = source_id
+            edges.append({
+                "to": source_id,
+                "command": reverse_key.replace("_", " "),
+                "key": reverse_key,
+                "cost": 0.2,
+            })
+            existing_keys.add(reverse_key)
+        room["exits"] = exits
+        room["edges"] = edges
+
+
 def merge_rooms(base_rooms: Dict[int, dict], lich_rooms: Dict[int, dict]) -> Dict[str, dict]:
     merged: Dict[str, dict] = {}
     all_ids = sorted(set(base_rooms) | set(lich_rooms))
@@ -323,6 +458,7 @@ def main():
     parser.add_argument("--regions-out", default=REGIONS_PATH, help="Output map_regions.json path")
     parser.add_argument("--base-graph", default=GRAPH_PATH, help="Existing room_graph.json to preserve custom rooms from")
     parser.add_argument("--base-regions", default=REGIONS_PATH, help="Existing map_regions.json to preserve custom maps from")
+    parser.add_argument("--room-exits-tsv", default=DEFAULT_ROOM_EXITS_TSV, help="Optional TSV export of room_exits for fallback graph edges")
     args = parser.parse_args()
 
     lich_json_path = args.lich_json or find_existing_path(DEFAULT_LICH_JSON_CANDIDATES)
@@ -333,7 +469,12 @@ def main():
     base_regions = load_existing_regions(args.base_regions)
     lich_rooms, lich_regions = build_from_lich_json(lich_json_path)
     local_exit_overrides = load_local_room_exit_overrides(ROOT_DIR)
+    db_room_exits = load_room_exits_tsv(args.room_exits_tsv)
+    # Only use local file exits to rescue rooms that Lich could not model at all.
+    local_exit_overrides = {rid: exits for rid, exits in local_exit_overrides.items() if not lich_rooms.get(rid, {}).get("edges")}
     apply_local_exit_overrides(lich_rooms, local_exit_overrides)
+    apply_room_exit_fallbacks(lich_rooms, db_room_exits)
+    apply_reciprocal_compass_inference(lich_rooms)
 
     merged_rooms = merge_rooms(base_rooms, lich_rooms)
     merged_regions = merge_regions(base_regions, lich_regions, set(lich_rooms))

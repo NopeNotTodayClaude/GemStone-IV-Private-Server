@@ -43,7 +43,7 @@ LOCKSMITH_TEMPLATE_IDS = {
 NPC_SERVICE_HINTS = {
     "bank_teller":       ("Bank",       ["CHECK BALANCE", "DEPOSIT {#|ALL|NOTE}", "WITHDRAW {#} [NOTE]", "LOCKER INFO"]),
     "empath_healer":     ("Healer",     ["TALK TO {healer}", "ASK {healer} ABOUT healing"]),
-    "guild_clerk":       ("Guild",      ["TALK TO {clerk}", "ASK {clerk} ABOUT bounties"]),
+    "guild_clerk":       ("Guild",      ["TALK TO {clerk}", "ASK {clerk} ABOUT register", "ASK {clerk} ABOUT bounty", "ASK {clerk} ABOUT rank"]),
     "hall_steward":      ("Hall",       ["TALK TO {steward}", "ASK {steward} ABOUT hall"]),
     "wyvern_registrar":  ("Registry",   ["TALK TO {registrar}", "ASK {registrar} ABOUT registration"]),
     "justice_clerk":     ("Justice",    ["TALK TO {clerk}", "ASK {clerk} ABOUT justice"]),
@@ -54,6 +54,9 @@ NPC_SERVICE_HINTS = {
     "arkarti_priest":    ("Temple",     ["TALK TO {priest}", "ASK {priest} ABOUT arkati"]),
     "garden_keeper":     ("Garden",     ["TALK TO {keeper}", "ASK {keeper} ABOUT garden"]),
     "fisherman":         ("Fisherman",  ["TALK TO {fisherman}", "ASK {fisherman} ABOUT fishing"]),
+    "halline":           ("Taskmaster", ["TALK TO {taskmaster}", "ASK {taskmaster} ABOUT register", "ASK {taskmaster} ABOUT bounty", "ASK {taskmaster} ABOUT rank"]),
+    "rheteger":          ("Taskmaster", ["TALK TO {taskmaster}", "ASK {taskmaster} ABOUT register", "ASK {taskmaster} ABOUT bounty", "ASK {taskmaster} ABOUT rank"]),
+    "torsidr":           ("Taskmaster", ["TALK TO {taskmaster}", "ASK {taskmaster} ABOUT register", "ASK {taskmaster} ABOUT bounty", "ASK {taskmaster} ABOUT rank"]),
 }
 
 SERVICE_TAG_HINTS = {
@@ -184,6 +187,10 @@ async def show_room_hints(session, room, server):
                 "DEPOSIT {#|ALL|NOTE}",
                 "WITHDRAW {#} [NOTE]",
                 "LOCKER INFO",
+                "OPEN LOCKER",
+                "LOCKER MANIFEST",
+                "PUT {item} IN LOCKER",
+                "GET {item} FROM LOCKER",
             ]))
             shown.add("bank")
 
