@@ -1,0 +1,7 @@
+database:
+  development:
+    host: "127.0.0.1"
+    port: 3306
+    database: "gemstone_dev"
+    username: "root"
+    password: ""

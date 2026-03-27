@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Character Creation — GemStone IV</title>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Crimson+Text:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/cc/static/css/creator.css">
+</head>
+<body>
+
+<!-- ── Header ────────────────────────────────────────────────────────────── -->
+<header>
+  <div class="logo">⚔ GemStone IV</div>
+  <div class="header-sep"></div>
+  <div class="char-badge" id="char-badge">New Character</div>
+  <div class="step-pills" id="step-pills"><!-- rendered by JS --></div>
+  <div class="header-spacer"></div>
+  <div class="step-counter" id="step-counter">Step 1 of 8</div>
+</header>
+
+<!-- ── Body ──────────────────────────────────────────────────────────────── -->
+<div class="page-body">
+
+  <!-- Main creation content -->
+  <main class="creator-main" id="creator-main">
+    <div class="loading-veil" id="loading-veil">
+      <div class="spinner-ring"></div>
+      <div style="margin-top:1rem;color:var(--muted);font-family:'Cinzel',serif;font-size:0.85rem;letter-spacing:0.12em">CONSULTING THE SCROLLS...</div>
+    </div>
+  </main>
+
+  <!-- Avatar panel (right column, sticky) -->
+  <aside class="avatar-panel" id="avatar-panel">
+    <div class="avatar-frame">
+      <canvas id="avatar-canvas" width="240" height="320"></canvas>
+      <div class="avatar-glow" id="avatar-glow"></div>
+    </div>
+    <div class="avatar-summary" id="avatar-summary">
+      <div class="av-name" id="av-name">—</div>
+      <div class="av-line" id="av-race-line">Choose a race</div>
+      <div class="av-line" id="av-prof-line">Choose a profession</div>
+    </div>
+  </aside>
+
+</div>
+
+<!-- ── Bottom nav ─────────────────────────────────────────────────────────── -->
+<div class="bottom-nav" id="bottom-nav">
+  <button class="nav-btn back-btn" id="btn-back" onclick="Creator.back()">← Back</button>
+  <div class="nav-center" id="nav-center"></div>
+  <button class="nav-btn next-btn" id="btn-next" onclick="Creator.next()">Next →</button>
+</div>
+
+<!-- ── Confirm Modal ──────────────────────────────────────────────────────── -->
+<div class="overlay" id="confirm-overlay" style="display:none">
+  <div class="modal">
+    <div class="modal-title">Enter the World?</div>
+    <div class="modal-body" id="confirm-body">Your character is ready.</div>
+    <div class="modal-foot">
+      <button class="close-btn" onclick="Creator.closeConfirmModal()">← Revise</button>
+      <button class="save-btn" id="confirm-create-btn" onclick="Creator.submitCharacter()">
+        <span class="spinner" id="create-spinner" style="display:none"></span>
+        Enter the World
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Success Screen ─────────────────────────────────────────────────────── -->
+<div class="overlay" id="success-overlay" style="display:none">
+  <div class="modal success-modal">
+    <div class="success-symbol">⚔</div>
+    <div class="modal-title" id="success-title">Character Created</div>
+    <div class="success-msg" id="success-msg"></div>
+    <div class="success-close">Return to your game client to begin.</div>
+  </div>
+</div>
+
+<script src="/cc/static/js/creator.js"></script>
+</body>
+</html>

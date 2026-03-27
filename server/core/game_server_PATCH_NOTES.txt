@@ -1,0 +1,23 @@
+"""
+PATCH INSTRUCTIONS — apply to server/core/game_server.py
+---------------------------------------------------------
+Two small additions only.  Do NOT rewrite the file.
+
+1. Add this import near the top with the other imports:
+
+    from server.core.scripting.lua_manager import LuaManager
+
+2. In GameServer.__init__(), after all the existing subsystem assignments,
+   add ONE new line:
+
+    self.lua = LuaManager(self)
+
+3. In GameServer._initialize() (or wherever the subsystems call their
+   own .initialize() methods), add ONE new awaited call BEFORE world loads:
+
+    await self.lua.initialize()
+
+That is the complete change.  Nothing else in game_server.py is touched.
+The LuaManager silently no-ops if lupa is not installed, so the server
+continues to boot exactly as before.
+"""

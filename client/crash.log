@@ -1,0 +1,21 @@
+CRASH:
+Traceback (most recent call last):
+  File "N:\GemStoneIVServer\client\gsiv_hud.py", line 4023, in <module>
+    main()
+    ~~~~^^
+  File "N:\GemStoneIVServer\client\gsiv_hud.py", line 4013, in main
+    app = HUDApp(root, args.host, args.port)
+  File "N:\GemStoneIVServer\client\gsiv_hud.py", line 1608, in __init__
+    self._build_ui()
+    ~~~~~~~~~~~~~~^^
+  File "N:\GemStoneIVServer\client\gsiv_hud.py", line 1664, in _build_ui
+    top_zone.paned.pack(fill="both", expand=True, in_=top_container)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\unrea\AppData\Local\Python\pythoncore-3.14-64\Lib\tkinter\__init__.py", line 2621, in pack_configure
+    self.tk.call(
+    ~~~~~~~~~~~~^
+          ('pack', 'configure', self._w)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+          + self._options(cnf, kw))
+          ^^^^^^^^^^^^^^^^^^^^^^^^^
+_tkinter.TclError: can't pack .!frame.!frame.!frame.!panedwindow inside .!frame.!frame

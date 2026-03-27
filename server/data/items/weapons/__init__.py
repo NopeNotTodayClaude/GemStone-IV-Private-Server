@@ -1,0 +1,1 @@
+"""GemStone IV Weapon Data"""

@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Ruby
+.bundle/
+vendor/bundle/
+
+# Lua compiled
+*.luac
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+logs/server/*.log
+logs/game/*.log
+logs/errors/*.log
+logs/gm/*.log
+logs/chat/*.log
+
+# Database
+database/backups/*.sql
+database/backups/*.gz
+*.db
+
+# Config secrets
+config/server/secrets.yml
+config/database/credentials.yml
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib

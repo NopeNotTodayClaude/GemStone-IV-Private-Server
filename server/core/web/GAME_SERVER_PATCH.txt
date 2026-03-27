@@ -1,0 +1,104 @@
+# ============================================================
+# PATCH: game_server.py — Web Character Creator Integration
+# Apply these three changes to server/core/game_server.py
+# ============================================================
+#
+# CHANGE 1 — Add import at the top (after TrainingWebServer import, line ~25):
+#
+#   from server.core.web.character_creator_server import CharacterCreatorWebServer
+#
+#
+# CHANGE 2 — In __init__, after `self.training_web = None` (line ~68), add:
+#
+#   self.char_web = None
+#
+#
+# CHANGE 3 — In initialize(), after training_web startup block (line ~125), add:
+#
+#   # Character creation web portal
+#   self.char_web = CharacterCreatorWebServer(self)
+#   self.char_web.start()
+#   # Pass the running event loop so the web thread can signal sessions
+#   self._loop = asyncio.get_event_loop()
+#
+#
+# CHANGE 4 — Replace the body of _handle_character_select, the block that
+#             calls self.char_creator.start(session) (line ~336-337):
+#
+#   if idx == len(characters) + 1:
+#       # Launch web character creator instead of terminal flow
+#       if self.char_web:
+#           token = self.char_web.generate_token(session)
+#           url   = f"http://127.0.0.1:8766/create?token={token}"
+#           import webbrowser
+#           webbrowser.open(url)
+#           await session.send_line("")
+#           await session.send_line("  ✦ Character Creation has been opened in your browser.")
+#           await session.send_line("  Complete your character there, then return here.")
+#           await session.send_line("  (Your browser must be on the same machine as the game client.)")
+#           await session.send_line("")
+#           # Park session — it will be advanced by the web server callback
+#           session.state = "web_creating"
+#       else:
+#           # Fallback to terminal creator if web server unavailable
+#           await self.char_creator.start(session)
+#       return
+#
+#
+# CHANGE 5 — In the main input dispatcher (handle_input or equivalent),
+#             add a handler for the "web_creating" state so the session
+#             doesn't go idle or error while waiting.
+#             Find the big if/elif state chain and add:
+#
+#   elif state == "web_creating":
+#       await self._handle_web_creating(session, raw_input)
+#
+#
+# Then add the method to the class:
+#
+#   async def _handle_web_creating(self, session, raw_input):
+#       """Player typed something while waiting for web char creator."""
+#       raw = raw_input.strip().lower()
+#       if getattr(session, 'web_char_ready', False):
+#           # Web creation completed — advance to playing
+#           session.web_char_ready = False
+#           await self._finish_web_character(session)
+#           return
+#       if raw in ("cancel", "quit", "q"):
+#           session.state = "character_select"
+#           await self._show_character_select(session)
+#           return
+#       await session.send_line("  Character creation is open in your browser.")
+#       await session.send_line("  Type CANCEL to go back, or complete creation in the browser.")
+#       await session.send("")
+#
+#
+# CHANGE 6 — Add this method to the GameServer class:
+#
+#   async def _finish_web_character(self, session):
+#       """Called after web character creation completes to enter the world."""
+#       from server.core.tutorial import TutorialManager
+#       race_starting_rooms = RACE_STARTING_ROOMS
+#
+#       start_room_id = race_starting_rooms.get(
+#           getattr(session, 'race_id', 1), 100)
+#
+#       if hasattr(self, 'tutorial') and self.tutorial:
+#           await self.tutorial.start_tutorial(session)
+#       else:
+#           session.state = "playing"
+#           room = self.world.get_room(start_room_id)
+#           if not room:
+#               room = self.world.get_room(100)
+#           if room:
+#               session.current_room = room
+#               self.world.add_player_to_room(session, room.id)
+#               await self.commands.handle(session, "look")
+#           else:
+#               await session.send("(Warning: starting room not found!)\\r\\n>")
+#
+# ============================================================
+# That's all six changes. Total lines modified/added: ~45 lines.
+# Nothing in the existing character_creation.py changes.
+# The terminal creator still works as a fallback.
+# ============================================================

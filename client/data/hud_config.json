@@ -1,0 +1,62 @@
+{
+  "geometry": "2396x1123+412+32",
+  "font_size": 14,
+  "font_family": "Georgia",
+  "panel_font_size": 13,
+  "sash_x": 279,
+  "host": "127.0.0.1",
+  "port": 4901,
+  "saved_servers": [
+    {
+      "label": "Local Server",
+      "host": "127.0.0.1",
+      "port": 4901
+    }
+  ],
+  "dock_layout": {
+    "left": {
+      "panels": [
+        "status",
+        "exp",
+        "timeweather",
+        "wounds"
+      ],
+      "sashes": [
+        173,
+        380,
+        591,
+        998
+      ]
+    },
+    "right": {
+      "panels": [
+        "map"
+      ],
+      "sashes": [
+        998
+      ]
+    },
+    "top": {
+      "panels": [],
+      "sashes": []
+    },
+    "_main_sashes": [
+      279,
+      1879
+    ]
+  },
+  "input_mode": "command",
+  "comm_input_mode": "chat",
+  "auto_login": {
+    "enabled": true,
+    "username": "admin",
+    "password": "admin",
+    "char_slot": 1
+  },
+  "audio": {
+    "music_enabled": true,
+    "sfx_enabled": true,
+    "music_volume": 65,
+    "sfx_volume": 75
+  }
+}

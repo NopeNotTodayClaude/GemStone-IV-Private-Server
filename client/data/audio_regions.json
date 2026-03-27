@@ -1,0 +1,48 @@
+{
+  "music": {
+    "zones": {
+      "Ta'Vaalor": {
+        "file": "Dark Elf Music - Nightfall Sanctuary.mp3",
+        "fade_in_ms": 2800,
+        "fade_out_ms": 3200,
+        "loop_crossfade_ms": 5500
+      },
+      "Victory Road": {
+        "file": "Graveyard _ Ambience _ 2 hours [yKAFQP0c_m0].mp3",
+        "fade_in_ms": 3200,
+        "fade_out_ms": 3200,
+        "loop_crossfade_ms": 6000
+      },
+      "Timmorain Road": {
+        "file": "Graveyard _ Ambience _ 2 hours [yKAFQP0c_m0].mp3",
+        "fade_in_ms": 3200,
+        "fade_out_ms": 3200,
+        "loop_crossfade_ms": 6000
+      },
+      "Glaise Cnoc": {
+        "file": "Graveyard _ Ambience _ 2 hours [yKAFQP0c_m0].mp3",
+        "fade_in_ms": 3200,
+        "fade_out_ms": 3200,
+        "loop_crossfade_ms": 6000
+      },
+      "Neartofar Forest": {
+        "file": "Graveyard _ Ambience _ 2 hours [yKAFQP0c_m0].mp3",
+        "fade_in_ms": 3200,
+        "fade_out_ms": 3200,
+        "loop_crossfade_ms": 6000
+      },
+      "the Blighted Forest": {
+        "file": "Graveyard _ Ambience _ 2 hours [yKAFQP0c_m0].mp3",
+        "fade_in_ms": 3200,
+        "fade_out_ms": 3200,
+        "loop_crossfade_ms": 6000
+      },
+      "the Neartofar Forest": {
+        "file": "Graveyard _ Ambience _ 2 hours [yKAFQP0c_m0].mp3",
+        "fade_in_ms": 3200,
+        "fade_out_ms": 3200,
+        "loop_crossfade_ms": 6000
+      }
+    }
+  }
+}

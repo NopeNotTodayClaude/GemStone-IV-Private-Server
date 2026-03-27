@@ -1,0 +1,16 @@
+server:
+  host: "0.0.0.0"
+  port: 4901
+
+sync:
+  host: "0.0.0.0"
+  port: 4902          # real-time client state sync (NDJSON over TCP)
+
+paths:
+  scripts: "./scripts"
+
+logging:
+  level: "INFO"
+  console: true
+  file: true
+  log_dir: "./logs/server"

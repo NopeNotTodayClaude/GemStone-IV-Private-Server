@@ -1,0 +1,57 @@
+-- ================================================================
+-- lua_manager_PATCH.txt
+-- Add these two methods to server/core/scripting/lua_manager.py
+-- inside the LuaManager class, after the existing get_lockpicks()
+-- method (i.e., before the cache management section).
+-- ================================================================
+
+-- 1) Add this import at the top of lua_manager.py with the others:
+
+    # from server.core.scripting.loaders.spells_loader import load_spells
+
+
+-- 2) Add this method to LuaManager (call it during server startup
+--    AFTER initialize(), e.g. in game_server.py post-init):
+
+    async def seed_spells(self) -> dict:
+        """
+        Seed the spells table by executing each circle's seed() function.
+        Safe to call on every startup — circle modules use ON DUPLICATE KEY UPDATE.
+        Returns a { circle_name: count } summary dict.
+        """
+        from server.core.scripting.loaders.spells_loader import load_spells
+        if not self._engine or not self._engine.available:
+            log.warning("LuaManager.seed_spells: engine not ready — skipping")
+            return {}
+        try:
+            return load_spells(self._engine) or {}
+        except Exception as e:
+            log.error("LuaManager.seed_spells failed: %s", e, exc_info=True)
+            return {}
+
+    def get_spell(self, spell_number: int) -> Optional[dict]:
+        """
+        Return a single spell definition dict from the DB, or None.
+        Uses Lua's DB bridge so it goes through the same connection pool.
+        """
+        if not self._engine or not self._engine.available:
+            return None
+        try:
+            result = self._engine.execute(
+                f"return require('globals/utils/db')"
+                f".queryOne('SELECT * FROM spells WHERE spell_number={int(spell_number)}')"
+            )
+            if result is None:
+                return None
+            return self._engine.lua_to_python(result)
+        except Exception as e:
+            log.error("LuaManager.get_spell(%d): %s", spell_number, e)
+            return None
+
+
+-- 3) In game_server.py (or wherever initialize() is awaited),
+--    call seed_spells() after Lua init, for example:
+
+    await self.lua.initialize()
+    spell_summary = await self.lua.seed_spells()
+    log.info("Spell seed complete: %s", spell_summary)

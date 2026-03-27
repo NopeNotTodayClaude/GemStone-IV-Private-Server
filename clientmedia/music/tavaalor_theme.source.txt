@@ -1,0 +1,4 @@
+Expected music asset: tavaalor_theme.mp3
+Source URL: https://www.youtube.com/watch?v=2VSCyHk3Usg
+
+When the actual audio file is present in this folder, the client will use it for Ta'Vaalor zone music with fades and loop crossfade.

@@ -1,0 +1,63 @@
+"""
+PATCH INSTRUCTIONS — server/core/character_creation.py
+-------------------------------------------------------
+The existing hardcoded dicts (RACES, RACE_STAT_MODS, PROFESSIONS, etc.)
+stay in place as the fallback.  We add a loader at the TOP of the file
+that tries the Lua source first.  If Lua loads successfully, the module-level
+dicts are overwritten.  If Lua fails, nothing changes.
+
+Add this block AFTER the existing imports and BEFORE the first constant:
+
+--------------- BEGIN PATCH (insert after imports) ---------------
+
+def _try_load_lua_data(server=None):
+    \"\"\"Attempt to load race/profession data from Lua.  Silent on failure.\"\"\"
+    try:
+        # Only available after server boots; skip during module import
+        if server is None:
+            return
+        lua = getattr(server, "lua", None)
+        if lua is None:
+            return
+
+        races_data = lua.get_races()
+        if races_data:
+            global RACES, RACE_STAT_MODS, RACE_GROWTH_MODS, RACE_STARTING_ROOMS, RACE_STARTING_TOWN_NAMES
+            if races_data.get("races"):
+                RACES = races_data["races"]
+            if races_data.get("stat_mods"):
+                RACE_STAT_MODS = races_data["stat_mods"]
+            if races_data.get("growth_mods"):
+                RACE_GROWTH_MODS = races_data["growth_mods"]
+            if races_data.get("starting_rooms"):
+                RACE_STARTING_ROOMS = races_data["starting_rooms"]
+            if races_data.get("town_names"):
+                RACE_STARTING_TOWN_NAMES = races_data["town_names"]
+            log.info("character_creation: race data loaded from Lua")
+
+        prof_data = lua.get_professions()
+        if prof_data:
+            global PROFESSIONS, PROFESSION_STATS, PRIME_REQUISITES, MANA_STATS, PROFESSION_GROWTH_RATES
+            if prof_data.get("professions"):
+                PROFESSIONS = prof_data["professions"]
+            if prof_data.get("profession_stats"):
+                PROFESSION_STATS = prof_data["profession_stats"]
+            if prof_data.get("prime_requisites"):
+                PRIME_REQUISITES = prof_data["prime_requisites"]
+            if prof_data.get("mana_stats"):
+                MANA_STATS = prof_data["mana_stats"]
+            if prof_data.get("growth_rates"):
+                PROFESSION_GROWTH_RATES = prof_data["growth_rates"]
+            log.info("character_creation: profession data loaded from Lua")
+
+    except Exception as e:
+        log.warning("character_creation: Lua data load skipped: %s", e)
+
+--------------- END PATCH ---------------
+
+Then in CharacterCreator.__init__(self, server):
+  Add ONE line at the end:
+      _try_load_lua_data(server)
+
+That is the entire change.  All hardcoded dicts remain.
+"""

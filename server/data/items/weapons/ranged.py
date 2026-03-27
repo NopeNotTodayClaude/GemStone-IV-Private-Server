@@ -1,0 +1,9 @@
+"""GemStone IV Ranged Weapons"""
+RANGED_WEAPONS = [
+    {"base_name": "short bow", "name": "a short bow", "short_name": "short bow", "noun": "bow", "damage_factor": 0.325, "weapon_speed": 5, "damage_type": "puncture,slash", "weight": 3.0, "value": 200, "description": "A compact bow designed for maneuverability in close quarters."},
+    {"base_name": "composite bow", "name": "a composite bow", "short_name": "composite bow", "noun": "bow", "damage_factor": 0.350, "weapon_speed": 6, "damage_type": "puncture,slash", "weight": 4.0, "value": 400, "description": "A bow constructed from multiple materials for superior power and range."},
+    {"base_name": "long bow", "name": "a long bow", "short_name": "long bow", "noun": "bow", "damage_factor": 0.400, "weapon_speed": 7, "damage_type": "puncture,slash", "weight": 5.0, "value": 500, "description": "A towering bow requiring considerable strength but delivering devastating force."},
+    {"base_name": "hand crossbow", "name": "a hand crossbow", "short_name": "hand crossbow", "noun": "crossbow", "damage_factor": 0.275, "weapon_speed": 4, "damage_type": "puncture,slash", "weight": 3.0, "value": 300, "description": "A lightweight crossbow that can be fired one-handed for ambushes."},
+    {"base_name": "light crossbow", "name": "a light crossbow", "short_name": "light crossbow", "noun": "crossbow", "damage_factor": 0.350, "weapon_speed": 6, "damage_type": "puncture,slash", "weight": 6.0, "value": 400, "description": "A crossbow balanced between ease of use and projectile power."},
+    {"base_name": "heavy crossbow", "name": "a heavy crossbow", "short_name": "heavy crossbow", "noun": "crossbow", "damage_factor": 0.425, "weapon_speed": 7, "damage_type": "puncture,slash", "weight": 8.0, "value": 600, "description": "A siege-grade crossbow capable of piercing the heaviest plate armor."},
+]
