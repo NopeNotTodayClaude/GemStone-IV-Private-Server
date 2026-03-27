@@ -43,11 +43,11 @@ user: root
 
 password: none
 
-Install Python dependencies if needed.
+Install Python. Then PIP install Pillow so the map naviation/clicking words in the client
 
-Start the game server.
+Start the game server. (Start_server.bat) Edit to your file/folders
 
-Start the client.
+Start the client. (Client folder > gsiv_hud.py file)
 
 Connect to:
 
