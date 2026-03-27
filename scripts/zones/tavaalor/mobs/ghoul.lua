@@ -66,11 +66,14 @@ Creature.description = "The ghoul moves with a hunched, lurching gait, its too-l
 
 -- Spawn Rooms — deepest sections only, where necromantic energy pools
 Creature.spawn_rooms = {
-    -- Not yet assigned: zone not built out
+    5930, 5931,
+    5934, 5935,
+    5937, 5941, 5942, 5944
 }
 
 Creature.roam_rooms = {
-    -- Not yet assigned
+    5930, 5931, 5934, 5935,
+    5937, 5940, 5941, 5942, 5943, 5944
 }
 
 Creature.roam_chance     = 20

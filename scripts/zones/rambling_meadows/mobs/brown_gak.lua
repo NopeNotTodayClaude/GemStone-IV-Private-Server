@@ -1,5 +1,5 @@
 -- Creature: brown gak
--- Zone: Rambling Meadows  |  Level: 2
+-- Zone: Yander's Farm / Open Path & Barnyard  |  Level: 2
 local Creature = {}
 
 Creature.id              = 9104
@@ -41,38 +41,40 @@ Creature.crumbles      = false
 Creature.decay_message = ""
 
 Creature.spawn_rooms = {
-    5956,
-    5957,
-    5958,
-    6010,
-    5959,
-    5960,
-    5961,
-    5962,
-    5963,
-    5964
-    }
+    6012,
+    6013,
+    6014,
+    6016,
+    6018,
+    6019,
+    6020,
+    6021,
+    6022,
+    6023,
+    6025,
+    6026
+}
 Creature.roam_rooms = {
-    5956,
-    5957,
-    5958,
-    6010,
-    5959,
-    5960,
-    5961,
-    5962,
-    5963,
-    5964,
-    5965,
-    5966,
-    5967,
-    5968,
-    5969,
-    5970,
-    5971,
-    5972,
-    5973
-    }
+    6012,
+    6013,
+    6014,
+    6015,
+    6016,
+    6017,
+    6018,
+    6019,
+    6020,
+    6021,
+    6022,
+    6023,
+    6024,
+    6025,
+    6026,
+    6027,
+    6028,
+    6029,
+    6030
+}
 
 Creature.roam_chance     = 30
 Creature.respawn_seconds = 160

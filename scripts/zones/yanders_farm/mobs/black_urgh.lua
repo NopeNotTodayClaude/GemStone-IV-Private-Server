@@ -47,11 +47,15 @@ Creature.decay_seconds = 300
 Creature.crumbles      = false
 Creature.decay_message = ""
 
-Creature.spawn_rooms = { 5040, 5041, 5042, 5043, 5044, 5045, 5046, 5047, 5048, 5049, 5050, 5051, 5052, 5053, 5054, 5055, 5056, 5057, 5058, 5059 }
-Creature.roam_rooms  = { 5040, 5041, 5042, 5043, 5044, 5045, 5046, 5047, 5048, 5049, 5050, 5051, 5052, 5053, 5054, 5055, 5056, 5057, 5058, 5059 }
+Creature.spawn_rooms = {
+    6012, 6013, 6014, 6016, 6018, 6019, 6020, 6021, 6022, 6023, 6025, 6026
+}
+Creature.roam_rooms  = {
+    6012, 6013, 6014, 6015, 6016, 6017, 6018, 6019, 6020, 6021, 6022, 6023, 6024, 6025, 6026
+}
 Creature.roam_chance     = 20
 Creature.respawn_seconds = 200
-Creature.max_count       = 7
+Creature.max_count       = 2
 
 Creature.description = "The herbivorous black urgh resembles an overgrown, hairy pig standing on four feet with a dusty black coat and a curled, hairless tail. Instead of the usual upper and lower jaw in front of his head, the black urgh has an extremely long upper lip which he can extend a good two feet to drag vegetation back into his mouth. Under the mouth reside two long curved tusks he uses to root through earth — and, with no particular malice, to remove anyone standing between him and his next meal."
 

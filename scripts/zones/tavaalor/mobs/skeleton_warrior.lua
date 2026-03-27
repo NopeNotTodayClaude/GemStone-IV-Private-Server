@@ -78,11 +78,14 @@ Creature.description = "The skeleton warrior stands straight-backed even in unde
 -- old garrison — their burial chambers are the deepest and most fortified
 -- sections: Crypt, Trophy Room, Burial Chamber, Nexus, Serpent's Den, Lair.
 Creature.spawn_rooms = {
-    -- Not yet assigned: zone not built out
+    5930, 5931,
+    5937, 5940, 5941, 5942, 5943
 }
 
 Creature.roam_rooms = {
-    -- Not yet assigned
+    5924, 5926,
+    5930, 5931,
+    5937, 5940, 5941, 5942, 5943
 }
 
 Creature.roam_chance     = 15    -- disciplined: does not wander far from post

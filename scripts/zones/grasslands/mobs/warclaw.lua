@@ -42,8 +42,16 @@ Creature.decay_seconds  = 300
 Creature.crumbles       = false
 Creature.decay_message  = ""
 
-Creature.spawn_rooms = {}
-Creature.roam_rooms  = {}
+Creature.spawn_rooms = {
+    10208, 10209, 10210, 10211, 10212, 10213, 10214, 10215,
+    10233, 10234, 10235, 10236, 10237, 10238, 10239
+}
+Creature.roam_rooms  = {
+    10208, 10209, 10210, 10211, 10212, 10213, 10214, 10215,
+    10216, 10217, 10218, 10219,
+    10233, 10234, 10235, 10236, 10237, 10238, 10239,
+    10240, 10241, 10242, 10243
+}
 
 Creature.roam_chance     = 20
 Creature.respawn_seconds = 180

@@ -1,5 +1,5 @@
 -- Creature: young grass snake
--- Zone: Victory Road / Rambling Meadows  |  Level: 1
+-- Zone: Rambling Meadows  |  Level: 1
 local Creature = {}
 
 Creature.id              = 9101
@@ -42,33 +42,26 @@ Creature.crumbles      = false
 Creature.decay_message = ""
 
 Creature.spawn_rooms = {
-    5950,
-    5951,
-    5952,
-    5953,
-    5954,
-    5955,
     5956,
     5957,
     5958,
-    6010
-    }
-Creature.roam_rooms = {
-    5950,
-    5951,
-    5952,
-    5953,
-    5954,
-    5955,
-    5956,
-    5957,
-    5958,
-    6010,
     5959,
     5960,
     5961,
     5962
-    }
+}
+Creature.roam_rooms = {
+    5956,
+    5957,
+    5958,
+    5959,
+    5960,
+    5961,
+    5962,
+    5963,
+    5964,
+    6010
+}
 
 Creature.roam_chance     = 30
 Creature.respawn_seconds = 150

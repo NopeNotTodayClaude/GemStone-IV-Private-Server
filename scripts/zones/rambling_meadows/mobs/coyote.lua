@@ -1,5 +1,5 @@
 -- Creature: coyote
--- Zone: Rambling Meadows  |  Level: 5
+-- Zone: Yander's Farm / Open Path & Farmland Road  |  Level: 5
 local Creature = {}
 
 Creature.id              = 9108
@@ -43,50 +43,29 @@ Creature.crumbles      = false
 Creature.decay_message = ""
 
 Creature.spawn_rooms = {
-    5959,
-    5960,
-    5961,
-    5962,
-    5963,
-    5964,
-    5965,
-    5966,
-    5967,
-    5968,
-    5969,
-    5970,
-    5971,
-    5972,
-    5973,
-    5956,
-    5957,
-    5958,
-    6010
-    }
+    6012,
+    6023,
+    6024,
+    6041,
+    6042,
+    6043,
+    6044
+}
 Creature.roam_rooms = {
-    5959,
-    5960,
-    5961,
-    5962,
-    5963,
-    5964,
-    5965,
-    5966,
-    5967,
-    5968,
-    5969,
-    5970,
-    5971,
-    5972,
-    5973,
-    5956,
-    5957,
-    5958,
-    6010,
-    5976,
-    5977,
-    5978
-    }
+    6012,
+    6023,
+    6024,
+    6027,
+    6028,
+    6029,
+    6030,
+    6041,
+    6042,
+    6043,
+    6044,
+    6045,
+    6059
+}
 
 Creature.roam_chance     = 35
 Creature.respawn_seconds = 220

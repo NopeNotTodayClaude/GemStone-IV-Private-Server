@@ -1,5 +1,5 @@
 -- Creature: spotted gnarp
--- Zone: Victory Road / Rambling Meadows  |  Level: 1
+-- Zone: Yander's Farm / Open Path & Barnyard  |  Level: 1
 local Creature = {}
 
 Creature.id              = 9103
@@ -41,32 +41,36 @@ Creature.crumbles      = false
 Creature.decay_message = ""
 
 Creature.spawn_rooms = {
-    5950,
-    5951,
-    5952,
-    5953,
-    5954,
-    5955,
-    5956,
-    5957,
-    5958,
-    6010
-    }
+    6012,
+    6013,
+    6014,
+    6016,
+    6018,
+    6019,
+    6020,
+    6021,
+    6022,
+    6023,
+    6025,
+    6026
+}
 Creature.roam_rooms = {
-    5950,
-    5951,
-    5952,
-    5953,
-    5954,
-    5955,
-    5956,
-    5957,
-    5958,
-    6010,
-    5959,
-    5960,
-    5961
-    }
+    6012,
+    6013,
+    6014,
+    6015,
+    6016,
+    6017,
+    6018,
+    6019,
+    6020,
+    6021,
+    6022,
+    6023,
+    6024,
+    6025,
+    6026
+}
 
 Creature.roam_chance     = 30
 Creature.respawn_seconds = 150

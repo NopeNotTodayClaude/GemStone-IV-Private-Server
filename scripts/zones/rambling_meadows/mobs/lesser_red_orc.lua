@@ -1,5 +1,5 @@
 -- Creature: lesser red orc
--- Zone: Rambling Meadows / Yander's Farm  |  Level: 7
+-- Zone: Yander's Farm / Turnip Patch  |  Level: 7
 local Creature = {}
 
 Creature.id              = 9110
@@ -41,11 +41,6 @@ Creature.crumbles      = false
 Creature.decay_message = ""
 
 Creature.spawn_rooms = {
-    6027,
-    6028,
-    6029,
-    6030,
-    6031,
     6032,
     6033,
     6034,
@@ -54,14 +49,10 @@ Creature.spawn_rooms = {
     6037,
     6038,
     6039,
-    6040,
-    6041,
-    6006,
-    6007,
-    6008,
-    6009
-    }
+    6040
+}
 Creature.roam_rooms = {
+    6024,
     6027,
     6028,
     6029,
@@ -77,13 +68,10 @@ Creature.roam_rooms = {
     6039,
     6040,
     6041,
-    6006,
-    6007,
-    6008,
-    6009,
-    6024,
-    6041
-    }
+    6042,
+    6043,
+    6044
+}
 
 Creature.roam_chance     = 20
 Creature.respawn_seconds = 260

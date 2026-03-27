@@ -73,11 +73,17 @@ Creature.description = "The lesser skeleton is an animated framework of yellowed
 -- Passageways, deeper than the rodents.  Found wherever old bones are
 -- numerous: torture chambers, altar areas, burial passages.
 Creature.spawn_rooms = {
-    -- Not yet assigned: zone not built out
+    5923, 5924, 5926,
+    5930, 5931, 5937,
+    5940, 5941, 5942, 5943
 }
 
 Creature.roam_rooms = {
-    -- Not yet assigned
+    5923, 5924, 5926,
+    5930, 5931, 5937,
+    5940, 5941, 5942, 5943,
+    5925, 5927, 5928, 5929,
+    5932, 5933, 5936, 5939
 }
 
 Creature.roam_chance     = 20    -- undead move deliberately, less wandering

@@ -78,11 +78,11 @@ Creature.description = "The cave worm is a massive, eyeless creature nearly twen
 -- Serpent's Den (5934), Lair (5935), and the deep Pool (5944) only.
 -- These worms are rare and territorial; only two or three exist at a time.
 Creature.spawn_rooms = {
-    -- Not yet assigned: zone not built out
+    5934, 5935, 5944
 }
 
 Creature.roam_rooms = {
-    -- Not yet assigned
+    5934, 5935, 5944
 }
 
 Creature.roam_chance     = 10    -- slow-moving, nearly sessile between feeds

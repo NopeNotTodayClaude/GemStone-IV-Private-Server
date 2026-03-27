@@ -1,6 +1,7 @@
 -- Creature: warped tree spirit
 -- Zone: lunule_weald  |  Level: 16
--- Source: https://gswiki.play.net/Warped_tree_spirit
+-- Source: custom Lunule adaptation; kept in the Felwood band so the live zone
+-- has a proper mid-tier plant threat instead of an empty creature shell.
 local Creature = {}
 
 Creature.id              = 9911
@@ -41,12 +42,44 @@ Creature.decay_seconds  = 300
 Creature.crumbles       = false
 Creature.decay_message  = ""
 
-Creature.spawn_rooms = {}
-Creature.roam_rooms  = {}
+Creature.spawn_rooms = {
+    10559,
+    10560,
+    10561,
+    10562,
+    10563,
+    10564,
+    10565,
+    10566,
+    10567,
+    10568,
+    10569
+}
+Creature.roam_rooms  = {
+    10559,
+    10560,
+    10561,
+    10562,
+    10563,
+    10564,
+    10565,
+    10566,
+    10567,
+    10568,
+    10569,
+    10570,
+    10571,
+    10572,
+    10573,
+    10574,
+    10575,
+    10576,
+    10577
+}
 
 Creature.roam_chance     = 10
 Creature.respawn_seconds = 150
-Creature.max_count       = 3
+Creature.max_count       = 1
 
 Creature.description = "A twisted amalgamation of living wood and dark magic.  What was once a noble tree spirit has been warped into something horrible and unnatural.  Its limbs writhe with corruption."
 

@@ -1,6 +1,7 @@
 -- Creature: treekin warrior
 -- Zone: lunule_weald  |  Level: 17
--- Source: https://gswiki.play.net/Treekin_warrior
+-- Source: custom Lunule adaptation; used as an upper Felwood / Perish Glen edge
+-- bruiser so the creature is live without displacing the deeper undead band.
 local Creature = {}
 
 Creature.id              = 9912
@@ -42,12 +43,48 @@ Creature.decay_seconds  = 300
 Creature.crumbles       = false
 Creature.decay_message  = ""
 
-Creature.spawn_rooms = {}
-Creature.roam_rooms  = {}
+Creature.spawn_rooms = {
+    10568,
+    10569,
+    10570,
+    10571,
+    10572,
+    10573,
+    10574,
+    10575,
+    10576,
+    10577,
+    10578,
+    10579,
+    10580,
+    10581
+}
+Creature.roam_rooms  = {
+    10568,
+    10569,
+    10570,
+    10571,
+    10572,
+    10573,
+    10574,
+    10575,
+    10576,
+    10577,
+    10578,
+    10579,
+    10580,
+    10581,
+    10582,
+    10583,
+    10584,
+    10585,
+    10586,
+    10587
+}
 
 Creature.roam_chance     = 10
 Creature.respawn_seconds = 180
-Creature.max_count       = 3
+Creature.max_count       = 1
 
 Creature.description = "The treekin warrior is an imposing figure of living wood, standing over eight feet tall.  Unlike its lesser kin, this creature moves with deliberate, almost martial precision.  Thorny vines wrap around its limbs like armor, and it wields a massive club of petrified oak."
 

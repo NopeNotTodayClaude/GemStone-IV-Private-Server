@@ -1,8 +1,8 @@
 -- Creature: thyril
--- Zone: Rambling Meadows  |  Level: 2
+-- Zone: Icemule Trace / Snowflake Vale Clearings  |  Level: 2
 local Creature = {}
 
-Creature.id              = 9105
+Creature.id              = 10325
 Creature.name            = "thyril"
 Creature.level           = 2
 Creature.family          = "thyril"
@@ -24,10 +24,9 @@ Creature.attacks = {
     { type="claw", as=36, damage_type="slash" },
     { type="bite", as=32, damage_type="puncture" },
 }
+
 Creature.spells = {}
-Creature.abilities = {
-    "evade_maneuver",
-}
+Creature.abilities = { "evade_maneuver" }
 Creature.immune    = {}
 Creature.resist    = {}
 
@@ -43,40 +42,19 @@ Creature.crumbles      = false
 Creature.decay_message = ""
 
 Creature.spawn_rooms = {
-    5956,
-    5957,
-    5958,
-    5959,
-    5960,
-    5961,
-    5962,
-    5963,
-    5964,
-    5965,
-    5966
+    3207, 3208, 3209, 3210, 3211, 3212, 3213, 3214, 3215
 }
+
 Creature.roam_rooms = {
-    5956,
-    5957,
-    5958,
-    5959,
-    5960,
-    5961,
-    5962,
-    5963,
-    5964,
-    5965,
-    5966,
-    5967,
-    5968,
-    5969,
-    5970
+    3205, 3206,
+    3207, 3208, 3209, 3210, 3211, 3212, 3213, 3214, 3215, 3216, 3217,
+    34447
 }
 
 Creature.roam_chance     = 30
-Creature.respawn_seconds = 160
-Creature.max_count       = 1
+Creature.respawn_seconds = 170
+Creature.max_count       = 2
 
-Creature.description = "A young thyril, barely past cub stage, stalks through the tall grass with exaggerated caution.  Its spotted, tawny coat provides effective camouflage in the meadow, and its oversized paws hint at the larger predator it will become.  Even at this age, its reflexes are startlingly quick."
+Creature.description = "The thyril's pale winter coat lets it disappear into the drifted underbrush until it moves.  Its eyes are wide and reflective in the cold light, and every motion suggests the nervous speed of a predator forced to share lean hunting grounds with worse things."
 
 return Creature

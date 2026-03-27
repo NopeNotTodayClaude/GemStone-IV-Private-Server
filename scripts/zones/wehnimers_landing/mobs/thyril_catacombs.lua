@@ -37,10 +37,14 @@ Creature.crumbles      = false
 Creature.decay_message = ""
 -- Rooms 5900-5940 are reserved for fanged_rodent only (Ta'Vaalor catacombs).
 -- Assign proper WL catacomb room IDs here when confirmed.
-Creature.spawn_rooms = {}
-Creature.roam_rooms  = {}
+Creature.spawn_rooms = {
+    2261, 2262, 2263, 2264, 2265, 2266, 2267, 2268, 2269
+}
+Creature.roam_rooms  = {
+    2261, 2262, 2263, 2264, 2265, 2266, 2267, 2268, 2269, 2270, 2271, 2272
+}
 Creature.roam_chance     = 30
 Creature.respawn_seconds = 160
-Creature.max_count       = 0
+Creature.max_count       = 2
 Creature.description = "A young thyril has claimed a territory among the upper catacombs, finding the enclosed space and abundance of smaller prey entirely to its liking.  It moves with fluid silence through the tunnels, its spotted coat oddly effective even against bare stone.  The oversized ears swivel constantly toward any sound."
 return Creature

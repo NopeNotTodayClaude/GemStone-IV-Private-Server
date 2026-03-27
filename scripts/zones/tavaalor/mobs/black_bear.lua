@@ -1,31 +1,31 @@
 -- Creature: black bear
--- Zone: tavaalor | Rambling Meadows Upper | Level: 5
--- Heavy bruisers patrolling the upper fields and hilltops of the meadows.
+-- Zone: Neartofar Forest | Hillside & Ridge | Level: 16
+-- Retail black bears belong in Neartofar, not Rambling Meadows.
 local Creature = {}
 
 Creature.id             = 7022
 Creature.name           = "black bear"
-Creature.level          = 5
+Creature.level          = 16
 Creature.family         = "bear"
 Creature.classification = "living"
 Creature.body_type      = "quadruped"
 
-Creature.hp_base        = 68
-Creature.hp_variance    = 10
+Creature.hp_base        = 188
+Creature.hp_variance    = 15
 
 -- Combat
-Creature.ds_melee       = 52
-Creature.ds_bolt        = 34
-Creature.td_spiritual   = 15
-Creature.td_elemental   = 15
+Creature.ds_melee       = 138
+Creature.ds_bolt        = 60
+Creature.td_spiritual   = 50
+Creature.td_elemental   = 50
 Creature.udf            = 0
 Creature.armor_asg      = 3
 Creature.armor_natural  = true
 
 Creature.attacks = {
-    { type = "claw",  as = 68, damage_type = "slash" },
-    { type = "pound", as = 60, damage_type = "crush" },
-    { type = "bite",  as = 62, damage_type = "puncture" },
+    { type = "claw",  as = 184, damage_type = "slash" },
+    { type = "pound", as = 176, damage_type = "crush" },
+    { type = "bite",  as = 178, damage_type = "puncture" },
 }
 
 Creature.spells    = {}
@@ -38,7 +38,7 @@ Creature.loot_coins  = false
 Creature.loot_gems   = false
 Creature.loot_magic  = false
 Creature.loot_boxes  = false
-Creature.skin        = "a bear skin"
+Creature.skin        = "a black bear pelt"
 Creature.special_loot = { "a bear claw" }
 
 -- Decay
@@ -46,23 +46,25 @@ Creature.decay_seconds = 300
 Creature.crumbles      = false
 Creature.decay_message = ""
 
--- Rambling Meadows upper fields + hilltop
 Creature.spawn_rooms = {
-    5975,
-    5985, 5986, 5987, 5988, 5989, 5990, 5991, 5992, 5993,
-    5995, 5996, 5997, 5998, 5999,
-    6000, 6001, 6002, 6003, 6004, 6005, 6006, 6007, 6008, 6009, 6010,
+    10638, 10639, 10640, 10641,
+    10643, 10644,
+    10645, 10646, 10647, 10648, 10649,
+    10650, 10651, 10652, 10653, 10654, 10655,
+    10656, 10657, 10658, 10659
 }
 
 Creature.roam_rooms = {
-    5975,
-    5985, 5986, 5987, 5988, 5989, 5990, 5991, 5992, 5993,
-    5995, 5996, 5997, 5998, 5999,
-    6000, 6001, 6002, 6003, 6004, 6005, 6006, 6007, 6008, 6009, 6010,
+    10638, 10639, 10640, 10641,
+    10642, 10643, 10644,
+    10645, 10646, 10647, 10648, 10649,
+    10650, 10651, 10652, 10653, 10654, 10655,
+    10656, 10657, 10658, 10659,
+    10660, 10661
 }
 
-Creature.roam_chance     = 30
-Creature.respawn_seconds = 300
-Creature.max_count       = 3
+Creature.roam_chance     = 18
+Creature.respawn_seconds = 340
+Creature.max_count       = 2
 
 return Creature

@@ -47,11 +47,15 @@ Creature.decay_seconds = 300
 Creature.crumbles      = false
 Creature.decay_message = ""
 
-Creature.spawn_rooms = { 5020, 5021, 5022, 5023, 5024, 5025, 5026, 5027, 5028, 5029, 5030, 5031, 5032, 5033, 5034, 5035, 5036, 5037, 5038, 5039 }
-Creature.roam_rooms  = { 5020, 5021, 5022, 5023, 5024, 5025, 5026, 5027, 5028, 5029, 5030, 5031, 5032, 5033, 5034, 5035, 5036, 5037, 5038, 5039 }
+Creature.spawn_rooms = {
+    6012, 6013, 6014, 6016, 6018, 6019, 6020, 6021, 6022, 6023, 6025, 6026
+}
+Creature.roam_rooms  = {
+    6012, 6013, 6014, 6015, 6016, 6017, 6018, 6019, 6020, 6021, 6022, 6023, 6024, 6025, 6026
+}
 Creature.roam_chance     = 20
 Creature.respawn_seconds = 180
-Creature.max_count       = 8
+Creature.max_count       = 2
 
 Creature.description = "The spotted velnalin moves through the farm's outer pastures with deceptive calm, its dappled coat shifting between gold and grey as it steps through the long grass. Like its striped kin it has the wrong teeth for a deer — sharp, interlocking, and clearly not for grazing. It watches you with patient dark eyes right up until the moment it decides not to."
 

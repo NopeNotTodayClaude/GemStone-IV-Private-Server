@@ -1,5 +1,5 @@
 -- Creature: spotted lynx
--- Zone: Rambling Meadows  |  Level: 6
+-- Zone: Yander's Farm / Turnip Patch  |  Level: 6
 local Creature = {}
 
 Creature.id              = 9109
@@ -45,50 +45,42 @@ Creature.crumbles      = false
 Creature.decay_message = ""
 
 Creature.spawn_rooms = {
-    5995,
-    5996,
-    5997,
-    5998,
-    5999,
-    6000,
-    6001,
-    6002,
-    6003,
-    6004,
-    6005,
-    6006,
-    6007,
-    6008,
-    6009,
     6027,
     6028,
     6029,
-    6030
-    }
+    6030,
+    6031,
+    6032,
+    6033,
+    6034,
+    6035,
+    6036,
+    6037,
+    6038,
+    6039,
+    6040
+}
 Creature.roam_rooms = {
-    5995,
-    5996,
-    5997,
-    5998,
-    5999,
-    6000,
-    6001,
-    6002,
-    6003,
-    6004,
-    6005,
-    6006,
-    6007,
-    6008,
-    6009,
-    5991,
-    5992,
-    5993,
+    6024,
     6027,
     6028,
     6029,
-    6030
-    }
+    6030,
+    6031,
+    6032,
+    6033,
+    6034,
+    6035,
+    6036,
+    6037,
+    6038,
+    6039,
+    6040,
+    6041,
+    6042,
+    6043,
+    6044
+}
 
 Creature.roam_chance     = 25
 Creature.respawn_seconds = 240

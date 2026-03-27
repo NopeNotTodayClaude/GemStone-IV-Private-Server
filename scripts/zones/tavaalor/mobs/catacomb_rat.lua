@@ -68,11 +68,17 @@ Creature.description = "The catacomb rat is a hairless, pale-skinned creature th
 -- Mid-depth rooms.  Catacomb rats push deeper than fanged rodents.
 -- Found from the Sewers inward; rare in the uppermost tunnels.
 Creature.spawn_rooms = {
-    -- Not yet assigned: zone not built out
+    5920, 5921, 5922,
+    5925, 5926, 5927, 5928, 5929,
+    5932, 5933, 5936, 5939,
+    5945, 5946, 5947
 }
 
 Creature.roam_rooms = {
-    -- Not yet assigned
+    5920, 5921, 5922, 5923,
+    5925, 5926, 5927, 5928, 5929,
+    5930, 5931, 5932, 5933, 5936, 5939,
+    5943, 5945, 5946, 5947
 }
 
 Creature.roam_chance     = 35

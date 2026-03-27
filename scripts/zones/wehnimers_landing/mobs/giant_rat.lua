@@ -75,11 +75,7 @@ Creature.spawn_rooms = {
     3974,
     3975,
     3976,
-    3977,
-    5909,
-    5910,
-    5911,
-    5912
+    3977
     }
 Creature.roam_rooms = {
     3938,
@@ -121,11 +117,7 @@ Creature.roam_rooms = {
     3974,
     3975,
     3976,
-    3977,
-    5909,
-    5910,
-    5911,
-    5912
+    3977
     }
 Creature.roam_chance     = 30
 Creature.respawn_seconds = 150

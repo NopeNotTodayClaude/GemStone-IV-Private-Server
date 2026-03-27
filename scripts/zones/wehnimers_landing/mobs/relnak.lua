@@ -35,10 +35,14 @@ Creature.crumbles      = false
 Creature.decay_message = ""
 -- Rooms 5900-5940 are reserved for fanged_rodent only (Ta'Vaalor catacombs).
 -- Assign proper WL catacomb room IDs here when confirmed.
-Creature.spawn_rooms = {}
-Creature.roam_rooms  = {}
+Creature.spawn_rooms = {
+    2268, 2269, 2270, 2271, 2272, 2273, 2274, 2275, 2276, 2277, 2278
+}
+Creature.roam_rooms  = {
+    2267, 2268, 2269, 2270, 2271, 2272, 2273, 2274, 2275, 2276, 2277, 2278, 2279, 2280
+}
 Creature.roam_chance     = 25
 Creature.respawn_seconds = 180
-Creature.max_count       = 0
+Creature.max_count       = 2
 Creature.description = "The relnak is an ungainly, bipedal creature about the height of a child, with overlarge hands and a flat, disk-like face dominated by a wide mouth and small, closely-set eyes.  Pale grey-brown skin has the faintly moist quality of cave-dwellers, and it moves with a shuffling gait broken by occasional bursts of surprising speed."
 return Creature
