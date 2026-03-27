@@ -117,6 +117,49 @@ def load_existing_regions(path: str) -> Dict[str, dict]:
     return data.get("maps") or {}
 
 
+def load_local_room_exit_overrides(root_dir: str) -> Dict[int, Dict[str, int]]:
+    overrides: Dict[int, Dict[str, int]] = {}
+    rooms_root = os.path.join(root_dir, "scripts", "zones")
+    if not os.path.isdir(rooms_root):
+        return overrides
+
+    room_id_re = re.compile(r"Room\.id\s*=\s*(\d+)")
+    exits_block_re = re.compile(r"Room\.exits\s*=\s*\{(.*?)\}", re.DOTALL)
+    exit_line_re = re.compile(r"([a-zA-Z0-9_]+)\s*=\s*(\d+)")
+
+    for zone_name in os.listdir(rooms_root):
+        zone_dir = os.path.join(rooms_root, zone_name)
+        rooms_dir = os.path.join(zone_dir, "rooms")
+        if not os.path.isdir(rooms_dir):
+            continue
+        for file_name in os.listdir(rooms_dir):
+            if not file_name.lower().endswith(".lua"):
+                continue
+            path = os.path.join(rooms_dir, file_name)
+            try:
+                with open(path, "r", encoding="utf-8-sig") as f:
+                    text = f.read()
+            except Exception:
+                continue
+            room_id_match = room_id_re.search(text)
+            exits_match = exits_block_re.search(text)
+            if not room_id_match or not exits_match:
+                continue
+            try:
+                room_id = int(room_id_match.group(1))
+            except ValueError:
+                continue
+            exits: Dict[str, int] = {}
+            for key, target in exit_line_re.findall(exits_match.group(1)):
+                try:
+                    exits[str(key).strip()] = int(target)
+                except ValueError:
+                    continue
+            if exits:
+                overrides[room_id] = exits
+    return overrides
+
+
 def build_from_lich_json(path: str) -> Tuple[Dict[int, dict], Dict[str, dict]]:
     data = load_json(path)
     if not isinstance(data, list):
@@ -188,6 +231,56 @@ def build_from_lich_json(path: str) -> Tuple[Dict[int, dict], Dict[str, dict]]:
     return rooms, regions
 
 
+def apply_local_exit_overrides(rooms: Dict[int, dict], overrides: Dict[int, Dict[str, int]]) -> None:
+    for rid, local_exits in overrides.items():
+        room = rooms.get(rid)
+        if not room or not local_exits:
+            continue
+
+        existing_edges = list(room.get("edges") or [])
+        edge_by_target = {int(edge.get("to")): edge for edge in existing_edges if edge.get("to") is not None}
+        rebuilt_edges = []
+        used_targets = set()
+
+        for key, target_id in local_exits.items():
+            command = key.replace("_", " ")
+            edge = edge_by_target.get(target_id)
+            if edge:
+                edge = dict(edge)
+                edge["key"] = key
+                edge["command"] = command
+                rebuilt_edges.append(edge)
+            else:
+                rebuilt_edges.append({
+                    "to": target_id,
+                    "command": command,
+                    "key": key,
+                    "cost": 0.2,
+                })
+            used_targets.add(target_id)
+
+        for edge in existing_edges:
+            try:
+                target_id = int(edge.get("to"))
+            except (TypeError, ValueError):
+                continue
+            if target_id in used_targets:
+                continue
+            rebuilt_edges.append(edge)
+
+        room["edges"] = rebuilt_edges
+        rebuilt_exits: Dict[str, int] = {}
+        for edge in rebuilt_edges:
+            key = str(edge.get("key") or "").strip()
+            try:
+                target_id = int(edge.get("to"))
+            except (TypeError, ValueError):
+                continue
+            if key:
+                rebuilt_exits.setdefault(key, target_id)
+        room["exits"] = rebuilt_exits
+
+
 def merge_rooms(base_rooms: Dict[int, dict], lich_rooms: Dict[int, dict]) -> Dict[str, dict]:
     merged: Dict[str, dict] = {}
     all_ids = sorted(set(base_rooms) | set(lich_rooms))
@@ -239,6 +332,8 @@ def main():
     base_rooms = load_existing_graph(args.base_graph)
     base_regions = load_existing_regions(args.base_regions)
     lich_rooms, lich_regions = build_from_lich_json(lich_json_path)
+    local_exit_overrides = load_local_room_exit_overrides(ROOT_DIR)
+    apply_local_exit_overrides(lich_rooms, local_exit_overrides)
 
     merged_rooms = merge_rooms(base_rooms, lich_rooms)
     merged_regions = merge_regions(base_regions, lich_regions, set(lich_rooms))

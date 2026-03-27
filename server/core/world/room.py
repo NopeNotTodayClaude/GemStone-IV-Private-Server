@@ -7,6 +7,8 @@ import os
 import logging
 from typing import Dict, Optional, List
 
+from server.core.world.lich_wayto import enrich_room_from_lich_wayto
+
 log = logging.getLogger(__name__)
 
 # Direction aliases for player convenience
@@ -56,6 +58,8 @@ class Room:
         self.terrain = ""
         self.tags: List[str] = []
         self.objects: List[dict] = []
+        self.lich_exit_aliases: Dict[str, int] = {}
+        self.lich_preferred_exit_names: Dict[int, str] = {}
 
     @classmethod
     def from_db_row(cls, row: dict, zone) -> 'Room':
@@ -88,6 +92,7 @@ class Room:
                     room.tags = [str(tag) for tag in parsed if tag is not None]
             except Exception:
                 room.tags = []
+        enrich_room_from_lich_wayto(room)
         return room
 
     @classmethod
@@ -118,6 +123,7 @@ class Room:
         # Runtime set: directions revealed to specific sessions this server session
         # { direction: set(character_id) }  — populated by cmd_search
         room._revealed_hidden_exits = {}
+        enrich_room_from_lich_wayto(room)
 
         if room.id == 0:
             log.warning("Room in %s has id=0, may be template", filepath)
@@ -235,14 +241,7 @@ class Room:
 
         # Show exits — include any hidden exits this session has revealed
         exit_type = "Obvious exits" if self.indoor else "Obvious paths"
-        all_exit_names = sorted(self.exits.keys())
-
-        if session:
-            visible_hidden = self.get_visible_hidden_exits(session)
-            for key in sorted(visible_hidden.keys()):
-                # Display the exit verb without go_ prefix if present
-                display = key[3:] if key.startswith("go_") else key
-                all_exit_names.append(f"{display} (hidden path)")
+        all_exit_names = self.get_display_exit_names(session)
 
         if all_exit_names:
             lines.append(f"{exit_type}: {', '.join(all_exit_names)}")
@@ -261,6 +260,10 @@ class Room:
         go_key = f"go_{direction}"
         if go_key in self.exits:
             return self.exits[go_key]
+        if direction in self.lich_exit_aliases:
+            return self.lich_exit_aliases[direction]
+        if go_key in self.lich_exit_aliases:
+            return self.lich_exit_aliases[go_key]
         return None
 
     @staticmethod
@@ -300,6 +303,43 @@ class Room:
                 break
         return normalized.replace("_", " ")
 
+    def get_display_exit_names(self, session=None) -> List[str]:
+        """Return visible exit labels, preferring Lich labels for mismatched rooms."""
+        target_to_keys: Dict[int, List[str]] = {}
+        for key, target in self.exits.items():
+            target_to_keys.setdefault(target, []).append(key)
+
+        visible_keys: List[str] = []
+        for target_room_id, local_keys in target_to_keys.items():
+            has_local_special = any(
+                key.startswith(("go_", "climb_", "swim_"))
+                for key in local_keys
+            )
+            preferred = self.lich_preferred_exit_names.get(target_room_id)
+            if preferred and not has_local_special:
+                visible_keys.append(preferred)
+            else:
+                visible_keys.extend(local_keys)
+
+        for alias_key, target_room_id in self.lich_exit_aliases.items():
+            if target_room_id not in target_to_keys:
+                visible_keys.append(alias_key)
+
+        display_names = [self.display_exit_name(key) for key in visible_keys]
+
+        if session:
+            visible_hidden = self.get_visible_hidden_exits(session)
+            for key in sorted(visible_hidden.keys()):
+                display_names.append(self.display_exit_name(key) + " (hidden path)")
+
+        seen = set()
+        ordered: List[str] = []
+        for name in sorted(display_names):
+            if name and name not in seen:
+                ordered.append(name)
+                seen.add(name)
+        return ordered
+
     def find_exit_matches(self, direction: str, session=None) -> Dict[str, int]:
         """
         Return all exits matching the player's input, including revealed
@@ -313,6 +353,10 @@ class Room:
         for key, target_id in self.exits.items():
             if direction in self._exit_aliases(key):
                 matches[key] = target_id
+
+        for key, target_id in self.lich_exit_aliases.items():
+            if direction in self._exit_aliases(key):
+                matches.setdefault(key, target_id)
 
         if session:
             char_id = getattr(session, "character_id", None)

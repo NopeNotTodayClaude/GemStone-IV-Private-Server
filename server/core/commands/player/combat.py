@@ -1255,6 +1255,13 @@ async def cmd_search(session, cmd, args, server):
     if not room:
         return
 
+    search_target = str(args or "").strip().lower()
+    search_key = "search"
+    if search_target:
+        normalized_target = search_target.replace("-", "_")
+        normalized_target = "_".join(normalized_target.split())
+        search_key = f"search_{normalized_target}"
+
     cfg   = getattr(server, "perception_cfg", {})
     level = getattr(session, "level", 1)
 
@@ -1269,6 +1276,10 @@ async def cmd_search(session, cmd, args, server):
         sense_thresh   = cfg.get("sense_threshold", 15)
 
         for key, he in hidden.items():
+            trigger = str(he.get("search_trigger") or "search").strip().lower()
+            if trigger != search_key:
+                continue
+
             # Skip already-revealed exits for this session
             char_id  = getattr(session, "character_id", None)
             revealed = getattr(room, "_revealed_hidden_exits", {})

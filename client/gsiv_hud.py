@@ -87,6 +87,9 @@ PATHFIND_BLOCKED_EXIT_KEYS = {
     "go_burghal",
 }
 
+PATHFIND_FALLBACK_MS = 150
+PATHFIND_READY_BUFFER_MS = 20
+
 # ── FORCED PANEL LAYOUT ──────────────────────────────────────────────────────
 # Left zone:  status (top, small) + room (mid) + experience (bottom)
 # Right zone: map only — takes the entire right column top to bottom
@@ -2450,6 +2453,13 @@ class HUDApp:
                                font=("Courier New", 9), bd=1, relief="groove")
         frame.pack(fill="both", expand=True, padx=4, pady=2)
 
+        top_bar = tk.Frame(frame, bg=BG_PANEL)
+        top_bar.pack(fill="x", side="top", padx=2, pady=(1, 0))
+        tk.Button(top_bar, text="Go2", fg=TEXT_MAIN, bg=BG_INPUT,
+                  font=("Courier New", 8, "bold"), relief="flat", bd=0, padx=8,
+                  activebackground=BORDER_CLR,
+                  command=self._show_go2_dialog).pack(side="left", padx=2, pady=1)
+
         btn_bar = tk.Frame(frame, bg=BG_PANEL)
         btn_bar.pack(fill="x", side="bottom")
         tk.Button(btn_bar, text="⟳ Reload annotations", fg=TEXT_DIM, bg=BG_INPUT,
@@ -4484,9 +4494,37 @@ class HUDApp:
             # Now insert each exit, making known ones clickable
             parts = clean[label_end:].rstrip(".")
             tokens = [p.strip() for p in parts.split(",") if p.strip()]
-            for i, token in enumerate(tokens):
-                key = token.lower()
-                if key in live_exits or key in {"north", "south", "east", "west", "northeast", "northwest", "southeast", "southwest", "up", "down", "out"}:
+            token_pairs = []
+            for token in tokens:
+                lookup = re.sub(r"\s*\(hidden path\)\s*$", "", token, flags=re.I).strip()
+                token_pairs.append((token, lookup))
+            compass = {"north", "south", "east", "west", "northeast", "northwest", "southeast", "southwest", "up", "down", "out"}
+            token_cmds: Dict[str, str] = {}
+            unresolved_special_tokens: List[str] = []
+            ordered_specials: List[Tuple[str, str]] = []
+            if self._current_room_id is not None:
+                room = self.graph.get(self._current_room_id)
+                if room:
+                    exits = room.get("exits", {})
+                    for gkey, nid in exits.items():
+                        cmd = gkey.replace("_", " ")
+                        if gkey not in compass:
+                            ordered_specials.append((gkey, cmd))
+            for _raw_token, lookup_token in token_pairs:
+                key = lookup_token.lower()
+                if key in live_exits:
+                    val = live_exits.get(key)
+                    token_cmds[key] = val[1] if isinstance(val, tuple) else key
+                elif key in compass:
+                    token_cmds[key] = key
+                else:
+                    unresolved_special_tokens.append(key)
+
+            for token_key in unresolved_special_tokens:
+                token_cmds[token_key] = f"go {token_key}"
+            for i, (token, lookup_token) in enumerate(token_pairs):
+                key = lookup_token.lower()
+                if key in token_cmds:
                     # Unique tag for this exit occurrence
                     safe_key = re.sub(r"[^a-z0-9_]+", "_", key)
                     tag_name = f"{self._new_inline_tag('exit')}_{safe_key}_{i}"
@@ -4494,9 +4532,7 @@ class HUDApp:
                                              foreground=ACCENT_CYN,
                                              font=("Courier New", self._font_size, "underline"),
                                              underline=True)
-                    # live_exits[key] = (target_room_id, cmd_to_send) or legacy int
-                    val = live_exits.get(key)
-                    cmd_to_send = val[1] if isinstance(val, tuple) else key
+                    cmd_to_send = token_cmds[key]
                     def _make_cmd(cmd=cmd_to_send):
                         return lambda _e: (self._send(cmd),
                                            self._append(f"> {cmd}\n", "prompt"))
@@ -4508,7 +4544,7 @@ class HUDApp:
                     self._text.insert("end", token, tag_name)
                 else:
                     self._text.insert("end", token, "c_" + ACCENT_CYN.lstrip("#"))
-                if i < len(tokens) - 1:
+                if i < len(token_pairs) - 1:
                     self._text.insert("end", ", ", "c_" + ACCENT_CYN.lstrip("#"))
         else:
             # Fallback: render as normal colored line
@@ -5295,16 +5331,17 @@ class HUDApp:
                         part = part.strip().lower()
                         if not part:
                             continue
-                        if part in suffix_map:
-                            cmd, nid = suffix_map[part]
-                            self._live_exits[part] = (nid, cmd)
+                        lookup_part = re.sub(r"\s*\(hidden path\)\s*$", "", part, flags=re.I).strip()
+                        if lookup_part in suffix_map:
+                            cmd, nid = suffix_map[lookup_part]
+                            self._live_exits[lookup_part] = (nid, cmd)
                         else:
                             # compass dirs — cmd == part
-                            gkey = part.replace(" ", "_")
+                            gkey = lookup_part.replace(" ", "_")
                             if gkey in exits:
-                                self._live_exits[part] = (exits[gkey], part)
-                            elif part in exits:
-                                self._live_exits[part] = (exits[part], part)
+                                self._live_exits[lookup_part] = (exits[gkey], lookup_part)
+                            elif lookup_part in exits:
+                                self._live_exits[lookup_part] = (exits[lookup_part], lookup_part)
             # Render the exits line with clickable direction links
             self._append_exits_line(raw, self._live_exits)
             return  # already appended, skip normal display below
@@ -5424,7 +5461,7 @@ class HUDApp:
         title = self._current_room_title or (room.get("title", f"Room #{room_id}") if room else f"Room #{room_id}")
         zone  = room.get("zone_name", "Unknown Zone") if room else "Unknown Zone"
         map_zone = self._map._region_name_for_room(room_id) if hasattr(self._map, "_region_name_for_room") else zone
-        audio_zone = map_zone or zone
+        audio_zone = self._resolve_audio_zone(title, zone, map_zone)
 
         # Room panel has been removed — store for internal use only
         self._current_room_title = title
@@ -5454,6 +5491,32 @@ class HUDApp:
             self.root.after(1200, lambda: self._telnet and not self._sync_connected and self._telnet.send("health\r\n"))
             self.root.after(2200, lambda: self._telnet and not self._sync_connected and self._telnet.send("exp\r\n"))
             self.root.after(3000, lambda: self._telnet and not self._sync_connected and self._telnet.send("stance\r\n"))
+
+    def _resolve_audio_zone(self, title: str, zone: str, map_zone: str) -> str:
+        rules = {}
+        if self._audio:
+            rules = self._audio._rules.get("music", {}).get("zones", {}) or {}
+        candidates: List[str] = []
+        for value in (map_zone, zone, title):
+            text = str(value or "").strip()
+            if not text:
+                continue
+            candidates.append(text)
+            if text.startswith("[") and "," in text:
+                inner = text.strip("[]")
+                candidates.append(inner.split(",", 1)[0].strip())
+            if text.lower().startswith("the "):
+                candidates.append(text[4:])
+        if "ta'vaalor" in str(title).lower() or "ta'vaalor" in str(zone).lower():
+            candidates.insert(0, "Ta'Vaalor")
+        seen = set()
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            if candidate in rules:
+                return candidate
+        return zone or map_zone or title
 
     # ════════════════════════════════════════════
     # Command input
@@ -5653,6 +5716,81 @@ class HUDApp:
             label = f"#{target_id}"
         self._start_pathfind_to(target_id, label=label)
 
+    def _show_go2_dialog(self):
+        popup = tk.Toplevel(self.root)
+        popup.title("Go2")
+        popup.configure(bg=BG_PANEL)
+        popup.transient(self.root)
+        popup.resizable(False, False)
+        popup.grab_set()
+
+        tk.Label(
+            popup,
+            text="Enter LICH id, room id, u####, or tag",
+            fg=TEXT_MAIN,
+            bg=BG_PANEL,
+            font=("Georgia", 10),
+        ).pack(padx=14, pady=(12, 6))
+
+        go2_var = tk.StringVar()
+        entry = tk.Entry(
+            popup,
+            textvariable=go2_var,
+            bg=BG_INPUT,
+            fg=TEXT_MAIN,
+            insertbackground=ACCENT_BLUE,
+            font=("Georgia", 10),
+            bd=0,
+            highlightthickness=1,
+            highlightcolor=ACCENT_BLUE,
+            highlightbackground=BORDER_CLR,
+            width=28,
+        )
+        entry.pack(fill="x", padx=14, pady=(0, 10), ipady=4)
+
+        btns = tk.Frame(popup, bg=BG_PANEL)
+        btns.pack(fill="x", padx=14, pady=(0, 12))
+
+        def _submit(_ev=None):
+            target = go2_var.get().strip()
+            popup.destroy()
+            if not target:
+                return "break"
+            self._append(f"> go2 {target}\n", "prompt")
+            self._handle_go2_command(f"go2 {target}")
+            return "break"
+
+        tk.Button(
+            btns,
+            text="Go",
+            bg="#1a2a1a",
+            fg="#aaddaa",
+            activebackground="#2a4a2a",
+            relief="flat",
+            bd=0,
+            padx=10,
+            pady=4,
+            cursor="hand2",
+            command=_submit,
+        ).pack(side="left")
+        tk.Button(
+            btns,
+            text="Cancel",
+            bg="#2a1a1a",
+            fg="#dd8888",
+            activebackground="#4a2a2a",
+            relief="flat",
+            bd=0,
+            padx=10,
+            pady=4,
+            cursor="hand2",
+            command=popup.destroy,
+        ).pack(side="right")
+
+        entry.bind("<Return>", _submit)
+        entry.bind("<Escape>", lambda _ev: popup.destroy())
+        entry.focus_set()
+
     def _infer_map_direction(self, dx: float, dy: float) -> Optional[str]:
         if abs(dx) <= 1 and abs(dy) <= 1:
             return None
@@ -5731,15 +5869,15 @@ class HUDApp:
 
         if self._pathfind_steps:
             self._pathfind_waiting = True
-            # Fallback: if the server sends no status/prompt tag within 250ms
+            # Fallback: if the server sends no status/prompt tag within a short window
             # (e.g. a move type we don't intercept), proceed anyway.
             # _nav_on_ready() cancels this timer if it fires first.
             if self._pathfind_timer:
                 self.root.after_cancel(self._pathfind_timer)
-            self._pathfind_timer = self.root.after(250, self._nav_fallback_tick)
+            self._pathfind_timer = self.root.after(PATHFIND_FALLBACK_MS, self._nav_fallback_tick)
 
     def _nav_fallback_tick(self):
-        """Fires 250ms after a step is sent if the server hasn't signalled RT status.
+        """Fires shortly after a step is sent if the server hasn't signalled RT status.
         Covers normal room moves where no GSIV tag or RT prompt is produced."""
         self._pathfind_timer = None
         if self._pathfind_waiting and self._pathfind_steps:
@@ -5761,8 +5899,8 @@ class HUDApp:
             self.root.after_cancel(self._pathfind_timer)
             self._pathfind_timer = None
         self._pathfind_waiting = False
-        # Tiny buffer (50ms) so room-change data finishes arriving before next send
-        self.root.after(50, self._do_next_step)
+        # Tiny buffer so room-change data finishes arriving before next send
+        self.root.after(PATHFIND_READY_BUFFER_MS, self._do_next_step)
 
     def _do_next_step_deferred(self):
         """Legacy shim — kept for safety, routes through new logic."""

@@ -180,17 +180,8 @@ async def cmd_look(session, cmd, args, server):
     # Show exits â€” hidden while dead (can't move anyway)
     if not getattr(session, 'is_dead', False):
         exit_type = 'Obvious exits' if room.indoor else 'Obvious paths'
-        if room.exits:
-            display_exits = []
-            for exit_name in sorted(room.exits.keys()):
-                if exit_name.startswith('go_'):
-                    display_exits.append(exit_name[3:].replace('_', ' '))
-                elif exit_name.startswith('climb_'):
-                    display_exits.append(exit_name[6:].replace('_', ' '))
-                elif exit_name.startswith('swim_'):
-                    display_exits.append(exit_name[5:].replace('_', ' '))
-                else:
-                    display_exits.append(exit_name)
+        display_exits = room.get_display_exit_names(session)
+        if display_exits:
             exit_names = ', '.join(display_exits)
             lines.append(room_exits(exit_type, exit_names))
         else:
