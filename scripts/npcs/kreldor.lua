@@ -9,7 +9,7 @@ NPC.name           = "Kreldor"
 NPC.article        = ""
 NPC.title          = "the weapon trainer"
 NPC.description    = "A battle-scarred elven veteran with a missing finger on his left hand and eyes that have seen enough combat to recognize a fighter at a glance."
-NPC.home_room_id   = 3521
+NPC.home_room_id   = 17215
 
 -- ── Capabilities ─────────────────────────────────────────────────────────────
 NPC.can_combat     = false

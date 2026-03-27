@@ -9,8 +9,7 @@ Room.description = "Thick grey stone walls clad a large structure that dominates
 Room.exits = {
     west                 = 3519,
     east                 = 3522,
-    go_resort            = 3668,
-    go_hall              = 17215,
+    go_entrance          = 17215,
 }
 
 Room.indoor = false
