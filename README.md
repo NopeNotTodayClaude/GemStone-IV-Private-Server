@@ -28,7 +28,9 @@ PIP Install pillow (For map click navigation)
 
 Setup
 ----------------------------------------------------------------------------------------------------
-Download entire project as a zip > extract where ever you like. Default server was built off of N:\GemStoneIVServer   I cannot tell you if AI planned for this to be on another drive or folder ahead of time (Yes this was made entirely with AI, zero human input other than "hey do this"). I would imagine you could ask Claude how to fix any directory problems you run into, being as he was one of the AI that built it (Codex AI also)
+Download entire project as a zip > extract where ever you like. Default server was built off of N:\GemStoneIVServer   
+
+I cannot tell you if AI planned for this to be on another drive or folder ahead of time (Yes this was made entirely with AI, zero human input other than "hey do this"). I would imagine you could ask Claude how to fix any directory problems you run into, being as he was one of the AI that built it (Codex AI also)
 
 Install MariaDB or MySQL.
 
