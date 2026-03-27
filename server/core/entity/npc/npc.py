@@ -78,7 +78,7 @@ _SERVICE_DIALOGUE_FALLBACKS = {
     "guild": {
         "guild": "Guild administration exists here, but the full guild backend still needs to be hooked up.",
         "join": "Joining and rank handling will need the proper guild system before I can process it.",
-        "bounty": "Guild and bounty paperwork belongs here, but the full backend is not live yet.",
+        "bounty": "Taskmasters can register you, issue cull, gem, skin, forage, heirloom, bandit, boss, escort, and rescue contracts, review rank, record check-ins, and close completed bounties.",
         "default": 'The clerk gives you a measuring look.  "Guild business?"',
     },
     "registrar": {

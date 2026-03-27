@@ -56,7 +56,7 @@ from server.core.commands.player.party import cmd_party
 from server.core.commands.player.esp import cmd_esp, cmd_think, cmd_chat
 from server.core.commands.player.foraging import cmd_forage
 from server.core.commands.player.crafting import cmd_artisan, cmd_fletching, cmd_cobbling, cmd_cut, cmd_measure
-from server.core.commands.player.guild import cmd_gld, cmd_questlog, cmd_questslog, cmd_answer
+from server.core.commands.player.guild import cmd_gld, cmd_questlog, cmd_questslog, cmd_answer, cmd_bounty
 
 log = logging.getLogger(__name__)
 
@@ -194,6 +194,7 @@ class CommandRouter:
         self.register("quest", cmd_questlog)
         self.register("quests", cmd_questslog)
         self.register("answer", cmd_answer)
+        self.register("bounty", cmd_bounty)
 
         # Free-form custom emote — always available
         self.register("emote", cmd_emote, aliases=["em"])

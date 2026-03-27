@@ -598,9 +598,17 @@ def _extend_quest_actions(actions: list[dict], seen: set[tuple[str, str, bool]],
     npc_name = getattr(npc, "name", "npc")
     authority = getattr(guild_engine := getattr(server, "guild", None), "_get_adventurer_authority", lambda _npc: None)(npc) if guild_engine else None
     if authority:
+        add("Status", "bounty status")
         add("Register", f"ask {npc_name} about register")
         add("Bounty", f"ask {npc_name} about bounty")
         add("Rank", f"ask {npc_name} about rank")
+        add("Check-in", f"ask {npc_name} about checkin")
+        add("Vouchers", f"ask {npc_name} about vouchers")
+        add("Easier", f"ask {npc_name} about easier")
+        add("Harder", f"ask {npc_name} about harder")
+        add("Remove", f"ask {npc_name} about remove")
+        add("Swap", f"ask {npc_name} about swap")
+        add("Share...", "bounty add ", prefill=True)
 
     if not offers and not related:
         return

@@ -433,6 +433,7 @@ async def cmd_forage(session, cmd, args, server):
     )
     if getattr(server, "guild", None):
         try:
+            await server.guild.record_bounty_forage(session, target)
             await server.guild.record_event(session, "forage_success")
         except Exception:
             pass

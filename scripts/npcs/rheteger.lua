@@ -22,9 +22,11 @@ NPC.is_invasion    = false
 
 NPC.greeting       = "reviews a contract, then flicks his attention to you.  'Looking for bounty work?'"
 NPC.dialogues = {
-    bounty = "The Guild issues practical work, not heroic fantasies.  When proper contracts are in order, I'll have something suited to your level.",
+    bounty = "The Guild issues practical work, not heroic fantasies.  Ask about bounty and I'll issue cull, gem, skin, forage, escort, rescue, bandit, boss, or heirloom recovery work if your record supports it.",
     work = "If you want civic errands, see the town clerk.  If you want harder work, see me.",
     guild = "The Guild pays for competence.  It has less patience for storytelling.",
+    vouchers = "Swaps cost vouchers.  Check in and finish your contracts if you want the Guild to trust you with more latitude.",
+    checkin = "I can mark your check-in right here.  It keeps your guild record current.",
     default = "Rheteger folds his hands.  'Ask plainly and I'll answer plainly.'",
 }
 NPC.ambient_emotes = {

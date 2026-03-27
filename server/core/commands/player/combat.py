@@ -1306,6 +1306,12 @@ async def cmd_search(session, cmd, args, server):
                 # Close enough to feel something, not enough to see it
                 sensed_exits.append(key)
 
+    if getattr(server, "guild", None):
+        try:
+            await server.guild.maybe_complete_search_bounty(session)
+        except Exception:
+            pass
+
     # ── Phase 2: Creature loot ────────────────────────────────────────────
     room_id = room.id
     dead    = server.creatures.get_dead_creatures_in_room(room_id)
@@ -1645,6 +1651,11 @@ async def cmd_skin(session, cmd, args, server):
                 f"No space remaining! {creature.skin} was left on the ground.",
                 TextPresets.WARNING
             ))
+        if getattr(server, "guild", None):
+            try:
+                await server.guild.record_bounty_skin(session, skin_data)
+            except Exception:
+                pass
     else:
         await session.send_line(
             f"You attempt to skin {creature.full_name} but make a mess of it."

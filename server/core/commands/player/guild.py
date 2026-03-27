@@ -1343,6 +1343,74 @@ async def maybe_handle_adventurer_guild_npc_response(session, npc, topic, server
         return False
 
 
+async def cmd_bounty(session, cmd, args, server):
+    """BOUNTY - Adventurer's Guild contract summary and taskmaster controls."""
+    engine = getattr(server, "guild", None)
+    if not engine:
+        await session.send_line("The Adventurer's Guild ledger is unavailable right now.")
+        return
+
+    arg = (args or "").strip()
+    if not arg:
+        text = getattr(engine, "get_adventurer_status_text", lambda _s: "The Adventurer's Guild ledger is unavailable right now.")(session)
+        await session.send_line(text)
+        return
+
+    lower = arg.lower()
+    if lower in ("help", "menu"):
+        await session.send_line("BOUNTY supports: STATUS, REGISTER, CHECKIN, VOUCHERS, EASIER, HARDER, NORMAL, REMOVE, SWAP, ADD <person>.")
+        await session.send_line("Taskmasters can now issue cull, gem, skin, forage, heirloom, bandit, boss, escort, and rescue contracts where configured.")
+        return
+    if lower in ("status", "rank"):
+        await session.send_line(engine.get_adventurer_status_text(session))
+        return
+
+    npc, _authority = engine._get_adventurer_officer_in_room(session)
+    if lower == "register":
+        if not npc:
+            await session.send_line("You need to be standing with a taskmaster or clerk to register.")
+            return
+        await engine.handle_adventurer_guild_topic(session, npc, "register")
+        return
+    if lower in ("checkin", "check-in"):
+        if not npc:
+            await session.send_line("You need to be standing in an Adventurer's Guild office to check in.")
+            return
+        await engine.handle_adventurer_guild_topic(session, npc, "checkin")
+        return
+    if lower in ("vouchers", "voucher", "easier", "harder", "normal", "remove", "removal", "abandon", "cancel", "swap"):
+        if not npc:
+            await session.send_line("You need to be standing with a taskmaster or clerk for that.")
+            return
+        await engine.handle_adventurer_guild_topic(session, npc, lower)
+        return
+    if lower in ("bounty", "work", "assignment", "contract", "contracts", "turnin", "turn-in", "complete", "report"):
+        if not npc:
+            await session.send_line("You need to be standing with a taskmaster or clerk for that.")
+            return
+        await engine.handle_adventurer_guild_topic(session, npc, lower)
+        return
+
+    if lower.startswith("add "):
+        if not npc:
+            await session.send_line("You need to be standing with a taskmaster to share a contract.")
+            return
+        target_name = arg[4:].strip()
+        target = server.sessions.find_by_name(target_name)
+        if not target or not getattr(target, "current_room", None) or target.current_room.id != getattr(session.current_room, "id", 0):
+            await session.send_line("That adventurer is not here.")
+            return
+        ok, error, _row = await engine.share_adventurer_bounty(session, target, npc)
+        if not ok:
+            await session.send_line(error or "The guild ledger refuses to share that contract right now.")
+            return
+        await session.send_line(f"{target.character_name} is now on the same Adventurer's Guild contract.")
+        await target.send_line(f"{session.character_name} has added you to an Adventurer's Guild contract.")
+        return
+
+    await session.send_line("Unknown BOUNTY option.  Try BOUNTY HELP.")
+
+
 def get_quest_npc_response(session, npc, topic, server):
     """Provide dynamic generic quest responses for quest-aware NPCs."""
     quest_engine = getattr(server, "guild", None)

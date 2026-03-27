@@ -571,7 +571,9 @@ class Database:
         return self.get_character_adventurer_guild(character_id)
 
     def update_character_adventurer_guild(self, character_id, *, town_name=None, rank_level=None,
-                                          rank_title=None, rank_points=None, lifetime_bounties=None):
+                                          rank_title=None, rank_points=None, lifetime_bounties=None,
+                                          difficulty_preference=None, vouchers=None,
+                                          last_checkin_at=None, next_checkin_at=None):
         profile = self.ensure_character_adventurer_guild(character_id, town_name=town_name)
         if not profile:
             return None
@@ -586,10 +588,18 @@ class Database:
                     rank_title = COALESCE(%s, rank_title),
                     rank_points = COALESCE(%s, rank_points),
                     lifetime_bounties = COALESCE(%s, lifetime_bounties),
+                    difficulty_preference = COALESCE(%s, difficulty_preference),
+                    vouchers = COALESCE(%s, vouchers),
+                    last_checkin_at = COALESCE(%s, last_checkin_at),
+                    next_checkin_at = COALESCE(%s, next_checkin_at),
                     updated_at = CURRENT_TIMESTAMP
                 WHERE character_id = %s
                 """,
-                (town_name, rank_level, rank_title, rank_points, lifetime_bounties, character_id),
+                (
+                    town_name, rank_level, rank_title, rank_points, lifetime_bounties,
+                    difficulty_preference, vouchers, last_checkin_at, next_checkin_at,
+                    character_id,
+                ),
             )
             if rank_points is not None:
                 try:
@@ -654,7 +664,8 @@ class Database:
             conn.close()
 
     def assign_character_bounty(self, character_id, bounty_row, *, town_name=None,
-                                taskmaster_template_id=None, taskmaster_room_id=None, expires_hours=72):
+                                taskmaster_template_id=None, taskmaster_room_id=None, expires_hours=72,
+                                bounty_data=None, shared_from_character_id=None):
         conn = self._get_conn()
         try:
             cur = conn.cursor()
@@ -670,20 +681,21 @@ class Database:
             cur.execute(
                 """
                 INSERT INTO character_bounties (
-                    character_id, bounty_type, target, target_count, current_count, zone_id,
+                    character_id, bounty_type, bounty_key, target, target_count, current_count, zone_id,
                     town_name, taskmaster_template_id, taskmaster_room_id, target_template_id,
                     target_display_name, status, assigned_at, expires_at,
-                    reward_silver, reward_experience, reward_fame, reward_points
+                    reward_silver, reward_experience, reward_fame, reward_points, bounty_data, shared_from_character_id
                 ) VALUES (
-                    %s, %s, %s, %s, 0, NULL,
+                    %s, %s, %s, %s, %s, 0, NULL,
                     %s, %s, %s, %s,
                     %s, 'active', NOW(), DATE_ADD(NOW(), INTERVAL %s HOUR),
-                    %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s
                 )
                 """,
                 (
                     character_id,
                     str(bounty_row.get("type") or "cull"),
+                    str(bounty_row.get("key") or ""),
                     str(bounty_row.get("target_name") or bounty_row.get("target_template_id") or "target"),
                     int(bounty_row.get("target_count") or 1),
                     town_name,
@@ -696,6 +708,8 @@ class Database:
                     int(bounty_row.get("reward_experience") or 0),
                     int(bounty_row.get("reward_fame") or 0),
                     int(bounty_row.get("reward_points") or 0),
+                    json.dumps(_json_safe_snapshot(bounty_data or {})),
+                    int(shared_from_character_id) if shared_from_character_id else None,
                 ),
             )
             conn.commit()
@@ -717,6 +731,9 @@ class Database:
             conn.close()
 
     def record_character_bounty_kill(self, bounty_id, increment=1):
+        return self.record_character_bounty_progress(bounty_id, increment=increment)
+
+    def record_character_bounty_progress(self, bounty_id, increment=1):
         conn = self._get_conn()
         try:
             cur = conn.cursor()
@@ -771,6 +788,52 @@ class Database:
             return True
         except Exception as e:
             log.error("Failed to close bounty %s: %s", bounty_id, e)
+            return False
+        finally:
+            conn.close()
+
+    def clone_character_bounty(self, source_bounty, target_character_id, *, taskmaster_template_id=None, taskmaster_room_id=None):
+        if not source_bounty or not target_character_id:
+            return None
+        bounty_row = {
+            "type": source_bounty.get("bounty_type"),
+            "key": source_bounty.get("bounty_key"),
+            "target_name": source_bounty.get("target_display_name") or source_bounty.get("target"),
+            "target_count": int(source_bounty.get("target_count") or 1),
+            "target_template_id": source_bounty.get("target_template_id") or "",
+            "reward_silver": int(source_bounty.get("reward_silver") or 0),
+            "reward_experience": int(source_bounty.get("reward_experience") or 0),
+            "reward_fame": int(source_bounty.get("reward_fame") or 0),
+            "reward_points": int(source_bounty.get("reward_points") or 0),
+        }
+        bounty_data = source_bounty.get("bounty_data")
+        if isinstance(bounty_data, str) and bounty_data:
+            try:
+                bounty_data = json.loads(bounty_data)
+            except Exception:
+                bounty_data = {}
+        return self.assign_character_bounty(
+            int(target_character_id),
+            bounty_row,
+            town_name=source_bounty.get("town_name"),
+            taskmaster_template_id=taskmaster_template_id or source_bounty.get("taskmaster_template_id"),
+            taskmaster_room_id=taskmaster_room_id or source_bounty.get("taskmaster_room_id"),
+            bounty_data=bounty_data or {},
+            shared_from_character_id=source_bounty.get("character_id"),
+        )
+
+    def update_character_bounty_data(self, bounty_id, bounty_data):
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE character_bounties SET bounty_data = %s WHERE id = %s",
+                (json.dumps(_json_safe_snapshot(bounty_data or {})), int(bounty_id)),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            log.error("Failed to update bounty data for bounty %s: %s", bounty_id, e)
             return False
         finally:
             conn.close()

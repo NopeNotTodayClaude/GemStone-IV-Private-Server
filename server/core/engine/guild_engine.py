@@ -270,7 +270,8 @@ class GuildEngine:
             return False
 
         topic_l = (topic or "").strip().lower()
-        if topic_l in ("", "guild", "hello", "work", "assignment", "assignments", "contract", "contracts", "bounties"):
+        if topic_l in ("", "guild", "hello", "work", "assignment", "assignments", "contract", "contracts", "bounties",
+                       "escort", "rescue", "bandit", "boss", "gem", "gems", "skin", "skins", "forage", "foraging", "heirloom"):
             topic_l = "bounty"
 
         if topic_l in ("register", "registration", "join", "ledger"):
@@ -351,6 +352,651 @@ class GuildEngine:
             )
             return True
 
+        return False
+
+    def _get_adventurer_town(self, town_name: str):
+        config = self.get_adventurers_guild_config()
+        towns = config.get("towns") or {}
+        return towns.get(str(town_name or ""), {})
+
+    def _get_adventurer_officer_in_room(self, session, *, require_taskmaster=False):
+        room = getattr(session, "current_room", None)
+        npc_mgr = getattr(self.server, "npcs", None)
+        if not room or not npc_mgr:
+            return None, None
+        for npc in npc_mgr.get_npcs_in_room(room.id):
+            authority = self._get_adventurer_authority(npc)
+            if not authority:
+                continue
+            if require_taskmaster and str(authority.get("role") or "").lower() != "taskmaster":
+                continue
+            return npc, authority
+        return None, None
+
+    @staticmethod
+    def _normalize_text_list(value):
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple, set)):
+            return [str(v).strip() for v in value if str(v).strip()]
+        if isinstance(value, dict):
+            out = []
+            for key in sorted(value):
+                text = str(value.get(key) or "").strip()
+                if text:
+                    out.append(text)
+            return out
+        text = str(value or "").strip()
+        return [text] if text else []
+
+    @staticmethod
+    def _load_bounty_data(bounty_row):
+        if not bounty_row:
+            return {}
+        data = bounty_row.get("bounty_data") or {}
+        if isinstance(data, str):
+            try:
+                data = json.loads(data) if data else {}
+            except Exception:
+                data = {}
+        return data if isinstance(data, dict) else {}
+
+    def _build_bounty_data(self, bounty_row):
+        return {
+            "key": str(bounty_row.get("key") or ""),
+            "type": str(bounty_row.get("type") or "cull"),
+            "area": str(bounty_row.get("area") or ""),
+            "target_item_type": str(bounty_row.get("target_item_type") or ""),
+            "target_short_names": self._normalize_text_list(bounty_row.get("target_short_names")),
+            "target_nouns": self._normalize_text_list(bounty_row.get("target_nouns")),
+            "search_zone_names": self._normalize_text_list(bounty_row.get("search_zone_names")),
+            "search_room_ids": [int(x) for x in self._normalize_text_list(bounty_row.get("search_room_ids")) if str(x).isdigit()],
+            "destination_room_id": int(bounty_row.get("destination_room_id") or 0),
+            "destination_name": str(bounty_row.get("destination_name") or ""),
+            "report_room_id": int(bounty_row.get("report_room_id") or 0),
+            "phase": str(bounty_row.get("phase") or "assigned"),
+        }
+
+    def _pick_adventurer_bounty(self, town_name: str, level: int, *, difficulty="normal", exclude_key=None):
+        pool = self._get_adventurer_bounty_pool(town_name)
+        if exclude_key:
+            pool = [row for row in pool if str(row.get("key") or "") != str(exclude_key)]
+        if not pool:
+            return None
+        level = max(1, int(level or 1))
+        exact = [row for row in pool if int(row.get("min_level") or 1) <= level <= int(row.get("max_level") or 100)]
+        pool = exact or pool
+
+        def _distance(row):
+            low = int(row.get("min_level") or 1)
+            high = int(row.get("max_level") or 100)
+            if level < low:
+                return low - level
+            if level > high:
+                return level - high
+            return 0
+
+        def _midpoint(row):
+            return (int(row.get("min_level") or 1) + int(row.get("max_level") or 100)) / 2.0
+
+        diff_l = str(difficulty or "normal").strip().lower()
+        ranked = sorted(pool, key=lambda row: (_distance(row), abs(_midpoint(row) - level)))
+        if not ranked:
+            return None
+        if diff_l == "easier":
+            return sorted(ranked, key=lambda row: (_distance(row), _midpoint(row), int(row.get("target_count") or 1)))[0]
+        if diff_l == "harder":
+            return sorted(
+                ranked,
+                key=lambda row: (_distance(row), -_midpoint(row), -int(row.get("reward_points") or 0), -int(row.get("target_count") or 1)),
+            )[0]
+        return random.choice(ranked[: min(3, len(ranked))])
+
+    @classmethod
+    def _format_adventurer_bounty(cls, bounty_row):
+        if not bounty_row:
+            return "No active bounty."
+        data = cls._load_bounty_data(bounty_row)
+        bounty_type = str(bounty_row.get("bounty_type") or data.get("type") or "cull").lower()
+        target = bounty_row.get("target_display_name") or bounty_row.get("target") or "target"
+        cur = int(bounty_row.get("current_count") or 0)
+        goal = int(bounty_row.get("target_count") or 0)
+        area = str(data.get("area") or bounty_row.get("town_name") or "").strip()
+        status = str(bounty_row.get("status") or "active").lower()
+        ready = "  It is ready to turn in." if status == "completed" else ""
+        area_text = f" in {area}" if area else ""
+        if bounty_type == "cull":
+            return f"Contract: defeat {goal} {target}{area_text}.  Progress: {cur}/{goal}.{ready}"
+        if bounty_type == "gem":
+            return f"Contract: recover and sell {goal} gem{'s' if goal != 1 else ''}{area_text}.  Progress: {cur}/{goal}.{ready}"
+        if bounty_type == "skin":
+            return f"Contract: bring in {goal} skin{'s' if goal != 1 else ''}{area_text}.  Progress: {cur}/{goal}.{ready}"
+        if bounty_type == "forage":
+            return f"Contract: forage {goal} herb{'s' if goal != 1 else ''}{area_text}.  Progress: {cur}/{goal}.{ready}"
+        if bounty_type == "heirloom":
+            return f"Contract: search for {target}{area_text}.  Progress: {cur}/{goal}.{ready}"
+        if bounty_type == "bandit":
+            return f"Contract: break up {goal} bandit{'s' if goal != 1 else ''} by defeating {target}{area_text}.  Progress: {cur}/{goal}.{ready}"
+        if bounty_type == "boss":
+            return f"Contract: defeat the named threat {target}{area_text}.  Progress: {cur}/{goal}.{ready}"
+        if bounty_type == "escort":
+            dest = str(data.get("destination_name") or target).strip() or target
+            phase = str(data.get("phase") or "assigned").lower()
+            if phase in {"assigned", "outbound"}:
+                return f"Contract: carry the guild packet to {dest}{area_text}, then report back.  Progress: {cur}/{goal}.{ready}"
+            return f"Contract: return to the taskmaster and report after reaching {dest}.  Progress: {cur}/{goal}.{ready}"
+        if bounty_type == "rescue":
+            phase = str(data.get("phase") or "assigned").lower()
+            if phase in {"assigned", "search"}:
+                return f"Contract: locate {target}{area_text}, then return to the taskmaster.  Progress: {cur}/{goal}.{ready}"
+            return f"Contract: return to the taskmaster with news of {target}.  Progress: {cur}/{goal}.{ready}"
+        return f"Contract: complete {goal} task step{'s' if goal != 1 else ''} for {target}{area_text}.  Progress: {cur}/{goal}.{ready}"
+
+    def ensure_adventurer_registration(self, character_id: int, town_name: str):
+        db = getattr(self.server, "db", None)
+        if not db or not character_id:
+            return None
+        profile = db.ensure_character_adventurer_guild(character_id, town_name=town_name)
+        if not profile:
+            return None
+        points = int(profile.get("rank_points") or 0)
+        rank = self._adventurer_rank_entry(points)
+        return db.update_character_adventurer_guild(
+            character_id,
+            town_name=town_name,
+            rank_level=rank["rank"],
+            rank_title=rank["title"],
+            rank_points=points,
+            lifetime_bounties=int(profile.get("lifetime_bounties") or 0),
+            difficulty_preference=str(profile.get("difficulty_preference") or "normal"),
+            vouchers=int(profile.get("vouchers") or 0),
+            last_checkin_at=profile.get("last_checkin_at"),
+            next_checkin_at=profile.get("next_checkin_at"),
+        )
+
+    def get_adventurer_status_text(self, session):
+        profile = self._get_adventurer_profile(getattr(session, "character_id", None))
+        if not profile:
+            return "You are not yet registered with the Adventurer's Guild."
+        active = self.get_character_bounty(session.character_id)
+        rank_title = profile.get("rank_title") or "Associate"
+        points = int(profile.get("rank_points") or 0)
+        lifetime = int(profile.get("lifetime_bounties") or 0)
+        vouchers = int(profile.get("vouchers") or 0)
+        diff = str(profile.get("difficulty_preference") or "normal").capitalize()
+        msg = (
+            f"Rank: {rank_title}.  Guild points: {points}.  Completed contracts: {lifetime}.  "
+            f"Vouchers: {vouchers}.  Difficulty preference: {diff}."
+        )
+        if active:
+            msg += "  " + self._format_adventurer_bounty(active)
+        return msg
+
+    async def assign_adventurer_bounty(self, session, npc=None, *, exclude_key=None):
+        authority = self._get_adventurer_authority(npc) if npc else None
+        if not authority:
+            npc, authority = self._get_adventurer_officer_in_room(session, require_taskmaster=True)
+        if not authority:
+            return False, "You need to speak with a taskmaster for that.", None
+        profile = self.ensure_adventurer_registration(session.character_id, authority.get("town_name") or "")
+        if not profile:
+            return False, "The Adventurer's Guild ledger is unavailable right now.", None
+        current = self.get_character_bounty(session.character_id)
+        if current:
+            status = str(current.get("status") or "active").lower()
+            if status == "completed":
+                return False, "You already have a finished contract waiting to be turned in.", current
+            return False, "You already have an active bounty on the books.", current
+        bounty = self._pick_adventurer_bounty(
+            authority.get("town_name") or "",
+            getattr(session, "level", 1),
+            difficulty=profile.get("difficulty_preference") or "normal",
+            exclude_key=exclude_key,
+        )
+        if not bounty:
+            return False, "I do not have any contracts suited to you right now.", None
+        row = self.server.db.assign_character_bounty(
+            session.character_id,
+            bounty,
+            town_name=authority.get("town_name") or "",
+            taskmaster_template_id=authority.get("template_id") or "",
+            taskmaster_room_id=int(authority.get("room_id") or 0),
+            bounty_data=self._build_bounty_data(bounty),
+        )
+        if not row:
+            return False, "The guild contract board refuses to issue that bounty right now.", None
+        return True, None, row
+
+    async def _record_adventurer_bounty_progress(self, session, active, *, increment=1, complete_text=None):
+        updated = self.server.db.record_character_bounty_progress(int(active["id"]), increment=increment)
+        if not updated:
+            return None
+        cur = int(updated.get("current_count") or 0)
+        goal = int(updated.get("target_count") or 0)
+        if str(updated.get("status") or "").lower() == "completed":
+            await session.send_line(
+                colorize(
+                    complete_text or f"  Bounty complete: {updated.get('target_display_name') or updated.get('target')}.  Return to the taskmaster.",
+                    TextPresets.COMBAT_HIT,
+                )
+            )
+        else:
+            await session.send_line(colorize(f"  Bounty progress: {cur}/{goal}.", TextPresets.SYSTEM))
+        return updated
+
+    def _item_matches_bounty(self, active, item, *, expected_type=None):
+        if not active or not item:
+            return False
+        data = self._load_bounty_data(active)
+        bounty_type = str(active.get("bounty_type") or data.get("type") or "").lower()
+        if expected_type and bounty_type != expected_type:
+            return False
+        item_type = str(item.get("item_type") or "").lower()
+        short_name = str(item.get("short_name") or item.get("name") or "").strip().lower()
+        noun = str(item.get("noun") or "").strip().lower()
+        target_item_type = str(data.get("target_item_type") or "").lower()
+        target_short_names = [str(x).strip().lower() for x in data.get("target_short_names") or []]
+        target_nouns = [str(x).strip().lower() for x in data.get("target_nouns") or []]
+        if target_item_type and item_type != target_item_type:
+            return False
+        if target_short_names and short_name not in target_short_names:
+            return False
+        if target_nouns and noun not in target_nouns:
+            return False
+        return True
+
+    async def record_bounty_kill(self, session, creature):
+        if not getattr(session, "character_id", None) or not creature:
+            return None
+        active = self.get_character_bounty(session.character_id)
+        if not active or str(active.get("status") or "").lower() not in ("active", "completed"):
+            return None
+        bounty_type = str(active.get("bounty_type") or "").lower()
+        if bounty_type not in {"cull", "bandit", "boss"}:
+            return None
+        target_template = str(active.get("target_template_id") or "").strip().lower()
+        creature_template = str(getattr(creature, "template_id", "") or "").strip().lower()
+        if not target_template or target_template != creature_template:
+            return None
+        return await self._record_adventurer_bounty_progress(session, active)
+
+    async def record_bounty_sale(self, session, shop, item, npc=None):
+        if not getattr(session, "character_id", None):
+            return None
+        active = self.get_character_bounty(session.character_id)
+        if not active or str(active.get("status") or "").lower() not in ("active", "completed"):
+            return None
+        bounty_type = str(active.get("bounty_type") or "").lower()
+        if bounty_type not in {"gem", "skin"}:
+            return None
+        if not self._item_matches_bounty(active, item, expected_type=bounty_type):
+            return None
+        return await self._record_adventurer_bounty_progress(session, active)
+
+    async def record_bounty_skin(self, session, item):
+        if not getattr(session, "character_id", None):
+            return None
+        active = self.get_character_bounty(session.character_id)
+        if not active or str(active.get("status") or "").lower() not in ("active", "completed"):
+            return None
+        if str(active.get("bounty_type") or "").lower() != "skin":
+            return None
+        if not self._item_matches_bounty(active, item, expected_type="skin"):
+            return None
+        return await self._record_adventurer_bounty_progress(session, active)
+
+    async def record_bounty_forage(self, session, item):
+        if not getattr(session, "character_id", None):
+            return None
+        active = self.get_character_bounty(session.character_id)
+        if not active or str(active.get("status") or "").lower() not in ("active", "completed"):
+            return None
+        if str(active.get("bounty_type") or "").lower() != "forage":
+            return None
+        if not self._item_matches_bounty(active, item, expected_type="forage"):
+            return None
+        return await self._record_adventurer_bounty_progress(session, active)
+
+    def _search_bounty_matches_room(self, active, room):
+        if not active or not room:
+            return False
+        data = self._load_bounty_data(active)
+        room_id = int(getattr(room, "id", 0) or 0)
+        zone_name = str(getattr(room, "zone_name", "") or "").strip().lower()
+        search_room_ids = {int(x) for x in data.get("search_room_ids") or []}
+        search_zone_names = [str(x).strip().lower() for x in data.get("search_zone_names") or []]
+        return (search_room_ids and room_id in search_room_ids) or (search_zone_names and zone_name in search_zone_names)
+
+    async def maybe_complete_search_bounty(self, session):
+        if not getattr(session, "character_id", None):
+            return None
+        active = self.get_character_bounty(session.character_id)
+        if not active or str(active.get("status") or "").lower() not in ("active", "completed"):
+            return None
+        if str(active.get("bounty_type") or "").lower() != "heirloom":
+            return None
+        if not self._search_bounty_matches_room(active, getattr(session, "current_room", None)):
+            return None
+        return await self._record_adventurer_bounty_progress(
+            session,
+            active,
+            complete_text=f"  You uncover {active.get('target_display_name') or active.get('target')}.  Return to the taskmaster.",
+        )
+
+    async def maybe_complete_travel_bounty(self, session):
+        if not getattr(session, "character_id", None):
+            return None
+        active = self.get_character_bounty(session.character_id)
+        if not active or str(active.get("status") or "").lower() not in ("active", "completed"):
+            return None
+        bounty_type = str(active.get("bounty_type") or "").lower()
+        if bounty_type not in {"escort", "rescue"}:
+            return None
+
+        room = getattr(session, "current_room", None)
+        if not room:
+            return None
+
+        data = self._load_bounty_data(active)
+        room_id = int(getattr(room, "id", 0) or 0)
+        report_room_id = int(data.get("report_room_id") or active.get("taskmaster_room_id") or 0)
+        phase = str(data.get("phase") or ("outbound" if bounty_type == "escort" else "search")).lower()
+
+        if bounty_type == "escort":
+            destination_room_id = int(data.get("destination_room_id") or 0)
+            if phase in {"assigned", "outbound"} and destination_room_id and room_id == destination_room_id:
+                data["phase"] = "return"
+                self.server.db.update_character_bounty_data(int(active["id"]), data)
+                return await self._record_adventurer_bounty_progress(
+                    session,
+                    active,
+                    complete_text=f"  Delivery made at {data.get('destination_name') or 'your destination'}.  Return to the taskmaster for payment.",
+                )
+            if phase == "return" and report_room_id and room_id == report_room_id:
+                return await self._record_adventurer_bounty_progress(
+                    session,
+                    active,
+                    complete_text="  Escort report complete.  Your contract is ready to turn in.",
+                )
+            return None
+
+        if phase in {"assigned", "search"} and self._search_bounty_matches_room(active, room):
+            data["phase"] = "return"
+            self.server.db.update_character_bounty_data(int(active["id"]), data)
+            return await self._record_adventurer_bounty_progress(
+                session,
+                active,
+                complete_text=f"  You locate signs of {active.get('target_display_name') or active.get('target')}.  Return to the taskmaster.",
+            )
+        if phase == "return" and report_room_id and room_id == report_room_id:
+            return await self._record_adventurer_bounty_progress(
+                session,
+                active,
+                complete_text="  Rescue report complete.  Your contract is ready to turn in.",
+            )
+        return None
+
+    async def checkin_adventurer_guild(self, session, npc=None):
+        authority = self._get_adventurer_authority(npc) if npc else None
+        if not authority:
+            npc, authority = self._get_adventurer_officer_in_room(session)
+        if not authority:
+            return False, "You need to be at an Adventurer's Guild office to check in.", None
+        profile = self.ensure_adventurer_registration(session.character_id, authority.get("town_name") or "")
+        if not profile:
+            return False, "The Adventurer's Guild ledger is unavailable right now.", None
+        now = datetime.now()
+        next_due = profile.get("next_checkin_at")
+        if isinstance(next_due, datetime) and next_due > now:
+            return False, f"You have already checked in recently.  Come back after {next_due.strftime('%Y-%m-%d %H:%M')}.", profile
+        vouchers = int(profile.get("vouchers") or 0) + 1
+        profile = self.server.db.update_character_adventurer_guild(
+            session.character_id,
+            town_name=authority.get("town_name") or "",
+            vouchers=vouchers,
+            last_checkin_at=now,
+            next_checkin_at=now + timedelta(hours=12),
+        )
+        return True, None, profile
+
+    async def set_adventurer_difficulty(self, session, preference: str, npc=None):
+        authority = self._get_adventurer_authority(npc) if npc else None
+        if not authority:
+            npc, authority = self._get_adventurer_officer_in_room(session)
+        if not authority:
+            return False, "You need to speak with a taskmaster or clerk for that.", None
+        pref = str(preference or "normal").strip().lower()
+        if pref not in {"easier", "normal", "harder"}:
+            return False, "Valid difficulty preferences are EASIER, NORMAL, or HARDER.", None
+        profile = self.ensure_adventurer_registration(session.character_id, authority.get("town_name") or "")
+        if not profile:
+            return False, "The Adventurer's Guild ledger is unavailable right now.", None
+        profile = self.server.db.update_character_adventurer_guild(
+            session.character_id,
+            town_name=authority.get("town_name") or "",
+            difficulty_preference=pref,
+        )
+        return True, None, profile
+
+    async def remove_adventurer_bounty(self, session, npc=None):
+        authority = self._get_adventurer_authority(npc) if npc else None
+        if not authority:
+            npc, authority = self._get_adventurer_officer_in_room(session, require_taskmaster=True)
+        if not authority:
+            return False, "Only a taskmaster can remove a contract from your ledger.", None
+        active = self.get_character_bounty(session.character_id)
+        if not active:
+            return False, "You have no active Adventurer's Guild contract.", None
+        self.server.db.close_character_bounty(int(active["id"]))
+        return True, None, active
+
+    async def swap_adventurer_bounty(self, session, npc=None):
+        authority = self._get_adventurer_authority(npc) if npc else None
+        if not authority:
+            npc, authority = self._get_adventurer_officer_in_room(session, require_taskmaster=True)
+        if not authority:
+            return False, "Only a taskmaster can exchange a contract.", None
+        profile = self.ensure_adventurer_registration(session.character_id, authority.get("town_name") or "")
+        if not profile:
+            return False, "The Adventurer's Guild ledger is unavailable right now.", None
+        vouchers = int(profile.get("vouchers") or 0)
+        if vouchers < 1:
+            return False, "You need at least one bounty voucher to swap contracts.", None
+        active = self.get_character_bounty(session.character_id)
+        if not active:
+            return False, "You have no active contract to swap.", None
+        self.server.db.close_character_bounty(int(active["id"]))
+        profile = self.server.db.update_character_adventurer_guild(session.character_id, vouchers=max(0, vouchers - 1))
+        ok, error, row = await self.assign_adventurer_bounty(session, npc, exclude_key=active.get("bounty_key"))
+        if not ok:
+            return False, error, None
+        return True, None, {"bounty": row, "profile": profile}
+
+    async def share_adventurer_bounty(self, session, target_session, npc=None):
+        authority = self._get_adventurer_authority(npc) if npc else None
+        if not authority:
+            npc, authority = self._get_adventurer_officer_in_room(session, require_taskmaster=True)
+        if not authority:
+            return False, "Only a taskmaster can add another adventurer to your contract.", None
+        active = self.get_character_bounty(session.character_id)
+        if not active:
+            return False, "You have no active contract to share.", None
+        if self.get_character_bounty(target_session.character_id):
+            return False, f"{target_session.character_name} already has an active contract.", None
+        self.ensure_adventurer_registration(target_session.character_id, authority.get("town_name") or "")
+        row = self.server.db.clone_character_bounty(
+            active,
+            target_session.character_id,
+            taskmaster_template_id=authority.get("template_id") or "",
+            taskmaster_room_id=int(authority.get("room_id") or 0),
+        )
+        if not row:
+            return False, "The guild ledger refuses to add them to the contract right now.", None
+        return True, None, row
+
+    async def turn_in_adventurer_bounty(self, session, npc):
+        authority = self._get_adventurer_authority(npc)
+        if not authority:
+            return False, "This is not an Adventurer's Guild authority.", None
+        active = self.get_character_bounty(session.character_id)
+        if not active:
+            return False, "You have no active Adventurer's Guild contract.", None
+        if str(active.get("status") or "").lower() != "completed":
+            return False, self._format_adventurer_bounty(active), active
+
+        silver = int(active.get("reward_silver") or 0)
+        experience = int(active.get("reward_experience") or 0)
+        fame = int(active.get("reward_fame") or 0)
+        points = int(active.get("reward_points") or 0)
+        if silver:
+            session.silver = int(getattr(session, "silver", 0) or 0) + silver
+            if getattr(self.server, "db", None):
+                self.server.db.save_character_resources(
+                    session.character_id,
+                    getattr(session, "health_current", 100),
+                    getattr(session, "mana_current", 0),
+                    getattr(session, "spirit_current", 10),
+                    getattr(session, "stamina_current", 100),
+                    session.silver,
+                )
+        if experience and getattr(self.server, "experience", None):
+            await self.server.experience.award_xp_to_pool(
+                session,
+                experience,
+                source="bounty",
+                fame_detail_text=f"Completed bounty against {active.get('target_display_name') or active.get('target')}.",
+            )
+        if fame:
+            try:
+                from server.core.commands.player.info import award_fame
+                await award_fame(
+                    session,
+                    self.server,
+                    fame,
+                    "bounty_turnin",
+                    detail_text=f"Completed Adventurer's Guild bounty: {active.get('target_display_name') or active.get('target')}.",
+                    quiet=True,
+                )
+            except Exception:
+                log.exception("Failed to award explicit bounty fame")
+
+        profile = self.ensure_adventurer_registration(session.character_id, authority.get("town_name") or "")
+        current_points = int((profile or {}).get("rank_points") or 0)
+        current_rank = int((profile or {}).get("rank_level") or 1)
+        vouchers = int((profile or {}).get("vouchers") or 0)
+        lifetime = int((profile or {}).get("lifetime_bounties") or 0) + 1
+        new_points = current_points + points
+        rank = self._adventurer_rank_entry(new_points)
+        voucher_gain = 1 if lifetime % 5 == 0 else 0
+        if rank["rank"] > current_rank:
+            voucher_gain += 1
+        updated_profile = self.server.db.update_character_adventurer_guild(
+            session.character_id,
+            town_name=authority.get("town_name") or "",
+            rank_level=rank["rank"],
+            rank_title=rank["title"],
+            rank_points=new_points,
+            lifetime_bounties=lifetime,
+            vouchers=vouchers + voucher_gain,
+        )
+        self.server.db.close_character_bounty(int(active["id"]))
+        return True, None, {
+            "silver": silver,
+            "experience": experience,
+            "fame": fame,
+            "points": points,
+            "voucher_gain": voucher_gain,
+            "profile": updated_profile or profile,
+            "target": active.get("target_display_name") or active.get("target") or "target",
+        }
+
+    async def handle_adventurer_guild_topic(self, session, npc, topic: str):
+        authority = self._get_adventurer_authority(npc)
+        if not authority or not getattr(session, "character_id", None):
+            return False
+        topic_l = (topic or "").strip().lower()
+        if topic_l in ("", "guild", "hello", "work", "assignment", "assignments", "contract", "contracts", "bounties"):
+            topic_l = "bounty"
+        if topic_l in ("register", "registration", "join", "ledger"):
+            profile = self.ensure_adventurer_registration(session.character_id, authority.get("town_name") or "")
+            if not profile:
+                await session.send_line(npc_speech(npc.display_name, 'says, "The registration ledger is unavailable right now."'))
+                return True
+            await session.send_line(npc_speech(npc.display_name, f'says, "You are now registered with the Adventurer\'s Guild at {authority.get("town_name")}.  Current rank: {profile.get("rank_title") or "Associate"}."'))
+            return True
+        if topic_l in ("checkin", "check-in"):
+            ok, error, profile = await self.checkin_adventurer_guild(session, npc)
+            if error:
+                line = error
+            else:
+                line = f"Check-in recorded.  You now have {int(profile.get('vouchers') or 0)} vouchers on your record."
+            await session.send_line(npc_speech(npc.display_name, f'says, "{line}"'))
+            return True
+        if topic_l in ("voucher", "vouchers"):
+            profile = self.ensure_adventurer_registration(session.character_id, authority.get("town_name") or "")
+            count = int((profile or {}).get("vouchers") or 0)
+            await session.send_line(npc_speech(npc.display_name, f'says, "You currently have {count} bounty voucher{"s" if count != 1 else ""}.  Spend one to swap an active contract."'))
+            return True
+        if topic_l in ("easier", "harder", "normal"):
+            ok, error, profile = await self.set_adventurer_difficulty(session, topic_l, npc)
+            if error:
+                line = error
+            else:
+                line = f"Very well.  Your future contracts will lean {str(profile.get('difficulty_preference') or 'normal')}."
+            await session.send_line(npc_speech(npc.display_name, f'says, "{line}"'))
+            return True
+        if topic_l in ("remove", "removal", "abandon", "cancel"):
+            ok, error, active = await self.remove_adventurer_bounty(session, npc)
+            if error:
+                line = error
+            else:
+                line = f"The contract on {active.get('target_display_name') or active.get('target')} has been removed from your ledger."
+            await session.send_line(npc_speech(npc.display_name, f'says, "{line}"'))
+            return True
+        if topic_l in ("rank", "status"):
+            await session.send_line(npc_speech(npc.display_name, f'says, "{self.get_adventurer_status_text(session)}"'))
+            return True
+        if topic_l in ("swap", "trade", "exchange"):
+            ok, error, summary = await self.swap_adventurer_bounty(session, npc)
+            if error:
+                line = error
+            else:
+                line = f"Done.  One voucher has been spent.  {self._format_adventurer_bounty(summary.get('bounty'))}"
+            await session.send_line(npc_speech(npc.display_name, f'says, "{line}"'))
+            return True
+        if topic_l in ("share", "add", "partner"):
+            await session.send_line(npc_speech(npc.display_name, 'says, "Use BOUNTY ADD <person> while you are both standing here if you want to share your current contract."'))
+            return True
+        if topic_l in ("bounty", "work", "assignment", "contract", "contracts", "turnin", "turn-in", "complete"):
+            profile = self.ensure_adventurer_registration(session.character_id, authority.get("town_name") or "")
+            if not profile:
+                await session.send_line(npc_speech(npc.display_name, 'says, "The contract ledger is unavailable right now."'))
+                return True
+            active = self.get_character_bounty(session.character_id)
+            if active:
+                if str(active.get("status") or "").lower() == "completed":
+                    ok, error, summary = await self.turn_in_adventurer_bounty(session, npc)
+                    if not ok:
+                        await session.send_line(npc_speech(npc.display_name, f'says, "{error}"'))
+                        return True
+                    profile = summary.get("profile") or profile
+                    await session.send_line(npc_speech(npc.display_name, f'says, "Good work.  The contract on {summary.get("target")} is closed.  Rank: {profile.get("rank_title") or "Associate"}."'))
+                    if int(summary.get("silver") or 0):
+                        await session.send_line(colorize(f"  Bounty reward: {int(summary['silver'])} silver.", TextPresets.ITEM_NAME))
+                    if int(summary.get("points") or 0):
+                        await session.send_line(colorize(f"  Adventurer's Guild points: +{int(summary['points'])}.", TextPresets.SYSTEM))
+                    if int(summary.get("voucher_gain") or 0):
+                        await session.send_line(colorize(f"  Adventurer's Guild vouchers: +{int(summary['voucher_gain'])}.", TextPresets.SYSTEM))
+                    return True
+                await session.send_line(npc_speech(npc.display_name, f'says, "{self._format_adventurer_bounty(active)}"'))
+                return True
+            ok, error, row = await self.assign_adventurer_bounty(session, npc)
+            if not ok:
+                line = error or (self._format_adventurer_bounty(row) if row else "I have nothing for you.")
+                await session.send_line(npc_speech(npc.display_name, f'says, "{line}"'))
+                return True
+            await session.send_line(npc_speech(npc.display_name, f'says, "Very well.  {self._format_adventurer_bounty(row)}  Report back when it is done."'))
+            return True
         return False
 
     def handles_interaction(self, cmd: str) -> bool:

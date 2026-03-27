@@ -1351,6 +1351,11 @@ async def cmd_sell(session, cmd, args, server):
     sell_price = max(1, int(sell_item.get("value", 0) * eff_mult))
 
     inv_id = sell_item.get("inv_id")
+    if getattr(server, "guild", None):
+        try:
+            await server.guild.record_bounty_sale(session, shop, sell_item, npc)
+        except Exception:
+            pass
     if _is_pawn_shop(shop):
         _insert_item_into_pawn_backroom(server, shop, sell_item, session.character_name, session.character_id)
     if inv_id:
@@ -1416,6 +1421,11 @@ async def _sell_container_contents(session, server, shop, npc, container):
         # Sell it
         price = max(1, int((item.get("value") or 0) * eff_mult))
         inv_id = item.get("inv_id")
+        if getattr(server, "guild", None):
+            try:
+                await server.guild.record_bounty_sale(session, shop, item, npc)
+            except Exception:
+                pass
         if _is_pawn_shop(shop):
             _insert_item_into_pawn_backroom(server, shop, item, session.character_name, session.character_id)
         if inv_id:

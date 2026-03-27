@@ -37,6 +37,7 @@ def load_adventurers_guild(lua_engine) -> Optional[dict]:
         out = {
             "rank_thresholds": [],
             "authorities": {},
+            "towns": {},
             "bounties": {},
         }
 
@@ -61,6 +62,17 @@ def load_adventurers_guild(lua_engine) -> Optional[dict]:
                 "role": str(row.get("role") or "taskmaster").strip(),
             }
 
+        for town_name, row in _iter_table(data.get("towns") or {}):
+            if not isinstance(row, dict):
+                continue
+            out["towns"][str(town_name)] = {
+                "taskmaster": str(row.get("taskmaster") or "").strip(),
+                "taskmaster_room_id": int(row.get("taskmaster_room_id") or 0),
+                "clerk": str(row.get("clerk") or "").strip(),
+                "clerk_room_id": int(row.get("clerk_room_id") or 0),
+                "bounty_room_ids": [int(v) for v in _as_list(row.get("bounty_room_ids") or []) if str(v).strip()],
+            }
+
         for town_name, entries in _iter_table(data.get("bounties") or {}):
             clean = []
             for row in _as_list(entries):
@@ -79,12 +91,23 @@ def load_adventurers_guild(lua_engine) -> Optional[dict]:
                     "reward_fame": int(row.get("reward_fame") or 0),
                     "reward_points": int(row.get("reward_points") or 0),
                     "area": str(row.get("area") or "").strip(),
+                    "target_item_type": str(row.get("target_item_type") or "").strip(),
+                    "target_short_names": _as_list(row.get("target_short_names") or []),
+                    "target_nouns": _as_list(row.get("target_nouns") or []),
+                    "search_zone_names": _as_list(row.get("search_zone_names") or []),
+                    "search_room_ids": [int(v) for v in _as_list(row.get("search_room_ids") or []) if str(v).strip()],
+                    "found_item_name": str(row.get("found_item_name") or "").strip(),
+                    "found_item_short_name": str(row.get("found_item_short_name") or "").strip(),
+                    "found_item_noun": str(row.get("found_item_noun") or "").strip(),
+                    "destination_room_id": int(row.get("destination_room_id") or 0),
+                    "destination_name": str(row.get("destination_name") or "").strip(),
+                    "report_room_id": int(row.get("report_room_id") or 0),
                 })
             out["bounties"][str(town_name)] = clean
 
         log.info(
-            "adventurers_guild_loader: loaded %d authorities and %d town bounty pools",
-            len(out["authorities"]), len(out["bounties"])
+            "adventurers_guild_loader: loaded %d authorities, %d towns, and %d town bounty pools",
+            len(out["authorities"]), len(out["towns"]), len(out["bounties"])
         )
         return out
     except RuntimeError:

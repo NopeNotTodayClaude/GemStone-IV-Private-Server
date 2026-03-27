@@ -709,6 +709,13 @@ async def _move_player(session, from_room, to_room, direction, server, sneaking=
     from server.core.world.room_hints import show_room_hints
     await show_room_hints(session, to_room, server)
 
+    try:
+        guild_engine = getattr(server, "guild", None)
+        if guild_engine and hasattr(guild_engine, "maybe_complete_travel_bounty"):
+            await guild_engine.maybe_complete_travel_bounty(session)
+    except Exception as e:
+        log.error("Adventurer travel bounty hook failed: %s", e)
+
     # Tutorial hook
     if hasattr(session, 'tutorial_complete') and not session.tutorial_complete:
         if hasattr(server, 'tutorial'):

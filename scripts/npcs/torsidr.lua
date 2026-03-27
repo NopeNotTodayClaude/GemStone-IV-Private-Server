@@ -22,9 +22,11 @@ NPC.is_invasion    = false
 
 NPC.greeting       = "looks you over briskly.  'State your business.  If it's work, keep it brief.'"
 NPC.dialogues = {
-    bounty = "The Guild issues contracts according to ability and need.  When the board is ready, I will have work for those prepared to finish it.",
+    bounty = "The Guild issues contracts according to ability and need.  Ask about bounty and I can issue cull, gem, skin, forage, escort, rescue, bandit, boss, or heirloom recovery work.",
     work = "If you want city errands, Sassion has them.  If you want contracts beyond the walls, ask me.",
     guild = "The Guild rewards discipline.  Ta'Vaalor approves of that arrangement.",
+    vouchers = "Task exchanges are not free.  Earn vouchers through steady work and proper check-ins.",
+    checkin = "I can record your check-in here and keep your file in order.",
     default = "Torsidr waits with military patience.  'Well?'",
 }
 NPC.ambient_emotes = {

@@ -22,9 +22,11 @@ NPC.is_invasion    = false
 
 NPC.greeting       = "looks up with an appraising smile.  'Cold enough out there to make bounty work sound appealing?'"
 NPC.dialogues = {
-    bounty = "I issue work suited to what an adventurer can survive.  When the contracts are in order, ask and I'll point you at something useful.",
+    bounty = "I issue work suited to what an adventurer can survive.  Ask about bounty and I'll issue cull, gem, skin, forage, escort, rescue, bandit, boss, or heirloom recovery work if the ledgers allow it.",
     work = "Town errands?  Talk to the bondsman.  Field work?  Talk to me.",
     guild = "The Adventurer's Guild exists to turn willing hands into useful hands.",
+    vouchers = "Check in, finish contracts, and you'll build up vouchers.  Spend one when you want a swap.",
+    checkin = "I can mark your check-in here.  It keeps the ledger current and earns you a little flexibility.",
     default = "Halline gestures to the contract board.  'What sort of work are you after?'",
 }
 NPC.ambient_emotes = {
