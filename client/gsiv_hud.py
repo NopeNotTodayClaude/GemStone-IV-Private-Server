@@ -5516,6 +5516,23 @@ class HUDApp:
             seen.add(candidate)
             if candidate in rules:
                 return candidate
+        norm_candidates = []
+        for candidate in candidates:
+            text = str(candidate or "").strip().lower()
+            if not text:
+                continue
+            norm_candidates.append(text)
+            if text.startswith("the "):
+                norm_candidates.append(text[4:])
+        for rule_name in rules.keys():
+            rule_text = str(rule_name or "").strip().lower()
+            if not rule_text:
+                continue
+            for candidate in norm_candidates:
+                if candidate == rule_text:
+                    return rule_name
+                if rule_text in candidate or candidate in rule_text:
+                    return rule_name
         return zone or map_zone or title
 
     # ════════════════════════════════════════════
