@@ -59,6 +59,8 @@ port 4901
 Or other with ports open if you want
 
 Play the game
+
+Useful info
 ---------------------------------------------------------------------------------------------------------------
 
 Database Notes
