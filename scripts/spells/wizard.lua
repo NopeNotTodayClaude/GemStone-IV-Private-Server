@@ -8,6 +8,7 @@
 
 local DB          = require("globals/utils/db")
 local ActiveBuffs = require("globals/magic/active_buffs")
+local ItemMagic   = require("globals/magic/item_magic")
 
 local Wiz = {}
 
@@ -208,22 +209,84 @@ handlers[917] = function(ctx) -- Earthen Fury
     local dmg = bolt_dmg(ctx, 10, 1)
     if dmg then return string.format("Stone and earth SLAM into %s for %d damage!", tname(ctx), dmg) end
 end
-handlers[918] = function(ctx) -- Duplicate (stub)
-    return "You duplicate the magical item with your elemental mastery."
+handlers[918] = function(ctx)
+    local held = ItemMagic.get_held_item(ctx.caster.id)
+    if not held then
+        return "You must hold the magical item you wish to duplicate."
+    end
+    local extra = held.extra or {}
+    local is_magical = (tonumber(extra.charges) or 0) > 0
+        or tonumber(extra.spell_number)
+        or tonumber(extra.enchant_bonus)
+        or tonumber(held.enchant_bonus or 0) > 0
+    if not is_magical then
+        return string.format("Your %s does not hold enough structured magic to duplicate.", held.short_name or held.name or "item")
+    end
+    local copy_extra = {}
+    for key, value in pairs(extra) do
+        copy_extra[key] = value
+    end
+    if tonumber(copy_extra.charges) and tonumber(copy_extra.charges) > 1 then
+        copy_extra.charges = math.max(1, math.floor(copy_extra.charges / 2))
+    end
+    if tonumber(copy_extra.enchant_bonus) and tonumber(copy_extra.enchant_bonus) > 0 then
+        copy_extra.enchant_bonus = math.max(0, copy_extra.enchant_bonus - 1)
+    end
+    ItemMagic.create_item(ctx.caster.id, held.item_id, copy_extra, nil)
+    return string.format("A hazy duplicate of your %s peels away from the original.", held.short_name or held.name or "item")
 end
 handlers[919] = function(ctx) -- Wizard's Shield
     ActiveBuffs.apply(tid(ctx), 919, CIRCLE_ID, ctx.caster.id, 7200,
         { ds=25, td_elemental=15 })
     return string.format("A wizard's shield of pure elemental force surrounds %s.", tname(ctx))
 end
-handlers[920] = function(ctx) -- Call Familiar (stub)
-    return "Your familiar materializes, ready to assist."
+handlers[920] = function(ctx)
+    local duration = 300 + ((ctx.circle_ranks or 1) * 12)
+    ActiveBuffs.apply(ctx.caster.id, 920, CIRCLE_ID, ctx.caster.id, duration, {
+        familiar=true,
+        see_hidden=true,
+        perception_bonus=10 + math.floor((ctx.circle_ranks or 1) / 4),
+        familiar_room_id=ctx.caster.current_room_id,
+    })
+    return "Your familiar materializes, watchful and ready to scout."
 end
-handlers[925] = function(ctx) -- Enchant (stub)
-    return "You channel elemental mastery into the enchantment process."
+handlers[925] = function(ctx)
+    local held = ItemMagic.get_held_item(ctx.caster.id)
+    if not held then
+        return "You must hold the item you wish to enchant."
+    end
+    if held.item_type ~= "weapon" and held.item_type ~= "shield" then
+        return "This first enchantment pass only supports held weapons and shields."
+    end
+    local extra = held.extra or {}
+    local current = tonumber(extra.enchant_bonus) or tonumber(held.enchant_bonus) or 0
+    local cap = math.min(25, 4 + math.floor((ctx.circle_ranks or 1) / 6))
+    if current >= cap then
+        return string.format("Your %s is already at the limit of enchantment you can currently sustain.", held.short_name or held.name or "item")
+    end
+    extra.enchant_bonus = current + 1
+    extra.enchant_spell = 925
+    ItemMagic.save_extra(held.inv_id, extra)
+    return string.format("Elemental runes sink into your %s, raising its enchant to +%d.", held.short_name or held.name or "item", current + 1)
 end
-handlers[930] = function(ctx) -- Familiar Gate (stub)
-    return "A shimmering gate opens to your familiar's location."
+handlers[930] = function(ctx)
+    local buff = DB.queryOne([[
+        SELECT effects_json
+        FROM character_active_buffs
+        WHERE character_id = ? AND spell_number = 920
+          AND (expires_at IS NULL OR expires_at > NOW())
+        ORDER BY applied_at DESC
+        LIMIT 1
+    ]], { ctx.caster.id })
+    if not buff then
+        return "You have no active familiar bond to open a gate through."
+    end
+    ActiveBuffs.apply(ctx.caster.id, 930, CIRCLE_ID, ctx.caster.id, 60, {
+        familiar_gate=true,
+        phased=true,
+        rt_reduction=1,
+    })
+    return "A shimmering gate opens through your familiar bond, thinning the world around you."
 end
 handlers[950] = function(ctx) -- Core Tap
     local mana_gain = math.min(50, (ctx.circle_ranks or 1) * 2)

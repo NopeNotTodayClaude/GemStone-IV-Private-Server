@@ -9,6 +9,7 @@
 local DB          = require("globals/utils/db")
 local ActiveBuffs = require("globals/magic/active_buffs")
 local Mana        = require("globals/magic/mana_system")
+local ItemMagic   = require("globals/magic/item_magic")
 
 local MjS = {}
 
@@ -97,13 +98,18 @@ handlers[202] = function(ctx) -- Spirit Shield
     return string.format("A shimmering spiritual shield surrounds %s.", tname(ctx))
 end
 
-handlers[203] = function(ctx) -- Manna — create food item in player inventory
+handlers[203] = function(ctx)
     local rank_bonus = math.floor((ctx.circle_ranks or 1) / 4)
-    DB.execute([[
-        INSERT INTO character_inventory (character_id, item_id, slot, quantity, extra_data)
-        VALUES (?, 9999, NULL, 1, ?)
-    ]], { ctx.caster.id, string.format('{"manna_restore":%d,"uses":1}', 3 + rank_bonus) })
-    return "A small loaf of manna bread materializes in your hands."
+    local item = DB.queryOne("SELECT id FROM items WHERE short_name = ? LIMIT 1", { "manna bread" })
+    if not item then
+        return "The blessing forms briefly, but there is no proper vessel prepared for manna."
+    end
+    ItemMagic.create_item(ctx.caster.id, item.id, {
+        mana_restore = 3 + rank_bonus,
+        uses = 1,
+        blessed_food = true,
+    }, nil)
+    return "A small loaf of manna bread materializes for later use."
 end
 
 handlers[204] = function(ctx) -- Unpresence
@@ -126,8 +132,23 @@ handlers[207] = function(ctx) -- Purify Air
     return string.format("A purifying aura surrounds %s, cleansing the air nearby.", tname(ctx))
 end
 
-handlers[208] = function(ctx) -- Living Spell (stub — complex item enchant)
-    return "You infuse a fragment of spiritual energy into a nearby object."
+handlers[208] = function(ctx)
+    local held = ItemMagic.get_held_item(ctx.caster.id)
+    if not held then
+        return "You need to hold an item before you can house a living spell within it."
+    end
+    local spell_number, spell_name, spell_level = 202, "Spirit Shield", 2
+    if (ctx.circle_ranks or 1) >= 15 then
+        spell_number, spell_name, spell_level = 215, "Heroism", 15
+    end
+    held.extra.living_spell = true
+    held.extra.charges = 1
+    held.extra.spell_number = spell_number
+    held.extra.spell_name = spell_name
+    held.extra.spell_type = "buff"
+    held.extra.spell_level = spell_level
+    ItemMagic.save_extra(held.inv_id, held.extra)
+    return string.format("A living spell settles into your %s, ready to awaken once.", held.short_name or held.name or "item")
 end
 
 handlers[209] = function(ctx) -- Untrammel
@@ -200,8 +221,16 @@ handlers[217] = function(ctx) -- Mass Interference — hits all hostiles in room
     return "Spiritual static floods the area, disrupting all spellcasters!"
 end
 
-handlers[218] = function(ctx) -- Spirit Servant (stub)
-    return "A translucent spirit servant materializes and awaits your bidding."
+handlers[218] = function(ctx)
+    local summoning = (ctx.lore_ranks and ctx.lore_ranks.summoning) or 0
+    local duration = 120 + ((ctx.circle_ranks or 1) * 12) + summoning * 2
+    local carry_bonus = 25 + math.floor((ctx.circle_ranks or 1) / 3) + math.floor(summoning / 20)
+    ActiveBuffs.apply(ctx.caster.id, 218, CIRCLE_ID, ctx.caster.id, duration, {
+        spirit_servant=true,
+        carry_bonus=carry_bonus,
+        see_hidden=true,
+    })
+    return string.format("A translucent spirit servant materializes and lingers nearby for %d seconds.", duration)
 end
 
 handlers[219] = function(ctx) -- Spell Shield

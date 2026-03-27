@@ -245,8 +245,17 @@ handlers[625] = function(ctx) -- Nature's Touch
     return string.format("Nature's touch grants %s +%d DS and +%d TD.", tname(ctx), bonus, bonus)
 end
 
-handlers[630] = function(ctx) -- Animal Companion (stub)
-    return "An animal companion emerges from the wilderness to aid you."
+handlers[630] = function(ctx) -- Animal Companion
+    local transformation = (ctx.lore_ranks and ctx.lore_ranks.transformation) or 0
+    local duration = 120 + ((ctx.circle_ranks or 1) * 12) + transformation * 2
+    local companion_level = math.max(1, math.floor((ctx.circle_ranks or 1) / 5) + math.floor(transformation / 30))
+    ActiveBuffs.apply(ctx.caster.id, 630, CIRCLE_ID, ctx.caster.id, duration, {
+        animal_companion=true,
+        companion_level=companion_level,
+        perception_bonus=10 + math.floor(companion_level / 2),
+        dodge_bonus=5 + math.floor(companion_level / 2),
+    })
+    return string.format("A wary animal companion pads into view and remains by your side for %d seconds.", duration)
 end
 
 handlers[635] = function(ctx) -- Nature's Fury bolt

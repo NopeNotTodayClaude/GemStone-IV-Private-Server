@@ -431,6 +431,11 @@ async def cmd_forage(session, cmd, args, server):
         f"{session.character_name} forages around and finds something.",
         exclude=session,
     )
+    if getattr(server, "guild", None):
+        try:
+            await server.guild.record_event(session, "forage_success")
+        except Exception:
+            pass
     await _advance_tutorial_after_forage(session, server, room.id)
 
     session.set_roundtime(3)

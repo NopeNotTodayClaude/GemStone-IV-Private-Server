@@ -135,6 +135,38 @@ def _parse_use_target(raw_args: str):
     return text, ""
 
 
+def _magic_item_extra(item):
+    keep = (
+        "spells", "contents", "charges", "spell_number", "spell_name", "spell_type", "spell_level",
+        "custom_name", "material", "color", "enchant_bonus", "attack_bonus", "defense_bonus",
+        "flare_type", "living_spell", "crafted_by_spell", "scroll_infusion", "uses",
+        "mana_restore", "blessed_food", "familiar_gate", "familiar_room_id",
+    )
+    data = {}
+    if not isinstance(item, dict):
+        return data
+    for key in keep:
+        if key in item and item.get(key) is not None:
+            data[key] = item.get(key)
+    return data
+
+
+def _scroll_spells(item):
+    if not isinstance(item, dict):
+        return []
+    spells = item.get("spells") or item.get("contents") or []
+    if spells:
+        return spells
+    if item.get("spell_number"):
+        return [{
+            "number": int(item.get("spell_number") or 0),
+            "name": item.get("spell_name") or f"Spell {item.get('spell_number')}",
+            "level": int(item.get("spell_level") or 1),
+            "charges": int(item.get("charges", 1) or 1),
+        }]
+    return []
+
+
 async def _use_magic_item(session, use_item, hand, target_name, server):
     from server.core.protocol.colors import colorize, roundtime_msg, TextPresets
     from server.core.commands.player.spellcasting import (
@@ -264,17 +296,24 @@ async def _use_magic_item(session, use_item, hand, target_name, server):
     charges -= 1
     use_item["charges"] = max(0, charges)
     if use_item.get("inv_id") and getattr(server, "db", None):
-        server.db.save_item_extra_data(use_item["inv_id"], {
+        state = _magic_item_extra(use_item)
+        state.update({
             "charges": use_item["charges"],
             "spell_number": spell_number,
             "spell_name": spell_name,
             "spell_type": spell_type,
             "spell_level": spell_level,
         })
+        server.db.save_item_extra_data(use_item["inv_id"], state)
 
     await session.send_line(colorize(f"  {message}", TextPresets.SYSTEM))
     if charges <= 0:
         await session.send_line(colorize(f"  The {item_name} grows dull and spent.", TextPresets.SYSTEM))
+    if getattr(server, "guild", None):
+        try:
+            await server.guild.record_event(session, "magic_item_success")
+        except Exception:
+            pass
     session.set_roundtime(3)
     await session.send_line(roundtime_msg(3))
 
@@ -807,8 +846,11 @@ async def cmd_use(session, cmd, args, server):
         heal = 5 + session.level
         session.health_current  = min(session.health_max,  session.health_current  + heal)
         session.stamina_current = min(session.stamina_max, session.stamina_current + heal)
+        mana_restore = int(use_item.get("mana_restore", 0) or 0)
+        if mana_restore > 0:
+            session.mana_current = min(session.mana_max, session.mana_current + mana_restore)
         await session.send_line(colorize(
-            f'  You feel slightly refreshed.',
+            f'  You feel slightly refreshed.' + (f'  Mana returns to you ({mana_restore}).' if mana_restore > 0 else ''),
             TextPresets.SYSTEM
         ))
         setattr(session, hand, None)
@@ -1154,7 +1196,7 @@ async def cmd_read(session, cmd, args, server):
     arc_bonus = _live_skill_bonus(session, SKILL_ARCANE_SYMBOLS)
 
     import random as _rand
-    scroll_spells = scroll.get("spells") or scroll.get("contents") or []
+    scroll_spells = _scroll_spells(scroll)
     highest_level = max([int(sp.get("level", 1) or 1) for sp in scroll_spells], default=1)
     aura_bonus = (int(getattr(session, "stat_aura", 50) or 50) - 50) // 2
     logic_bonus = (int(getattr(session, "stat_logic", 50) or 50) - 50) // 3
@@ -1173,7 +1215,7 @@ async def cmd_read(session, cmd, args, server):
     scroll_name = scroll.get("short_name") or scroll.get("name") or "the scroll"
     await session.send_line(f"You carefully examine {colorize(scroll_name, TextPresets.ITEM_NAME)}.")
 
-    spells = scroll.get("spells") or scroll.get("contents") or []
+    spells = _scroll_spells(scroll)
     if not spells:
         # Generic scroll with no specific spell list — show description
         desc = scroll.get("description") or "Elaborate magical script covers the surface, but you cannot identify the specific spell."
@@ -1194,6 +1236,11 @@ async def cmd_read(session, cmd, args, server):
 
     session.set_roundtime(2)
     await session.send_line(roundtime_msg(2))
+    if getattr(server, "guild", None):
+        try:
+            await server.guild.record_event(session, "scroll_read_success")
+        except Exception:
+            pass
 
 
 # =========================================================
@@ -1224,7 +1271,7 @@ async def cmd_invoke(session, cmd, args, server):
         await session.send_line("You need to be holding a scroll to invoke a spell from it.")
         return
 
-    spells = scroll.get("spells") or scroll.get("contents") or []
+    spells = _scroll_spells(scroll)
     if not spells:
         await session.send_line(
             "This scroll doesn't appear to have any invokable spells.  "
@@ -1303,6 +1350,20 @@ async def cmd_invoke(session, cmd, args, server):
     target_spell["charges"] = charges - 1
     spell_number = target_spell.get("number")
 
+    if scroll.get("inv_id") and getattr(server, "db", None):
+        state = _magic_item_extra(scroll)
+        if scroll.get("spell_number"):
+            state.update({
+                "charges": target_spell["charges"],
+                "spell_number": spell_number,
+                "spell_name": target_spell.get("name"),
+                "spell_type": scroll.get("spell_type") or "utility",
+                "spell_level": target_spell.get("level", 1),
+            })
+        else:
+            state["spells"] = spells
+        server.db.save_item_extra_data(scroll["inv_id"], state)
+
     # Set prepared spell on session
     session.prepared_spell = {
         "name":    spell_name,
@@ -1343,6 +1404,11 @@ async def cmd_invoke(session, cmd, args, server):
     await session.send_line(
         colorize(f"  {spell_name} is prepared.  Use CAST to release it.", TextPresets.SYSTEM)
     )
+    if getattr(server, "guild", None):
+        try:
+            await server.guild.record_event(session, "scroll_invoke_success")
+        except Exception:
+            pass
 
     session.set_roundtime(3)
     await session.send_line(roundtime_msg(3))

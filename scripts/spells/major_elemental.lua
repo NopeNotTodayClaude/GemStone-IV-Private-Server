@@ -9,6 +9,7 @@
 
 local DB          = require("globals/utils/db")
 local ActiveBuffs = require("globals/magic/active_buffs")
+local ItemMagic   = require("globals/magic/item_magic")
 
 local MjE = {}
 
@@ -202,8 +203,25 @@ handlers[516] = function(ctx) -- Mana Leech
     return string.format("You leech %d mana from %s.", amount, tname(ctx))
 end
 
-handlers[517] = function(ctx) -- Charge Item (stub)
-    return "You channel elemental energy into the item, restoring its charges."
+handlers[517] = function(ctx)
+    local item = ItemMagic.get_item_by_types(ctx.caster.id, { "wand", "rod" })
+    if not item then
+        return "You must be carrying a wand or rod before you can channel fresh power into it."
+    end
+    if not (item.spell_number or item.extra.spell_number) then
+        return string.format("Your %s contains no recognizable spell matrix to recharge.", item.short_name or item.name or "item")
+    end
+
+    local charges = tonumber(item.charges) or 0
+    local amount = 1 + math.floor((tonumber(ctx.circle_ranks) or 1) / 15)
+    local new_charges = math.min(10, charges + amount)
+    item.extra.charges = new_charges
+    ItemMagic.save_extra(item.inv_id, item.extra)
+
+    return string.format("Elemental power surges into your %s, restoring it to %d charge%s.",
+        item.short_name or item.name or "item",
+        new_charges,
+        new_charges == 1 and "" or "s")
 end
 
 handlers[518] = function(ctx) -- Cone of Elements

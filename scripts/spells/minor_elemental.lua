@@ -1,13 +1,11 @@
 ------------------------------------------------------------------------
 -- scripts/spells/minor_elemental.lua
--- Minor Elemental (MnE) spell circle — spells 401-435.
--- Circle id: 4 | Sphere: elemental | CS/TD stat: aura
--- Available to: Warrior, Rogue, Wizard, Sorcerer, Bard
--- Source: gswiki.play.net/Minor_Elemental
+-- Minor Elemental (MnE) spell circle - spells 401-435.
 ------------------------------------------------------------------------
 
 local DB          = require("globals/utils/db")
 local ActiveBuffs = require("globals/magic/active_buffs")
+local ItemMagic   = require("globals/magic/item_magic")
 
 local MnE = {}
 
@@ -36,7 +34,7 @@ local SPELLS = {
     [410] = { name="Elemental Wave",            mnemonic="ELEWAVE",          spell_type="maneuver",mana_cost=10,
               description="Pushes back all targets in the room with a wave of elemental force. Success scales with ranks and level." },
     [411] = { name="Elemental Blade",           mnemonic="ELEBLADE",         spell_type="buff",    mana_cost=11,
-              description="Imbues a weapon with elemental energy for (20 + MnE_ranks × 3) swings." },
+              description="Imbues a weapon with elemental energy for (20 + MnE_ranks x 3) swings." },
     [412] = { name="Weapon Deflection",         mnemonic="WEAPONDEFLECT",    spell_type="maneuver",mana_cost=12,
               description="SMR maneuver that disarms the target's weapon from their grasp." },
     [413] = { name="Elemental Saturation",      mnemonic="ELESATURATION",    spell_type="warding", mana_cost=13,
@@ -109,8 +107,38 @@ handlers[404] = function(ctx)
     return string.format("Your trap-disarming ability is enhanced by %d.", bonus)
 end
 
-handlers[405] = function(ctx) -- Detection — report auras in room (stub)
-    return "Your senses extend, detecting elemental auras in the area."
+handlers[405] = function(ctx)
+    local room_id = ctx.caster.current_room_id
+    local lines = {}
+    local room_buffs = DB.query([[
+        SELECT c.name, COUNT(cab.id) AS aura_count
+        FROM characters c
+        LEFT JOIN character_active_buffs cab
+          ON cab.character_id = c.id
+         AND (cab.expires_at IS NULL OR cab.expires_at > NOW())
+        WHERE c.current_room_id = ?
+        GROUP BY c.id, c.name
+        HAVING COUNT(cab.id) > 0
+        ORDER BY aura_count DESC, c.name ASC
+        LIMIT 6
+    ]], { room_id })
+    for _, row in ipairs(room_buffs) do
+        local count = tonumber(row.aura_count) or 0
+        lines[#lines + 1] = string.format("%s carries %d active magical aura%s.",
+            row.name or "Someone", count, count == 1 and "" or "s")
+    end
+
+    local held = ItemMagic.get_item_by_types(ctx.caster.id, { "wand", "rod", "scroll" })
+    if held and (held.spell_number or held.charges) then
+        local charges = tonumber(held.charges) or 0
+        lines[#lines + 1] = string.format("Your %s thrums with elemental potential (%d charge%s).",
+            held.short_name or held.name or "held item", charges, charges == 1 and "" or "s")
+    end
+
+    if #lines == 0 then
+        return "Your senses extend, but you detect only the faint ambient hum of ordinary magic."
+    end
+    return "Your senses extend into the elemental spectrum.\n" .. table.concat(lines, "\n")
 end
 
 handlers[406] = function(ctx)
@@ -118,7 +146,7 @@ handlers[406] = function(ctx)
     return string.format("A stronger elemental barrier envelops %s.", tname(ctx))
 end
 
-handlers[407] = function(ctx) -- Unlock
+handlers[407] = function(ctx)
     if ctx.target then
         DB.execute([[
             UPDATE character_inventory
@@ -129,11 +157,11 @@ handlers[407] = function(ctx) -- Unlock
     return "With a quiet click, the lock yields to elemental force."
 end
 
-handlers[408] = function(ctx) -- Disarm
+handlers[408] = function(ctx)
     return "You sense and neutralize the magical trap."
 end
 
-handlers[409] = function(ctx) -- Elemental Blast bolt
+handlers[409] = function(ctx)
     if not ctx.result.hit then return end
     local dmg = math.max(1, math.floor((ctx.result.total or 101) - 100))
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
@@ -141,7 +169,7 @@ handlers[409] = function(ctx) -- Elemental Blast bolt
     return string.format("An elemental blast strikes %s for %d damage!", tname(ctx), dmg)
 end
 
-handlers[410] = function(ctx) -- Elemental Wave — SMR room push
+handlers[410] = function(ctx)
     if not ctx.result.hit then return end
     local room_id = ctx.caster.current_room_id
     if room_id then
@@ -153,7 +181,7 @@ handlers[410] = function(ctx) -- Elemental Wave — SMR room push
     return "An elemental wave surges through the room, knocking foes prone!"
 end
 
-handlers[411] = function(ctx) -- Elemental Blade
+handlers[411] = function(ctx)
     local swings = 20 + (ctx.circle_ranks or 1) * 3
     DB.execute([[
         UPDATE character_inventory SET extra_data=JSON_SET(COALESCE(extra_data,'{}'),'$.elemental_blade',1,'$.ele_swings',?)
@@ -162,7 +190,7 @@ handlers[411] = function(ctx) -- Elemental Blade
     return string.format("Elemental energy crackles through the weapon of %s (%d swings).", tname(ctx), swings)
 end
 
-handlers[412] = function(ctx) -- Weapon Deflection — SMR disarm
+handlers[412] = function(ctx)
     if not ctx.result.hit then return end
     DB.execute([[
         UPDATE character_inventory SET slot='ground'
@@ -171,7 +199,7 @@ handlers[412] = function(ctx) -- Weapon Deflection — SMR disarm
     return string.format("The weapon flies from %s's grasp!", tname(ctx))
 end
 
-handlers[413] = function(ctx) -- Elemental Saturation
+handlers[413] = function(ctx)
     if not ctx.result.hit then return end
     local sdur = 10 + math.floor((ctx.circle_ranks or 1) / 3)
     ActiveBuffs.apply(tid(ctx), 413, CIRCLE_ID, ctx.caster.id, sdur, { td_elemental=-15 })
@@ -183,7 +211,7 @@ handlers[414] = function(ctx)
     return string.format("A powerful elemental defense surrounds %s.", tname(ctx))
 end
 
-handlers[415] = function(ctx) -- Elemental Strike bolt (lightning)
+handlers[415] = function(ctx)
     if not ctx.result.hit then return end
     local dmg = math.max(5, math.floor((ctx.result.total or 101) - 100))
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
@@ -191,12 +219,12 @@ handlers[415] = function(ctx) -- Elemental Strike bolt (lightning)
     return string.format("A lightning strike crackles through %s for %d damage!", tname(ctx), dmg)
 end
 
-handlers[416] = function(ctx) -- Piercing Gaze
+handlers[416] = function(ctx)
     ActiveBuffs.apply(tid(ctx), 416, CIRCLE_ID, ctx.caster.id, dur(ctx), { see_invisible=true, see_hidden=true })
     return "Your gaze pierces through illusions and concealment."
 end
 
-handlers[417] = function(ctx) -- Elemental Dispel
+handlers[417] = function(ctx)
     if not ctx.result.hit then return end
     local n_rem = 1 + math.floor((ctx.circle_ranks or 1) / 10)
     local buffs = DB.query([[
@@ -211,12 +239,12 @@ handlers[417] = function(ctx) -- Elemental Dispel
     return string.format("Elemental dispel strips %d buff(s) from %s.", #buffs, tname(ctx))
 end
 
-handlers[418] = function(ctx) -- Mana Focus — regen bonus
+handlers[418] = function(ctx)
     ActiveBuffs.apply(tid(ctx), 418, CIRCLE_ID, ctx.caster.id, dur(ctx), { regen_bonus=3 })
     return "A mana focus crystallizes, accelerating mana regeneration."
 end
 
-handlers[419] = function(ctx) -- Mass Elemental Defense — group ED
+handlers[419] = function(ctx)
     local room_id = ctx.caster.current_room_id
     if room_id then
         local allies = DB.query("SELECT id FROM characters WHERE current_room_id=?", { room_id })
@@ -227,25 +255,48 @@ handlers[419] = function(ctx) -- Mass Elemental Defense — group ED
     end
 end
 
-handlers[420] = function(ctx) -- Magic Item Creation (stub)
-    return "You channel elemental energy into an item, imbuing it with a single charge."
+handlers[420] = function(ctx)
+    local ranks = tonumber(ctx.circle_ranks) or 1
+    local spell_number, spell_name, spell_level = 409, "Elemental Blast", 9
+    if ranks >= 15 then
+        spell_number, spell_name, spell_level = 415, "Elemental Strike", 15
+    end
+    local charges = math.max(1, math.min(4, 1 + math.floor(ranks / 10)))
+    local wand_id = 6401
+    if ranks >= 20 then
+        wand_id = 6404
+    elseif ranks >= 10 then
+        wand_id = 6403
+    end
+
+    ItemMagic.create_item(ctx.caster.id, wand_id, {
+        charges = charges,
+        spell_number = spell_number,
+        spell_name = spell_name,
+        spell_type = "bolt",
+        spell_level = spell_level,
+        crafted_by_spell = 420,
+    }, nil)
+
+    return string.format("You condense elemental force into a fresh wand holding %s (%d charge%s).",
+        spell_name, charges, charges == 1 and "" or "s")
 end
 
-handlers[425] = function(ctx) -- Elemental Targeting
+handlers[425] = function(ctx)
     local bonus = math.min(50, math.floor(math.max(0, (ctx.circle_ranks or 0) - 25) / 2))
     ActiveBuffs.apply(tid(ctx), 425, CIRCLE_ID, ctx.caster.id, dur(ctx),
         { as_bonus=bonus, cs_elemental=bonus })
     return string.format("Elemental targeting sharpens the aim of %s (+%d AS/CS).", tname(ctx), bonus)
 end
 
-handlers[430] = function(ctx) -- Elemental Barrier
+handlers[430] = function(ctx)
     local bonus = math.max(0, math.floor(math.max(0, (ctx.circle_ranks or 0) - 30) / 2))
     ActiveBuffs.apply(tid(ctx), 430, CIRCLE_ID, ctx.caster.id, dur(ctx),
         { ds=bonus, td_elemental=bonus })
     return string.format("An elemental barrier of %d DS/%d TD forms around %s.", bonus, bonus, tname(ctx))
 end
 
-handlers[435] = function(ctx) -- Major Elemental Wave — room AoE
+handlers[435] = function(ctx)
     if not ctx.result.hit then return end
     local room_id = ctx.caster.current_room_id
     local hit_count = 0

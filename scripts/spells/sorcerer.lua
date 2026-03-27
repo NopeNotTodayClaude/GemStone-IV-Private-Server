@@ -8,6 +8,7 @@
 
 local DB          = require("globals/utils/db")
 local ActiveBuffs = require("globals/magic/active_buffs")
+local ItemMagic   = require("globals/magic/item_magic")
 
 local Sor = {}
 
@@ -133,8 +134,28 @@ handlers[706] = function(ctx) -- Tenebrous Tether
     return string.format("Shadowy tendrils coil around %s, anchoring them!", tname(ctx))
 end
 
-handlers[707] = function(ctx) -- Eye Spy (stub)
-    return "A shadowy eye manifests and drifts away to survey the area."
+handlers[707] = function(ctx)
+    local room_id = ctx.caster.current_room_id
+    local seen = {}
+    local others = DB.query([[
+        SELECT name, level
+        FROM characters
+        WHERE current_room_id = ? AND id != ?
+        ORDER BY level DESC, name ASC
+        LIMIT 5
+    ]], { room_id, ctx.caster.id })
+    for _, row in ipairs(others) do
+        seen[#seen + 1] = string.format("%s (level %d)", row.name or "someone", tonumber(row.level) or 0)
+    end
+    ActiveBuffs.apply(ctx.caster.id, 707, CIRCLE_ID, ctx.caster.id, dur(ctx), {
+        eye_spy=true,
+        see_hidden=true,
+        see_invisible=true,
+    })
+    if #seen == 0 then
+        return "A shadowy eye manifests, confirming that nothing else in the room currently draws its attention."
+    end
+    return "A shadowy eye manifests and surveys the area: " .. table.concat(seen, ", ") .. "."
 end
 
 handlers[708] = function(ctx) -- Limb Disruption
@@ -201,8 +222,34 @@ handlers[713] = function(ctx) -- Balefire bolt
     return string.format("Balefire scorches %s for %d damage, burning through their defenses!", tname(ctx), dmg)
 end
 
-handlers[714] = function(ctx) -- Scroll Infusion (stub)
-    return "You infuse the scroll with sorcerous energy for later use."
+handlers[714] = function(ctx)
+    local scroll = ItemMagic.get_item_by_types(ctx.caster.id, { "scroll" })
+    if not scroll then
+        return "You must be holding a scroll before you can infuse it."
+    end
+    local spell_number, spell_name, spell_level = 703, "Corrupt Essence", 3
+    local ranks = tonumber(ctx.circle_ranks) or 1
+    if ranks >= 18 then
+        spell_number, spell_name, spell_level = 717, "Evil Eye", 17
+    elseif ranks >= 10 then
+        spell_number, spell_name, spell_level = 711, "Pain", 11
+    end
+    scroll.extra.spells = {
+        {
+            number = spell_number,
+            name = spell_name,
+            level = spell_level,
+            charges = 1 + math.floor(ranks / 20),
+        }
+    }
+    scroll.extra.scroll_infusion = true
+    scroll.extra.spell_number = nil
+    scroll.extra.spell_name = nil
+    scroll.extra.spell_type = nil
+    scroll.extra.spell_level = nil
+    scroll.extra.charges = nil
+    ItemMagic.save_extra(scroll.inv_id, scroll.extra)
+    return string.format("You lace your %s with %s.", scroll.short_name or scroll.name or "scroll", spell_name)
 end
 
 handlers[715] = function(ctx) -- Curse
@@ -259,21 +306,38 @@ handlers[725] = function(ctx) -- Minor Summoning
     return "A minor demonic entity materializes to serve you."
 end
 
-handlers[730] = function(ctx) -- Animate Dead (stub)
+handlers[730] = function(ctx) -- Animate Dead
     local necromancy = (ctx.lore_ranks and ctx.lore_ranks.necromancy) or 0
     local undead_level = math.max(1, math.floor((ctx.circle_ranks or 1) / 6) + math.floor(necromancy / 25))
     local duration = 90 + ((ctx.circle_ranks or 1) * 15) + necromancy * 2
     ActiveBuffs.apply(ctx.caster.id, 730, CIRCLE_ID, ctx.caster.id, duration,
-        { undead_servant=true, servant_level=undead_level })
+        {
+            undead_servant=true,
+            servant_level=undead_level,
+            see_hidden=true,
+            fear_resist=10 + math.floor(undead_level / 2),
+        })
     return string.format("Dark power surges through a nearby corpse, animating it as your servant for %d seconds.", duration)
 end
 
-handlers[735] = function(ctx) -- Ensorcell (stub)
-    DB.execute([[
-        UPDATE character_inventory SET extra_data=JSON_SET(COALESCE(extra_data,'{}'),'$.ensorcelled',1)
-        WHERE character_id=? AND slot IN ('right_hand','left_hand') LIMIT 1
-    ]], { ctx.caster.id })
-    return "You permanently ensorcell the weapon with dark power."
+handlers[735] = function(ctx) -- Ensorcell
+    local held = ItemMagic.get_held_item(ctx.caster.id)
+    if not held then
+        return "You must be holding a weapon or shield to ensorcell it."
+    end
+    local noun = (held.noun or "").lower()
+    local item_type = (held.item_type or "").lower()
+    if item_type ~= "weapon" and item_type ~= "shield" and noun == "" then
+        return "That item offers no stable surface for an ensorcelling matrix."
+    end
+    local necromancy = (ctx.lore_ranks and ctx.lore_ranks.necromancy) or 0
+    local tier = math.min(5, (held.extra.ensorcell_tier or 0) + 1)
+    held.extra.ensorcelled = true
+    held.extra.ensorcell_tier = tier
+    held.extra.flare_type = held.extra.flare_type or "void"
+    held.extra.attack_bonus = math.max(0, tonumber(held.extra.attack_bonus or 0) or 0) + math.floor(necromancy / 60)
+    ItemMagic.save_extra(held.inv_id, held.extra)
+    return string.format("Dark power sinks into your %s, raising its ensorcell tier to %d.", held.short_name or held.name or "item", tier)
 end
 
 handlers[740] = function(ctx) -- Planar Shift

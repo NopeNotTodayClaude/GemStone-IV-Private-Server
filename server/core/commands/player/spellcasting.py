@@ -299,6 +299,11 @@ async def cmd_send(session, cmd, args, server):
         f"{session.character_name} sends you {actual} mana.",
         TextPresets.SYSTEM,
     ))
+    if getattr(server, "guild", None):
+        try:
+            await server.guild.record_event(session, "mana_share_success")
+        except Exception:
+            pass
     session.set_roundtime(3)
     await session.send_line(roundtime_msg(3))
 
@@ -384,6 +389,11 @@ async def cmd_cast(session, cmd, args, server):
         if ok:
             _clear_prepared_scroll_state(session)
             await session.send_line(colorize(f"  {message}", TextPresets.SYSTEM))
+            if getattr(server, "guild", None):
+                try:
+                    await server.guild.record_event(session, "spell_cast_success")
+                except Exception:
+                    pass
             rt = _cast_roundtime(prepared)
             session.set_roundtime(rt)
             await session.send_line(roundtime_msg(rt))
@@ -399,6 +409,11 @@ async def cmd_cast(session, cmd, args, server):
     _refresh_post_spell_state(session, server)
     if ok:
         await session.send_line(colorize(f"  {message}", TextPresets.SYSTEM))
+        if getattr(server, "guild", None):
+            try:
+                await server.guild.record_event(session, "spell_cast_success")
+            except Exception:
+                pass
         session.set_roundtime(3)
         await session.send_line(roundtime_msg(3))
     else:
@@ -430,6 +445,11 @@ async def cmd_incant(session, cmd, args, server):
     if ok:
         _clear_prepared_scroll_state(session)
         await session.send_line(colorize(f"  {message}", TextPresets.SYSTEM))
+        if getattr(server, "guild", None):
+            try:
+                await server.guild.record_event(session, "spell_cast_success")
+            except Exception:
+                pass
         session.set_roundtime(3)
         await session.send_line(roundtime_msg(3))
     else:

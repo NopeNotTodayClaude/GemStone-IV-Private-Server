@@ -214,8 +214,17 @@ handlers[1216] = function(ctx) -- Focus Barrier
         tname(ctx), bonus, bonus)
 end
 
-handlers[1217] = function(ctx) -- Vision (stub)
-    return "A mental vision unfolds in your mind, revealing a distant place..."
+handlers[1217] = function(ctx) -- Vision
+    local divination = (ctx.lore_ranks and ctx.lore_ranks.divination) or 0
+    local duration = 90 + ((ctx.circle_ranks or 1) * 10) + divination * 2
+    local perception = 15 + math.floor((ctx.circle_ranks or 1) / 4) + math.floor(divination / 20)
+    ActiveBuffs.apply(ctx.caster.id, 1217, CIRCLE_ID, ctx.caster.id, duration, {
+        vision=true,
+        see_hidden=true,
+        see_invisible=true,
+        perception_bonus=perception,
+    })
+    return string.format("A clarifying vision unfolds through your mind, sharpening your senses for %d seconds.", duration)
 end
 
 handlers[1218] = function(ctx) -- Mental Dispel
