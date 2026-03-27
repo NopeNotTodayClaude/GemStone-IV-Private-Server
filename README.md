@@ -3,6 +3,8 @@ GemStone IV Private Server
 Single-player/private GemStone IV server project using Lua, SQL, and a custom client.
 
 (Yes this runs a full private server with a custom client that tries to emulate Gemstone 4 with some single player tweaks)
+Currently the city of Ta'avalor is the preferred starting city. Other cities have a few shops, and "maybe" some monsters too, but nothing close to retail. The elf city however has almost everything wired up to it. (Still work in progress)
+If you are worried about the client working as good as lich with scripts, it's being worked on, but already surpasses wrayth + lich in various ways as is.
 
 What This Includes
 
