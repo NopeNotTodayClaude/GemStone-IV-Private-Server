@@ -58,6 +58,9 @@ port 4901
 
 Or other with ports open if you want
 
+Play the game
+---------------------------------------------------------------------------------------------------------------
+
 Database Notes
 
 Main DB name: gemstone_dev
