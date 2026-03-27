@@ -596,7 +596,8 @@ def _extend_quest_actions(actions: list[dict], seen: set[tuple[str, str, bool]],
     related = quest_engine.get_npc_related_active_quests(session, npc)
 
     npc_name = getattr(npc, "name", "npc")
-    authority = getattr(guild_engine := getattr(server, "guild", None), "_get_adventurer_authority", lambda _npc: None)(npc) if guild_engine else None
+    guild_engine = getattr(server, "guild", None)
+    authority = getattr(guild_engine, "_get_adventurer_authority", lambda _npc: None)(npc) if guild_engine else None
     if authority:
         add("Status", "bounty status")
         add("Register", f"ask {npc_name} about register")

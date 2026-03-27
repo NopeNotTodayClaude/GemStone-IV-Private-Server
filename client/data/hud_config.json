@@ -48,7 +48,7 @@
   "input_mode": "command",
   "comm_input_mode": "chat",
   "auto_login": {
-    "enabled": false,
+    "enabled": true,
     "username": "admin",
     "password": "admin",
     "char_slot": 1
