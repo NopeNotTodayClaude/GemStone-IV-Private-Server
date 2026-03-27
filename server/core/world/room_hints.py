@@ -41,7 +41,7 @@ LOCKSMITH_TEMPLATE_IDS = {
 }
 
 NPC_SERVICE_HINTS = {
-    "bank_teller":       ("Bank",       ["CHECK BALANCE", "DEPOSIT {#|ALL|NOTE}", "WITHDRAW {#} [NOTE]"]),
+    "bank_teller":       ("Bank",       ["CHECK BALANCE", "DEPOSIT {#|ALL|NOTE}", "WITHDRAW {#} [NOTE]", "LOCKER INFO"]),
     "empath_healer":     ("Healer",     ["TALK TO {healer}", "ASK {healer} ABOUT healing"]),
     "guild_clerk":       ("Guild",      ["TALK TO {clerk}", "ASK {clerk} ABOUT bounties"]),
     "hall_steward":      ("Hall",       ["TALK TO {steward}", "ASK {steward} ABOUT hall"]),
@@ -57,7 +57,7 @@ NPC_SERVICE_HINTS = {
 }
 
 SERVICE_TAG_HINTS = {
-    "bank":       ("Bank",       ["CHECK BALANCE", "DEPOSIT {#|ALL|NOTE}", "WITHDRAW {#} [NOTE]"]),
+    "bank":       ("Bank",       ["CHECK BALANCE", "DEPOSIT {#|ALL|NOTE}", "WITHDRAW {#} [NOTE]", "LOCKER INFO"]),
     "healer":     ("Healer",     ["TALK TO {healer}", "ASK {healer} ABOUT healing"]),
     "guild":      ("Guild",      ["TALK TO {clerk}", "ASK {clerk} ABOUT guild"]),
     "travel":     ("Travel",     ["TALK TO {clerk}", "ASK {clerk} ABOUT travel"]),
@@ -114,6 +114,33 @@ def _get_pawn_backroom_shop(server, room_id):
     return None
 
 
+def _get_public_locker_context(server, room_id):
+    if not getattr(server, "db", None):
+        return None
+    try:
+        return server.db.get_public_locker_location_for_room(room_id)
+    except Exception:
+        return None
+
+
+def _get_locker_entry_commands(server, room, locker_ctx):
+    if not getattr(server, "db", None) or not locker_ctx:
+        return []
+    try:
+        locker_room_ids = set(server.db.get_public_locker_room_ids(locker_ctx["id"], "locker"))
+    except Exception:
+        locker_room_ids = set()
+    commands = []
+    for exit_key, target_room_id in getattr(room, "exits", {}).items():
+        if int(target_room_id or 0) not in locker_room_ids:
+            continue
+        if exit_key.startswith("go_"):
+            commands.append("GO " + exit_key[3:].replace("_", " ").upper())
+        else:
+            commands.append(exit_key.replace("_", " ").upper())
+    return sorted(dict.fromkeys(commands))
+
+
 def _is_locksmith_npc(npc):
     """Best-effort locksmith detection without tying hints to one city."""
     tid = (getattr(npc, "template_id", None) or "").lower().strip()
@@ -131,6 +158,34 @@ def _is_locksmith_npc(npc):
 async def show_room_hints(session, room, server):
     """Called after cmd_look on every room entry."""
     shown = set()
+
+    locker_ctx = _get_public_locker_context(server, room.id)
+    if locker_ctx:
+        roles = set(locker_ctx.get("roles") or [])
+        if "locker" in roles:
+            await session.send_line(_fmt("Locker", [
+                "OPEN LOCKER",
+                "LOCKER MANIFEST",
+                "LOOK IN LOCKER",
+                "PUT {item} IN LOCKER",
+                "GET {item} FROM LOCKER",
+                "INSPECT LOCKER",
+                "CLOSE LOCKER",
+            ]))
+            shown.add("locker")
+        elif "access" in roles:
+            entry_cmds = _get_locker_entry_commands(server, room, locker_ctx)
+            if entry_cmds:
+                await session.send_line(_fmt("Locker", entry_cmds + ["LOCKER INFO"]))
+                shown.add("locker_access")
+        elif "bank" in roles:
+            await session.send_line(_fmt("Bank", [
+                "CHECK BALANCE",
+                "DEPOSIT {#|ALL|NOTE}",
+                "WITHDRAW {#} [NOTE]",
+                "LOCKER INFO",
+            ]))
+            shown.add("bank")
 
     pawn_backroom = _get_pawn_backroom_shop(server, room.id)
     if pawn_backroom:

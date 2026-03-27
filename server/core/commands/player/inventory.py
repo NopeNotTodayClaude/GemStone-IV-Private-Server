@@ -742,6 +742,15 @@ async def cmd_get(session, cmd, args, server):
         if from_container.startswith('my '):
             from_container = from_container[3:]
 
+    if from_container == 'locker':
+        try:
+            from server.core.commands.player.bank import maybe_handle_locker_get
+            handled = await maybe_handle_locker_get(session, target, from_container, server)
+            if handled:
+                return
+        except Exception as e:
+            log.error("Locker GET hook failed: %s", e)
+
     if session.right_hand and session.left_hand:
         await session.send_line('Your hands are full!')
         return
@@ -1019,6 +1028,15 @@ async def cmd_put(session, cmd, args, server):
         item_name = item_name[3:]
     if cont_name.startswith('my '):
         cont_name = cont_name[3:]
+
+    if cont_name == 'locker':
+        try:
+            from server.core.commands.player.bank import maybe_handle_locker_put
+            handled = await maybe_handle_locker_put(session, item_name, cont_name, server)
+            if handled:
+                return
+        except Exception as e:
+            log.error("Locker PUT hook failed: %s", e)
 
     item, hand = _find_in_hands(session, item_name)
     if not item:
@@ -1379,6 +1397,14 @@ async def cmd_open(session, cmd, args, server):
     if target.startswith('my '):
         target = target[3:]
 
+    try:
+        from server.core.commands.player.bank import maybe_handle_locker_open
+        handled = await maybe_handle_locker_open(session, target, server)
+        if handled:
+            return
+    except Exception as e:
+        log.error("Locker OPEN hook failed: %s", e)
+
     cont = _find_container_by_name(session, target)
     if cont:
         if cont.get('opened'):
@@ -1414,6 +1440,14 @@ async def cmd_close(session, cmd, args, server):
     target = args.strip().lower()
     if target.startswith('my '):
         target = target[3:]
+
+    try:
+        from server.core.commands.player.bank import maybe_handle_locker_close
+        handled = await maybe_handle_locker_close(session, target, server)
+        if handled:
+            return
+    except Exception as e:
+        log.error("Locker CLOSE hook failed: %s", e)
 
     cont = _find_container_by_name(session, target)
     if cont:
@@ -1648,6 +1682,14 @@ async def cmd_inspect(session, cmd, args, server):
     if target.lower().startswith('my '):
         target = target[3:]
 
+    try:
+        from server.core.commands.player.bank import maybe_handle_locker_inspect
+        handled = await maybe_handle_locker_inspect(session, target, server)
+        if handled:
+            return
+    except Exception as e:
+        log.error("Locker INSPECT hook failed: %s", e)
+
     # Search: hands first, then worn, then containers, then loose
     item, _ = _find_in_hands(session, target)
     if not item:
@@ -1757,6 +1799,14 @@ async def cmd_look_in(session, cmd, args, server):
     target = args.strip().lower()
     if target.startswith('my '):
         target = target[3:]
+
+    try:
+        from server.core.commands.player.bank import maybe_handle_locker_look_in
+        handled = await maybe_handle_locker_look_in(session, target, server)
+        if handled:
+            return
+    except Exception as e:
+        log.error("Locker LOOK IN hook failed: %s", e)
 
     cont = _find_container_by_name(session, target)
     if not cont:

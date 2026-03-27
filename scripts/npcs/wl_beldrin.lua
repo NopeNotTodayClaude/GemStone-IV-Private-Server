@@ -7,7 +7,7 @@ NPC.name           = "Beldrin"
 NPC.article        = ""
 NPC.title          = "rogue guildmaster"
 NPC.description    = "A lean half-elven man who moves with deliberate quietness."
-NPC.home_room_id   = 16393
+NPC.home_room_id   = 8820
 
 NPC.can_combat     = false
 NPC.can_shop       = false

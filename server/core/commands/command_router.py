@@ -43,7 +43,7 @@ from server.core.commands.player.shop import (
     cmd_order, cmd_buy, cmd_sell, cmd_appraise, cmd_ask_npc, cmd_talk_npc, cmd_mark, cmd_backroom
 )
 from server.core.commands.player.bank import (
-    cmd_deposit, cmd_withdraw, cmd_check, cmd_bank
+    cmd_deposit, cmd_withdraw, cmd_check, cmd_bank, cmd_locker
 )
 from server.core.commands.player.customize import cmd_customize, cmd_confirm, cmd_redeem
 from server.core.commands.player.dye import cmd_dye, cmd_dye_colors
@@ -287,6 +287,7 @@ class CommandRouter:
         self.register("withdraw", cmd_withdraw)
         self.register("check", cmd_check)
         self.register("bank", cmd_bank)
+        self.register("locker", cmd_locker)
 
         # ---- Shop customization ----
         self.register("customize", cmd_customize)

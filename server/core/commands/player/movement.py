@@ -462,6 +462,13 @@ async def cmd_move(session, cmd, args, server):
         await session.send_line("You can't do that right now.")
         return
 
+    try:
+        from server.core.commands.player.bank import maybe_handle_locker_leave
+        if await maybe_handle_locker_leave(session, server):
+            return
+    except Exception as e:
+        log.error("Locker departure hook failed: %s", e)
+
     if session.position != 'standing':
         await session.send_line('You need to stand up first.')
         return
@@ -514,6 +521,13 @@ async def cmd_go(session, cmd, args, server):
     if not room:
         await session.send_line("You can't do that right now.")
         return
+
+    try:
+        from server.core.commands.player.bank import maybe_handle_locker_leave
+        if await maybe_handle_locker_leave(session, server):
+            return
+    except Exception as e:
+        log.error("Locker departure hook failed: %s", e)
 
     if session.position != 'standing':
         await session.send_line('You need to stand up first.')

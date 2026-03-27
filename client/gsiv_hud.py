@@ -38,6 +38,7 @@ import os
 import re
 import time
 import argparse
+import heapq
 from collections import deque
 from typing import Optional, Dict, List, Tuple
 
@@ -76,6 +77,10 @@ LICH_MAP_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__f
 AUDIO_RULES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "audio_regions.json")
 SHOP_ROOM_IDS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "shop_room_ids.json")
 CLIENTMEDIA_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "clientmedia")
+LICH_MAP_DIR_CANDIDATES = [
+    r"N:\Ruby4Lich5\R4LInstall\Lich5.15.1\maps",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "maps"),
+]
 
 # Temporary pathfinder denylist for incomplete areas we do not want AUTO/map pathing to use.
 PATHFIND_BLOCKED_EXIT_KEYS = {
@@ -215,6 +220,28 @@ def parse_ansi(text: str) -> List[Tuple[str, Optional[str]]]:
             segments.append((chunk, color))
 
     return segments
+
+
+def _resolve_map_image_path(image_ref: str) -> str:
+    image_ref = str(image_ref or "").strip()
+    if not image_ref:
+        return ""
+
+    if os.path.isabs(image_ref) and os.path.exists(image_ref):
+        return image_ref
+
+    candidates = []
+    if image_ref:
+        candidates.append(os.path.join(os.path.dirname(REGIONS_PATH), image_ref))
+        candidates.append(os.path.join(os.path.dirname(REGIONS_PATH), "maps", os.path.basename(image_ref)))
+
+    for maps_dir in LICH_MAP_DIR_CANDIDATES:
+        candidates.append(os.path.join(maps_dir, os.path.basename(image_ref)))
+
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path
+    return ""
 
 
 # ─────────────────────────────────────────────
@@ -898,6 +925,7 @@ MENU_CMD_RE = re.compile(r"^\[([A-Za-z0-9 ']+):\s*(.+)\]$")
 class RoomGraph:
     def __init__(self, path: str = GRAPH_PATH):
         self.rooms: Dict[int, dict] = {}
+        self.uid_to_room: Dict[int, int] = {}
         self._path = path
         self._load()
 
@@ -911,7 +939,47 @@ class RoomGraph:
             for rid_str, room in data.get("rooms", {}).items():
                 rid = int(rid_str)
                 room["exits"] = {d: int(v) for d, v in room.get("exits", {}).items()}
+                edges = []
+                for edge in room.get("edges", []) or []:
+                    try:
+                        target_id = int(edge.get("to"))
+                    except (TypeError, ValueError):
+                        continue
+                    command = str(edge.get("command") or "").strip()
+                    if not command:
+                        continue
+                    key = str(edge.get("key") or "").strip().lower() or command.replace(" ", "_").lower()
+                    try:
+                        cost = float(edge.get("cost", 1.0))
+                    except (TypeError, ValueError):
+                        cost = 1.0
+                    edges.append({
+                        "to": target_id,
+                        "command": command,
+                        "key": key,
+                        "cost": max(0.05, cost),
+                    })
+                if not edges:
+                    for direction, nxt_id in room["exits"].items():
+                        edges.append({
+                            "to": int(nxt_id),
+                            "command": direction.replace("_", " "),
+                            "key": str(direction).strip().lower(),
+                            "cost": 1.0,
+                        })
+                room["edges"] = edges
                 self.rooms[rid] = room
+                lich_uid = room.get("lich_uid")
+                try:
+                    if lich_uid is not None:
+                        self.uid_to_room[int(lich_uid)] = rid
+                except (TypeError, ValueError):
+                    pass
+                for uid in room.get("uid", []) or []:
+                    try:
+                        self.uid_to_room[int(uid)] = rid
+                    except (TypeError, ValueError):
+                        pass
             self._merge_lich_tags()
             print(f"[RoomGraph] {len(self.rooms)} rooms loaded.")
         except Exception as e:
@@ -960,6 +1028,47 @@ class RoomGraph:
 
     def _is_blocked_path_edge(self, current_room_id: int, exit_key: str, next_room_id: int) -> bool:
         return str(exit_key or "").strip().lower() in PATHFIND_BLOCKED_EXIT_KEYS
+
+    def _iter_edges(self, room: dict):
+        for edge in room.get("edges", []) or []:
+            try:
+                yield {
+                    "to": int(edge.get("to")),
+                    "command": str(edge.get("command") or "").strip(),
+                    "key": str(edge.get("key") or "").strip().lower(),
+                    "cost": max(0.05, float(edge.get("cost", 1.0))),
+                }
+            except (TypeError, ValueError):
+                continue
+
+    def resolve_go2_target(self, query: str, from_id: Optional[int] = None) -> Tuple[Optional[int], str]:
+        target = str(query or "").strip()
+        if not target:
+            return None, "Usage: go2 <room id|lich id|u####|tag>"
+
+        lowered = target.lower()
+        if lowered == "help":
+            return None, "go2 supports room ids, LICH ids, u####, and exact service tags like bank/herbalist."
+
+        uid_match = re.fullmatch(r"u(\d+)", lowered)
+        if uid_match:
+            uid = int(uid_match.group(1))
+            rid = self.uid_to_room.get(uid)
+            return (rid, "") if rid is not None else (None, f"No room found for LICH id u{uid}.")
+
+        if lowered.isdigit():
+            value = int(lowered)
+            if value in self.rooms:
+                return value, ""
+            if value in self.uid_to_room:
+                return self.uid_to_room[value], ""
+            return None, f"No room found for id {value}."
+
+        tagged = self.find_tagged_rooms(lowered, from_id=from_id, limit=1)
+        if tagged:
+            return tagged[0], ""
+
+        return None, f"No go2 target found for '{target}'."
 
     def find_path(self, from_id: int, to_id: int) -> Optional[List[str]]:
         """BFS. Returns list of direction strings, or None if unreachable."""
@@ -1025,29 +1134,36 @@ class RoomGraph:
         return found
 
     def find_path(self, from_id: int, to_id: int) -> Optional[List[str]]:
-        """BFS. Returns list of direction strings, or None if unreachable."""
+        """Weighted pathfinding using Lich timeto when available."""
         from_id, to_id = int(from_id), int(to_id)
         if from_id == to_id:
             return []
         if from_id not in self.rooms or to_id not in self.rooms:
             return None
 
-        visited = {from_id}
-        q: deque = deque([(from_id, [])])
+        best_cost = {from_id: 0.0}
+        queue = [(0.0, from_id, [])]
 
-        while q:
-            cur_id, path = q.popleft()
-            for direction, nxt_id in self.rooms.get(cur_id, {}).get("exits", {}).items():
-                nxt_id = int(nxt_id)
-                if self._is_blocked_path_edge(cur_id, direction, nxt_id):
+        while queue:
+            cost_so_far, cur_id, path = heapq.heappop(queue)
+            if cur_id == to_id:
+                return path
+            if cost_so_far > best_cost.get(cur_id, float("inf")):
+                continue
+
+            room = self.rooms.get(cur_id, {})
+            for edge in self._iter_edges(room):
+                nxt_id = edge["to"]
+                if nxt_id not in self.rooms:
                     continue
-                cmd = direction.replace("_", " ")
-                new_path = path + [cmd]
-                if nxt_id == to_id:
-                    return new_path
-                if nxt_id not in visited and nxt_id in self.rooms:
-                    visited.add(nxt_id)
-                    q.append((nxt_id, new_path))
+                if self._is_blocked_path_edge(cur_id, edge["key"], nxt_id):
+                    continue
+                new_cost = cost_so_far + edge["cost"]
+                if new_cost >= best_cost.get(nxt_id, float("inf")):
+                    continue
+                best_cost[nxt_id] = new_cost
+                heapq.heappush(queue, (new_cost, nxt_id, path + [edge["command"]]))
+
         return None
 
     def find_tagged_rooms(self, tag: str, from_id: Optional[int] = None,
@@ -1081,9 +1197,9 @@ class RoomGraph:
                 found.append(cur_id)
                 if limit and len(found) >= limit:
                     break
-            for direction, nxt_id in room.get("exits", {}).items():
-                nxt_id = int(nxt_id)
-                if self._is_blocked_path_edge(cur_id, direction, nxt_id):
+            for edge in self._iter_edges(room):
+                nxt_id = edge["to"]
+                if self._is_blocked_path_edge(cur_id, edge["key"], nxt_id):
                     continue
                 if nxt_id not in visited and nxt_id in self.rooms:
                     visited.add(nxt_id)
@@ -1539,6 +1655,9 @@ class MapImageCanvas(tk.Canvas):
         if room_id is None:
             return ""
         room = self.graph.get(room_id)
+        region_name = room.get("region_name", "") if room else ""
+        if region_name and room_id in ((self.regions.get(region_name) or {}).get("rooms", {}) or {}):
+            return region_name
         zone = room.get("zone_name", "") if room else ""
         zone_data = self.regions.get(zone)
         if zone_data and room_id in zone_data.get("rooms", {}):
@@ -1572,8 +1691,7 @@ class MapImageCanvas(tk.Canvas):
         zone_data = self.regions.get(zone_name)
         if zone_data and PIL_AVAILABLE:
             img_rel  = zone_data.get("image", "")
-            img_path = img_rel if os.path.isabs(img_rel) else \
-                       os.path.join(os.path.dirname(REGIONS_PATH), img_rel)
+            img_path = _resolve_map_image_path(img_rel)
             if os.path.exists(img_path):
                 try:
                     self._pil_img = Image.open(img_path).convert("RGBA")
@@ -1748,9 +1866,10 @@ class MapImageCanvas(tk.Canvas):
         zone_data = self.regions.get(self._current_zone, {})
         rooms     = zone_data.get("rooms", {})
         for rid, (rx, ry, rw, rh) in rooms.items():
+            pad = 3
             x1, y1 = self._img_to_canvas(rx, ry)
             x2, y2 = self._img_to_canvas(rx + rw, ry + rh)
-            if x1 <= cx <= x2 and y1 <= cy <= y2:
+            if (x1 - pad) <= cx <= (x2 + pad) and (y1 - pad) <= cy <= (y2 + pad):
                 return rid
         return None
 
@@ -5445,8 +5564,13 @@ class HUDApp:
             self._cancel_pathfind()
 
         cmd = self._compose_input_command(typed)
+        if self._input_mode == "command" and typed.lower().startswith("go2"):
+            self._append(f"> {cmd}\n", "prompt")
+            self._handle_go2_command(typed)
+            return "break"
         self._send(cmd)
         self._append(f"> {cmd}\n", "prompt")
+        return "break"
 
     def _hist_prev(self, _ev):
         if not self._hist:
@@ -5476,10 +5600,58 @@ class HUDApp:
     def _map_room_center(self, zone_name: str, room_id: int) -> Optional[Tuple[float, float]]:
         zone = self.regions.get(zone_name, {})
         coords = zone.get("rooms", {}).get(room_id)
+        if not coords and hasattr(self, "_map"):
+            region_name = self._map._region_name_for_room(room_id)
+            zone = self.regions.get(region_name, {})
+            coords = zone.get("rooms", {}).get(room_id)
         if not coords:
             return None
         x, y, w, h = coords
         return x + (w / 2.0), y + (h / 2.0)
+
+    def _start_pathfind_to(self, target_id: int, label: Optional[str] = None):
+        if self._current_room_id is None:
+            self._sys("Unknown current room — try LOOKing first.")
+            return
+
+        if target_id == self._current_room_id:
+            self._sys("Already there.")
+            return
+
+        path = self.graph.find_path(self._current_room_id, target_id)
+        if path is None:
+            self._sys(f"No path found to room #{target_id}.")
+            return
+        if len(path) == 0:
+            return
+
+        self._pathfind_steps = path
+        destination = label or f"#{target_id}"
+        self._sys(
+            f"Pathfinding to {destination} — {len(path)} step(s). "
+            f"Click ✕ Cancel or type any command to abort."
+        )
+        self._cancel_btn.pack(side="right", padx=(4, 0))
+        self._do_next_step()
+
+    def _handle_go2_command(self, typed: str):
+        parts = typed.split(None, 1)
+        target = parts[1].strip() if len(parts) > 1 else ""
+        target_id, message = self.graph.resolve_go2_target(target, from_id=self._current_room_id)
+        if message and target_id is None:
+            self._sys(message)
+            return
+        if target_id is None:
+            self._sys("Usage: go2 <room id|lich id|u####|tag>")
+            return
+
+        room = self.graph.get(target_id) or {}
+        lich_uid = room.get("lich_uid")
+        if lich_uid:
+            label = f"u{lich_uid} / #{target_id}"
+        else:
+            label = f"#{target_id}"
+        self._start_pathfind_to(target_id, label=label)
 
     def _infer_map_direction(self, dx: float, dy: float) -> Optional[str]:
         if abs(dx) <= 1 and abs(dy) <= 1:
@@ -5530,30 +5702,8 @@ class HUDApp:
         return corrected if corrected != current_id else target_id
 
     def _on_map_click(self, target_id: int):
-        if self._current_room_id is None:
-            self._sys("Unknown current room — try LOOKing first.")
-            return
-
-        if target_id == self._current_room_id:
-            return
-
         target_id = self._resolve_adjacent_map_click(target_id)
-
-        path = self.graph.find_path(self._current_room_id, target_id)
-        if path is None:
-            self._sys(f"No path found to room #{target_id}.")
-            return
-
-        if len(path) == 0:
-            return
-
-        self._pathfind_steps = path
-        self._sys(
-            f"Pathfinding to #{target_id} — {len(path)} step(s). "
-            f"Click ✕ Cancel or type any command to abort."
-        )
-        self._cancel_btn.pack(side="right", padx=(4, 0))
-        self._do_next_step()
+        self._start_pathfind_to(target_id)
 
     def _do_next_step(self):
         """Send the next queued pathfind direction.

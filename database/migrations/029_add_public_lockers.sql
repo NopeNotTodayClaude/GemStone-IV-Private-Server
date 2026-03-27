@@ -1,0 +1,223 @@
+CREATE TABLE IF NOT EXISTS public_locker_locations (
+    id              INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    town_name       VARCHAR(64)  NOT NULL,
+    capacity        SMALLINT UNSIGNED NOT NULL DEFAULT 50,
+    created_at      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_public_locker_locations_town (town_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
+
+CREATE TABLE IF NOT EXISTS public_locker_rooms (
+    location_id      INT UNSIGNED NOT NULL,
+    room_id          INT UNSIGNED NOT NULL,
+    room_role        ENUM('bank','access','locker') NOT NULL,
+    PRIMARY KEY (location_id, room_id, room_role),
+    KEY idx_public_locker_rooms_room (room_id),
+    CONSTRAINT fk_public_locker_rooms_location
+        FOREIGN KEY (location_id) REFERENCES public_locker_locations(id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
+
+CREATE TABLE IF NOT EXISTS character_locker_items (
+    id               INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    character_id     INT UNSIGNED NOT NULL,
+    location_id      INT UNSIGNED NOT NULL,
+    item_id          INT UNSIGNED NOT NULL,
+    item_name        VARCHAR(200) DEFAULT NULL,
+    item_short_name  VARCHAR(200) DEFAULT NULL,
+    item_noun        VARCHAR(80)  DEFAULT NULL,
+    item_type        VARCHAR(64)  DEFAULT NULL,
+    base_value       INT UNSIGNED NOT NULL DEFAULT 0,
+    item_data        JSON         NOT NULL,
+    stored_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    KEY idx_character_locker_items_char_loc (character_id, location_id, stored_at),
+    CONSTRAINT fk_character_locker_items_character
+        FOREIGN KEY (character_id) REFERENCES characters(id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_character_locker_items_location
+        FOREIGN KEY (location_id) REFERENCES public_locker_locations(id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
+
+INSERT INTO public_locker_locations (id, town_name, capacity) VALUES
+    (1, 'Wehnimer''s Landing', 50),
+    (2, 'Ta''Illistim', 50),
+    (3, 'Icemule Trace', 50),
+    (4, 'River''s Rest', 50),
+    (5, 'Solhaven', 50),
+    (6, 'Teras Isle', 50),
+    (7, 'Zul Logoth', 50),
+    (8, 'Cysaegir', 50),
+    (9, 'Ta''Vaalor', 50)
+ON DUPLICATE KEY UPDATE
+    capacity = VALUES(capacity),
+    updated_at = CURRENT_TIMESTAMP;
+
+DELETE FROM public_locker_rooms;
+
+INSERT INTO public_locker_rooms (location_id, room_id, room_role) VALUES
+    (1, 399, 'bank'),
+    (1, 400, 'bank'),
+    (1, 388, 'access'),
+    (1, 389, 'access'),
+    (1, 390, 'access'),
+    (1, 391, 'access'),
+    (1, 392, 'access'),
+    (1, 393, 'access'),
+    (1, 394, 'access'),
+    (1, 19336, 'access'),
+    (1, 32754, 'access'),
+    (1, 3855, 'locker'),
+
+    (2, 9, 'bank'),
+    (2, 11, 'bank'),
+    (2, 12, 'bank'),
+    (2, 4025, 'bank'),
+    (2, 4014, 'access'),
+    (2, 4015, 'access'),
+    (2, 4016, 'access'),
+    (2, 18145, 'access'),
+    (2, 26798, 'access'),
+    (2, 26799, 'access'),
+    (2, 26800, 'access'),
+    (2, 26801, 'access'),
+    (2, 26802, 'access'),
+    (2, 32733, 'access'),
+    (2, 32734, 'access'),
+    (2, 32735, 'access'),
+    (2, 32736, 'access'),
+    (2, 32737, 'access'),
+    (2, 32738, 'access'),
+    (2, 32740, 'access'),
+    (2, 32797, 'access'),
+    (2, 26803, 'locker'),
+
+    (3, 3370, 'bank'),
+    (3, 3371, 'bank'),
+    (3, 21689, 'access'),
+    (3, 2439, 'access'),
+    (3, 2440, 'access'),
+    (3, 2441, 'access'),
+    (3, 2442, 'access'),
+    (3, 2443, 'access'),
+    (3, 2444, 'access'),
+    (3, 2445, 'access'),
+    (3, 2446, 'access'),
+    (3, 2447, 'access'),
+    (3, 2448, 'access'),
+    (3, 2449, 'access'),
+    (3, 2450, 'access'),
+    (3, 29534, 'access'),
+    (3, 29548, 'access'),
+    (3, 29549, 'access'),
+    (3, 29550, 'access'),
+    (3, 2485, 'locker'),
+    (3, 30756, 'locker'),
+
+    (4, 10911, 'bank'),
+    (4, 10952, 'access'),
+    (4, 10953, 'access'),
+    (4, 16130, 'access'),
+    (4, 16134, 'access'),
+    (4, 16135, 'access'),
+    (4, 16287, 'access'),
+    (4, 32798, 'access'),
+    (4, 32799, 'access'),
+    (4, 32800, 'access'),
+    (4, 32801, 'access'),
+    (4, 32802, 'access'),
+    (4, 32803, 'access'),
+    (4, 18011, 'locker'),
+
+    (5, 5610, 'bank'),
+    (5, 5710, 'bank'),
+    (5, 13242, 'bank'),
+    (5, 5598, 'access'),
+    (5, 5599, 'access'),
+    (5, 5600, 'access'),
+    (5, 5602, 'access'),
+    (5, 5603, 'access'),
+    (5, 5604, 'access'),
+    (5, 18248, 'access'),
+    (5, 18253, 'access'),
+    (5, 31020, 'access'),
+    (5, 31021, 'access'),
+    (5, 31023, 'access'),
+    (5, 31024, 'access'),
+    (5, 31053, 'access'),
+    (5, 31054, 'access'),
+    (5, 32962, 'access'),
+    (5, 32963, 'access'),
+    (5, 33001, 'access'),
+    (5, 33002, 'access'),
+    (5, 33008, 'access'),
+    (5, 33009, 'access'),
+    (5, 33040, 'access'),
+    (5, 33042, 'access'),
+    (5, 31022, 'locker'),
+    (5, 31025, 'locker'),
+    (5, 31055, 'locker'),
+    (5, 31056, 'locker'),
+    (5, 32964, 'locker'),
+    (5, 32990, 'locker'),
+    (5, 33003, 'locker'),
+    (5, 33004, 'locker'),
+    (5, 33010, 'locker'),
+    (5, 33041, 'locker'),
+    (5, 33043, 'locker'),
+
+    (6, 1838, 'bank'),
+    (6, 1884, 'access'),
+    (6, 13059, 'access'),
+    (6, 13060, 'access'),
+    (6, 28715, 'locker'),
+    (6, 28716, 'locker'),
+
+    (7, 9472, 'bank'),
+    (7, 9473, 'bank'),
+    (7, 9494, 'access'),
+    (7, 9495, 'access'),
+    (7, 9496, 'access'),
+    (7, 13161, 'access'),
+    (7, 16853, 'access'),
+    (7, 16854, 'access'),
+    (7, 24497, 'locker'),
+
+    (8, 4670, 'access'),
+    (8, 4686, 'bank'),
+    (8, 9667, 'bank'),
+    (8, 9678, 'access'),
+    (8, 9679, 'access'),
+    (8, 9680, 'access'),
+    (8, 9681, 'access'),
+    (8, 9682, 'access'),
+    (8, 17148, 'access'),
+    (8, 17149, 'access'),
+    (8, 32755, 'locker'),
+
+    (9, 10313, 'access'),
+    (9, 10317, 'access'),
+    (9, 10318, 'access'),
+    (9, 10323, 'access'),
+    (9, 10324, 'bank'),
+    (9, 10325, 'bank'),
+    (9, 10326, 'bank'),
+    (9, 28255, 'locker'),
+    (9, 30719, 'access'),
+    (9, 30720, 'access'),
+    (9, 30721, 'access'),
+    (9, 30722, 'access'),
+    (9, 30723, 'access'),
+    (9, 30724, 'access'),
+    (9, 30725, 'access'),
+    (9, 30726, 'access');
+
+UPDATE towns SET bank_room_id = 399 WHERE id = 1;
+UPDATE towns SET bank_room_id = 10324 WHERE id = 2;
+UPDATE towns SET bank_room_id = 3370 WHERE id = 3;
+UPDATE towns SET bank_room_id = 10911 WHERE id = 4;
+UPDATE towns SET bank_room_id = 5710 WHERE id = 5;
+UPDATE towns SET bank_room_id = 1838 WHERE id = 6;
+UPDATE towns SET bank_room_id = 9472 WHERE id = 7;

@@ -98,6 +98,8 @@ class Session:
         # Economy
         self.silver = 0
         self.bank_silver = 0
+        self.locker_open_location_id = None
+        self.locker_open_town_name = None
 
         # Training
         self.physical_tp = 0

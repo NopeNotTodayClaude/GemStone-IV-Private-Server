@@ -1179,6 +1179,187 @@ class Database:
         finally:
             conn.close()
 
+    def get_public_locker_location_for_room(self, room_id):
+        """Return locker location metadata plus room roles for the given room."""
+        if not room_id:
+            return None
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                """
+                SELECT pll.id, pll.town_name, pll.capacity, plr.room_role
+                FROM public_locker_locations pll
+                JOIN public_locker_rooms plr ON plr.location_id = pll.id
+                WHERE plr.room_id = %s
+                ORDER BY FIELD(plr.room_role, 'locker', 'access', 'bank')
+                """,
+                (int(room_id),)
+            )
+            rows = cur.fetchall()
+            if not rows:
+                return None
+            location = {
+                "id": int(rows[0]["id"]),
+                "town_name": rows[0]["town_name"],
+                "capacity": int(rows[0]["capacity"] or 50),
+                "roles": sorted({(row.get("room_role") or "").lower() for row in rows if row.get("room_role")}),
+            }
+            return location
+        finally:
+            conn.close()
+
+    def get_public_locker_room_ids(self, location_id, room_role=None):
+        """Return room ids for a public locker location, optionally filtered by role."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            if room_role:
+                cur.execute(
+                    """
+                    SELECT room_id
+                    FROM public_locker_rooms
+                    WHERE location_id = %s AND room_role = %s
+                    ORDER BY room_id
+                    """,
+                    (int(location_id), str(room_role)),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT room_id
+                    FROM public_locker_rooms
+                    WHERE location_id = %s
+                    ORDER BY room_role, room_id
+                    """,
+                    (int(location_id),),
+                )
+            return [int(row[0]) for row in cur.fetchall()]
+        finally:
+            conn.close()
+
+    def get_public_locker_locations(self):
+        """Return all public locker locations."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                """
+                SELECT id, town_name, capacity
+                FROM public_locker_locations
+                ORDER BY town_name
+                """
+            )
+            return cur.fetchall()
+        finally:
+            conn.close()
+
+    def get_character_locker_items(self, character_id, location_id):
+        """Load all locker items for a character/location."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                """
+                SELECT id, character_id, location_id, item_id, item_name, item_short_name,
+                       item_noun, item_type, base_value, item_data, stored_at
+                FROM character_locker_items
+                WHERE character_id = %s AND location_id = %s
+                ORDER BY stored_at ASC, id ASC
+                """,
+                (int(character_id), int(location_id)),
+            )
+            rows = cur.fetchall()
+        finally:
+            conn.close()
+
+        items = []
+        for row in rows:
+            try:
+                snapshot = json.loads(row.get("item_data") or "{}")
+                if not isinstance(snapshot, dict):
+                    snapshot = {}
+            except Exception:
+                snapshot = {}
+            snapshot.setdefault("item_id", row.get("item_id"))
+            snapshot.setdefault("name", row.get("item_name"))
+            snapshot.setdefault("short_name", row.get("item_short_name"))
+            snapshot.setdefault("noun", row.get("item_noun"))
+            snapshot.setdefault("item_type", row.get("item_type"))
+            snapshot.setdefault("value", row.get("base_value"))
+            snapshot["locker_item_id"] = int(row["id"])
+            snapshot["stored_at"] = row.get("stored_at")
+            items.append(snapshot)
+        return items
+
+    def count_character_locker_items(self, character_id, location_id):
+        """Count locker items for a character/location."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM character_locker_items
+                WHERE character_id = %s AND location_id = %s
+                """,
+                (int(character_id), int(location_id)),
+            )
+            row = cur.fetchone()
+            return int(row[0] or 0) if row else 0
+        finally:
+            conn.close()
+
+    def save_character_locker_item(self, character_id, location_id, item_snapshot: dict):
+        """Persist one item snapshot into a character's public locker."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            snapshot = {
+                key: value for key, value in dict(item_snapshot or {}).items()
+                if key not in {"inv_id", "slot", "container_id", "locker_item_id", "stored_at"}
+            }
+            cur.execute(
+                """
+                INSERT INTO character_locker_items
+                    (character_id, location_id, item_id, item_name, item_short_name,
+                     item_noun, item_type, base_value, item_data)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    int(character_id),
+                    int(location_id),
+                    int(snapshot.get("item_id") or 0),
+                    snapshot.get("name") or snapshot.get("short_name") or "something",
+                    snapshot.get("short_name") or snapshot.get("name") or "something",
+                    snapshot.get("noun"),
+                    snapshot.get("item_type"),
+                    max(0, int(snapshot.get("value") or 0)),
+                    json.dumps(snapshot),
+                ),
+            )
+            conn.commit()
+            return cur.lastrowid
+        except Exception as e:
+            log.error("Failed to save locker item for char %s loc %s: %s", character_id, location_id, e)
+            return None
+        finally:
+            conn.close()
+
+    def remove_character_locker_item(self, locker_item_id):
+        """Delete one locker item row."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM character_locker_items WHERE id = %s", (int(locker_item_id),))
+            conn.commit()
+            return cur.rowcount > 0
+        except Exception as e:
+            log.error("Failed to remove locker item %s: %s", locker_item_id, e)
+            return False
+        finally:
+            conn.close()
+
     def add_item_to_inventory(self, character_id, item_id, slot=None, quantity=1):
         """Add an item to a character's inventory. Returns inventory row id."""
         conn = self._get_conn()
@@ -1211,6 +1392,31 @@ class Database:
                 return cur.lastrowid
         except Exception as e:
             log.error("Failed to add item to inventory: %s", e)
+            return None
+        finally:
+            conn.close()
+
+    def insert_inventory_item_instance(self, character_id, item_id, slot=None, quantity=1, container_id=None):
+        """Insert a distinct inventory row without stack-merging."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            if slot in ("right_hand", "left_hand"):
+                cur.execute(
+                    "UPDATE character_inventory SET slot = NULL WHERE character_id = %s AND slot = %s",
+                    (character_id, slot),
+                )
+            cur.execute(
+                """
+                INSERT INTO character_inventory (character_id, item_id, slot, quantity, container_id)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (character_id, item_id, slot, quantity, container_id),
+            )
+            conn.commit()
+            return cur.lastrowid
+        except Exception as e:
+            log.error("Failed to insert inventory item instance: %s", e)
             return None
         finally:
             conn.close()

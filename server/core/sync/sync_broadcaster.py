@@ -466,6 +466,7 @@ def _build_npc_actions(session, server, npc) -> list[dict]:
         add("Check balance", "check balance")
         add("Deposit...", "deposit ", prefill=True)
         add("Withdraw...", "withdraw ", prefill=True)
+        add("Locker info", "locker info")
     if "healer" in service_tags:
         add("Ask about healing", f"ask {npc_target} about healing")
     if "travel" in service_tags:
