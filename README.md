@@ -32,15 +32,15 @@ Download entire project as a zip > extract where ever you like. Default server w
 
 Install MariaDB or MySQL.
 
-Create a database named gemstone_dev.
-
-Import USETHIS.sql into gemstone_dev.
-
 Make sure SQL login matches:
 
 user: root
 
 password: none
+
+Create a database named gemstone_dev.
+
+Import USETHIS.sql into gemstone_dev. (If you have Heidi SQL installed you can literally just double click that file to setup the SQL)
 
 Install Python. 
 
