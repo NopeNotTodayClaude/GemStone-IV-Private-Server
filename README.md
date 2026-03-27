@@ -61,9 +61,9 @@ Database Notes
 
 Main DB name: gemstone_dev
 
-USETHIS.sql is the import file for another machine
+USETHIS.sql is the import file. After you setup Maria DB make sure you make a database named gemstone_dev then import or run the SQL file (USETHIS.SQL).
 
-account and character data are intentionally stripped from the export
+If you have HEIDI SQL installed you can simply double click that file to get it "installed".
 
 Optional Media
 
@@ -96,7 +96,10 @@ enter the world
 test movement, shops, and commands
 
 Troubleshooting
-If the client cannot connect, confirm the server is running on port 4901
+If the client cannot connect, confirm the server is running on port 4901. You could simply use 127.0.0.1 to connect to it too though.
 Also open 4902 for the live sync connection between server and client HUD or you will have panel info that does not function.
 If the DB fails, confirm gemstone_dev exists and imported correctly
 If optional audio is missing, the game should still run without clientmedia
+
+P.S. None of this was leaked from GS4 devs, this was made entirely from scratch, 100% AI made between Claude & Codex 
+(More credit to Codex for the WAY higher usage limits)
