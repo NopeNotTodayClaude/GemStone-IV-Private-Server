@@ -42,7 +42,9 @@ user: root
 
 password: none
 
-Install Python. Then PIP install Pillow so the map naviation/clicking words in the client
+Install Python. 
+
+Then open command prompts and run "PIP install Pillow" so the map naviation/clicking words in the client
 
 Start the game server. (Start_server.bat) Edit to your file/folders
 
