@@ -972,6 +972,20 @@ Effects["bonus_xp"] = {
     description      = "Server-wide event bonus; creatures award additional experience.",
 }
 
+Effects["floofer_glow"] = {
+    name             = "Comforting Glow",
+    category         = "BUFF_SPECIAL",
+    prompt_char      = nil,
+    stackable        = false,
+    max_stacks       = 1,
+    tick_interval    = 5,
+    duration_default = 60,
+    combat_mods      = { as = 0, ds = 0, evade_pct = 0, parry_pct = 0, block_pct = 0 },
+    blocks           = {},
+    can_clear        = {},
+    description      = "A Floofer's restorative glow quietly heals you every five seconds while active.",
+}
+
 Effects["roundtime"] = {
     name             = "Roundtime",
     category         = "STATE",

@@ -10,8 +10,10 @@ from __future__ import annotations
 import json
 import logging
 import random
+import time
 from datetime import datetime, timedelta
 
+from server.core.entity.npc.npc import NPC
 from server.core.protocol.colors import colorize, TextPresets, npc_speech
 
 log = logging.getLogger(__name__)
@@ -65,40 +67,6 @@ class GuildEngine:
         bounties = config.get("bounties") or {}
         return list(bounties.get(str(town_name or ""), []) or [])
 
-    def _pick_adventurer_bounty(self, town_name: str, level: int):
-        pool = self._get_adventurer_bounty_pool(town_name)
-        if not pool:
-            return None
-        level = max(1, int(level or 1))
-        exact = [row for row in pool if int(row.get("min_level") or 1) <= level <= int(row.get("max_level") or 100)]
-        if exact:
-            return random.choice(exact)
-
-        def _distance(row):
-            low = int(row.get("min_level") or 1)
-            high = int(row.get("max_level") or 100)
-            if level < low:
-                return low - level
-            if level > high:
-                return level - high
-            return 0
-
-        pool = sorted(pool, key=_distance)
-        return pool[0] if pool else None
-
-    @staticmethod
-    def _format_adventurer_bounty(bounty_row):
-        if not bounty_row:
-            return "No active bounty."
-        target = bounty_row.get("target_display_name") or bounty_row.get("target") or "target"
-        cur = int(bounty_row.get("current_count") or 0)
-        goal = int(bounty_row.get("target_count") or 0)
-        area = str(bounty_row.get("town_name") or "").strip()
-        status = str(bounty_row.get("status") or "active").lower()
-        ready = "  It is ready to turn in." if status == "completed" else ""
-        area_text = f" near {area}" if area else ""
-        return f"Contract: defeat {goal} {target}{area_text}.  Progress: {cur}/{goal}.{ready}"
-
     def _get_adventurer_profile(self, character_id: int):
         db = getattr(self.server, "db", None)
         if not db or not character_id:
@@ -128,68 +96,6 @@ class GuildEngine:
         if not db or not character_id:
             return None
         return db.get_character_bounty(character_id)
-
-    async def assign_adventurer_bounty(self, session, npc):
-        authority = self._get_adventurer_authority(npc)
-        if not authority:
-            return False, "This is not an Adventurer's Guild authority.", None
-        profile = self.ensure_adventurer_registration(session.character_id, authority.get("town_name") or "")
-        if not profile:
-            return False, "The Adventurer's Guild ledger is unavailable right now.", None
-
-        current = self.get_character_bounty(session.character_id)
-        if current:
-            status = str(current.get("status") or "active").lower()
-            if status == "completed":
-                return False, "You already have a finished contract waiting to be turned in.", current
-            return False, "You already have an active bounty on the books.", current
-
-        bounty = self._pick_adventurer_bounty(authority.get("town_name") or "", getattr(session, "level", 1))
-        if not bounty:
-            return False, "I do not have any contracts suited to you right now.", None
-        row = self.server.db.assign_character_bounty(
-            session.character_id,
-            bounty,
-            town_name=authority.get("town_name") or "",
-            taskmaster_template_id=authority.get("template_id") or "",
-            taskmaster_room_id=int(authority.get("room_id") or 0),
-        )
-        if not row:
-            return False, "The guild contract board refuses to issue that bounty right now.", None
-        return True, None, row
-
-    async def record_bounty_kill(self, session, creature):
-        if not getattr(session, "character_id", None) or not creature:
-            return None
-        active = self.get_character_bounty(session.character_id)
-        if not active:
-            return None
-        if str(active.get("status") or "").lower() not in ("active", "completed"):
-            return None
-        target_template = str(active.get("target_template_id") or "").strip().lower()
-        creature_template = str(getattr(creature, "template_id", "") or "").strip().lower()
-        if not target_template or target_template != creature_template:
-            return None
-        updated = self.server.db.record_character_bounty_kill(int(active["id"]), increment=1)
-        if not updated:
-            return None
-        cur = int(updated.get("current_count") or 0)
-        goal = int(updated.get("target_count") or 0)
-        if str(updated.get("status") or "").lower() == "completed":
-            await session.send_line(
-                colorize(
-                    f"  Bounty complete: {updated.get('target_display_name') or updated.get('target')}.  Return to the taskmaster.",
-                    TextPresets.COMBAT_HIT,
-                )
-            )
-        else:
-            await session.send_line(
-                colorize(
-                    f"  Bounty progress: {cur}/{goal}.",
-                    TextPresets.SYSTEM,
-                )
-            )
-        return updated
 
     async def turn_in_adventurer_bounty(self, session, npc):
         authority = self._get_adventurer_authority(npc)
@@ -246,6 +152,9 @@ class GuildEngine:
         lifetime = int((profile or {}).get("lifetime_bounties") or 0) + 1
         new_points = current_points + points
         rank = self._adventurer_rank_entry(new_points)
+        data = self._load_bounty_data(active)
+        self._despawn_temp_npc(data, "escort")
+        self._despawn_temp_npc(data, "rescue")
         updated_profile = self.server.db.update_character_adventurer_guild(
             session.character_id,
             town_name=authority.get("town_name") or "",
@@ -414,8 +323,212 @@ class GuildEngine:
             "destination_room_id": int(bounty_row.get("destination_room_id") or 0),
             "destination_name": str(bounty_row.get("destination_name") or ""),
             "report_room_id": int(bounty_row.get("report_room_id") or 0),
+            "encounter_template_id": str(bounty_row.get("encounter_template_id") or bounty_row.get("target_template_id") or ""),
+            "escort_enemy_template_id": str(bounty_row.get("escort_enemy_template_id") or "hobgoblin"),
+            "rescue_enemy_template_id": str(bounty_row.get("rescue_enemy_template_id") or "hobgoblin"),
+            "escort_npc_name": str(bounty_row.get("escort_npc_name") or ""),
+            "escort_npc_description": str(bounty_row.get("escort_npc_description") or ""),
+            "rescue_npc_name": str(bounty_row.get("rescue_npc_name") or bounty_row.get("target_name") or ""),
+            "rescue_npc_description": str(bounty_row.get("rescue_npc_description") or ""),
+            "active_creature_ids": [],
+            "escort_npc_id": 0,
+            "rescue_npc_id": 0,
+            "encounter_room_id": 0,
+            "last_spawn_at": 0,
             "phase": str(bounty_row.get("phase") or "assigned"),
         }
+
+    def _save_bounty_data(self, active, data):
+        if not active or not data:
+            return
+        self.server.db.update_character_bounty_data(int(active["id"]), data)
+
+    def _alive_creature_ids(self, ids):
+        out = []
+        creature_mgr = getattr(self.server, "creatures", None)
+        if not creature_mgr:
+            return out
+        for raw in ids or []:
+            try:
+                cid = int(raw)
+            except Exception:
+                continue
+            creature = creature_mgr.get_creature(cid)
+            if creature and getattr(creature, "alive", False):
+                out.append(cid)
+        return out
+
+    def _eligible_spawn_rooms_for_template(self, template_id: str):
+        creature_mgr = getattr(self.server, "creatures", None)
+        if not creature_mgr or not template_id:
+            return []
+        rooms = []
+        for cfg in getattr(creature_mgr, "_spawn_config", []) or []:
+            if str(cfg.get("template_id") or "") != str(template_id):
+                continue
+            for room_id in cfg.get("rooms", []) or []:
+                try:
+                    room_id = int(room_id)
+                except Exception:
+                    continue
+                if room_id not in rooms:
+                    rooms.append(room_id)
+        return rooms
+
+    def _spawn_bounty_creature(self, session, template_id: str, room_id: int, *, display_name=None, hp_scale=1.0, as_bonus=0, ds_bonus=0):
+        creature_mgr = getattr(self.server, "creatures", None)
+        if not creature_mgr:
+            return None
+        creature = creature_mgr.spawn_creature(str(template_id or ""), int(room_id))
+        if not creature:
+            return None
+        if display_name:
+            words = str(display_name).split()
+            first = words[0].lower() if words else ""
+            if first in {"a", "an", "the"}:
+                creature.article = first
+                creature.name = " ".join(words[1:]) or creature.name
+            else:
+                creature.name = str(display_name)
+        creature.health_max = max(1, int(creature.health_max * max(0.5, float(hp_scale or 1.0))))
+        creature.health_current = creature.health_max
+        creature.as_melee = int(getattr(creature, "as_melee", 0) or 0) + int(as_bonus or 0)
+        creature.ds_melee = int(getattr(creature, "ds_melee", 0) or 0) + int(ds_bonus or 0)
+        creature.ds_bolt = int(getattr(creature, "ds_bolt", 0) or 0) + max(0, int(ds_bonus or 0) // 2)
+        creature.aggressive = True
+        creature.in_combat = True
+        creature.target = session
+        return creature
+
+    def _spawn_temp_bounty_npc(self, active, data, key: str, *, name: str, description: str, room_id: int):
+        npc_mgr = getattr(self.server, "npcs", None)
+        if not npc_mgr or not name or not room_id:
+            return None
+        npc = NPC({
+            "template_id": f"bounty_{active['id']}_{key}_{int(time.time())}",
+            "name": name,
+            "article": "",
+            "title": "",
+            "description": description or "Someone attached to an Adventurer's Guild contract is here.",
+            "room_id": int(room_id),
+            "home_room_id": int(room_id),
+            "can_combat": False,
+            "can_shop": False,
+            "can_wander": False,
+            "can_emote": False,
+            "can_chat": False,
+            "can_loot": False,
+            "is_guild": False,
+            "is_quest": True,
+            "aggressive": False,
+            "attacks": [],
+        })
+        npc_mgr._place_npc(npc)
+        data[f"{key}_npc_id"] = int(npc.id)
+        return npc
+
+    def _get_temp_npc(self, data, key: str):
+        npc_id = int(data.get(f"{key}_npc_id") or 0)
+        npc_mgr = getattr(self.server, "npcs", None)
+        if not npc_mgr or not npc_id:
+            return None
+        return npc_mgr.get_npc(npc_id)
+
+    def _move_temp_npc(self, data, key: str, room_id: int):
+        npc = self._get_temp_npc(data, key)
+        npc_mgr = getattr(self.server, "npcs", None)
+        if not npc or not npc_mgr:
+            return None
+        npc_mgr._move_npc_index(npc, int(room_id))
+        return npc
+
+    def _despawn_temp_npc(self, data, key: str):
+        npc = self._get_temp_npc(data, key)
+        npc_mgr = getattr(self.server, "npcs", None)
+        if npc and npc_mgr:
+            npc_mgr._remove_npc(npc)
+        data[f"{key}_npc_id"] = 0
+
+    async def _maybe_spawn_field_encounter(self, session, active, data):
+        room = getattr(session, "current_room", None)
+        if not room or getattr(room, "safe", False):
+            return False
+        now = time.time()
+        if now - float(data.get("last_spawn_at") or 0) < 12:
+            return False
+        data["active_creature_ids"] = self._alive_creature_ids(data.get("active_creature_ids") or [])
+        if data["active_creature_ids"]:
+            return False
+
+        bounty_type = str(active.get("bounty_type") or data.get("type") or "").lower()
+        target_template = str(data.get("encounter_template_id") or active.get("target_template_id") or "")
+        eligible = set(data.get("search_room_ids") or []) or set(self._eligible_spawn_rooms_for_template(target_template))
+        if bounty_type in {"bandit", "boss"} and eligible and int(room.id) not in {int(x) for x in eligible}:
+            return False
+        if bounty_type == "rescue" and data.get("search_room_ids") and int(room.id) not in {int(x) for x in data.get("search_room_ids") or []}:
+            return False
+        if bounty_type == "escort" and int(room.id) in {
+            int(data.get("report_room_id") or 0),
+            int(data.get("destination_room_id") or 0),
+        }:
+            return False
+
+        if bounty_type == "boss":
+            creature = self._spawn_bounty_creature(
+                session,
+                target_template,
+                room.id,
+                display_name=active.get("target_display_name") or active.get("target"),
+                hp_scale=1.35,
+                as_bonus=14,
+                ds_bonus=10,
+            )
+            spawned = [creature] if creature else []
+        else:
+            count = 1 if bounty_type == "rescue" else random.randint(1, 2)
+            if bounty_type == "bandit":
+                count = random.randint(1, 2)
+            if bounty_type == "escort":
+                target_template = str(data.get("escort_enemy_template_id") or target_template or "hobgoblin")
+            if bounty_type == "rescue":
+                target_template = str(data.get("rescue_enemy_template_id") or target_template or "hobgoblin")
+            spawned = []
+            for _ in range(count):
+                creature = self._spawn_bounty_creature(
+                    session,
+                    target_template,
+                    room.id,
+                    display_name=active.get("target_display_name") if bounty_type == "bandit" else None,
+                    hp_scale=1.08 if bounty_type == "bandit" else 1.0,
+                    as_bonus=6 if bounty_type == "bandit" else 2,
+                    ds_bonus=4 if bounty_type == "bandit" else 0,
+                )
+                if creature:
+                    spawned.append(creature)
+        if not spawned:
+            return False
+
+        data["active_creature_ids"] = [int(c.id) for c in spawned]
+        data["encounter_room_id"] = int(room.id)
+        data["last_spawn_at"] = int(now)
+        lines = {
+            "bandit": f"  A bandit crew bursts from cover and closes on {session.character_name}!",
+            "boss": f"  {spawned[0].full_name.capitalize()} strides into view, answering the guild contract!",
+            "escort": f"  Highway ambushers surge out to intercept {session.character_name}'s charge!",
+            "rescue": f"  Rough captors reveal themselves as you press deeper into the search area!",
+        }
+        await session.send_line(colorize(lines.get(bounty_type, "  Trouble finds you."), TextPresets.WARNING))
+        if bounty_type in {"bandit", "escort"}:
+            status = getattr(self.server, "status", None)
+            if status and random.random() < 0.65:
+                opener = random.choice([
+                    ("webbed", 12, "  Hidden attackers spring a snaring ambush as they close in!"),
+                    ("stunned", 4, "  A sudden crack from cover leaves you reeling as the attackers rush in!"),
+                    ("demoralized", 14, "  The ambushers howl and surge in, rattling your confidence!"),
+                ])
+                status.apply(session, opener[0], duration=opener[1])
+                await session.send_line(colorize(opener[2], TextPresets.WARNING))
+        return True
 
     def _pick_adventurer_bounty(self, town_name: str, level: int, *, difficulty="normal", exclude_key=None):
         pool = self._get_adventurer_bounty_pool(town_name)
@@ -565,7 +678,24 @@ class GuildEngine:
         )
         if not row:
             return False, "The guild contract board refuses to issue that bounty right now.", None
+        await self._prime_bounty_runtime(session, row)
         return True, None, row
+
+    async def _prime_bounty_runtime(self, session, active):
+        if not active:
+            return
+        data = self._load_bounty_data(active)
+        bounty_type = str(active.get("bounty_type") or data.get("type") or "").lower()
+        room = getattr(session, "current_room", None)
+        if not room:
+            return
+        if bounty_type == "escort" and not int(data.get("escort_npc_id") or 0):
+            name = data.get("escort_npc_name") or "a nervous guild courier"
+            desc = data.get("escort_npc_description") or "The traveler looks uneasy but determined to reach the destination alive."
+            npc = self._spawn_temp_bounty_npc(active, data, "escort", name=name, description=desc, room_id=room.id)
+            if npc:
+                await session.send_line(colorize(f"  {npc.display_name} falls in beside you under guild protection.", TextPresets.SYSTEM))
+                self._save_bounty_data(active, data)
 
     async def _record_adventurer_bounty_progress(self, session, active, *, increment=1, complete_text=None):
         updated = self.server.db.record_character_bounty_progress(int(active["id"]), increment=increment)
@@ -612,6 +742,22 @@ class GuildEngine:
         if not active or str(active.get("status") or "").lower() not in ("active", "completed"):
             return None
         bounty_type = str(active.get("bounty_type") or "").lower()
+        data = self._load_bounty_data(active)
+        active_ids = self._alive_creature_ids(data.get("active_creature_ids") or [])
+        if int(getattr(creature, "id", 0) or 0) in active_ids:
+            active_ids = [cid for cid in active_ids if cid != int(getattr(creature, "id", 0) or 0)]
+            data["active_creature_ids"] = active_ids
+            self._save_bounty_data(active, data)
+            if bounty_type == "rescue" and not active_ids and str(data.get("phase") or "").lower() in {"assigned", "search"}:
+                room = getattr(session, "current_room", None)
+                if room and not int(data.get("rescue_npc_id") or 0):
+                    name = data.get("rescue_npc_name") or active.get("target_display_name") or active.get("target") or "a shaken survivor"
+                    desc = data.get("rescue_npc_description") or "The missing traveler looks exhausted, but still capable of making the trip back with an escort."
+                    npc = self._spawn_temp_bounty_npc(active, data, "rescue", name=name, description=desc, room_id=room.id)
+                    if npc:
+                        data["phase"] = "return"
+                        self._save_bounty_data(active, data)
+                        await session.send_line(colorize(f"  You find {npc.display_name} once the area is cleared.  They cling close, ready to follow you out.", TextPresets.COMBAT_HIT))
         if bounty_type not in {"cull", "bandit", "boss"}:
             return None
         target_template = str(active.get("target_template_id") or "").strip().lower()
@@ -705,12 +851,14 @@ class GuildEngine:
         if bounty_type == "escort":
             destination_room_id = int(data.get("destination_room_id") or 0)
             if phase in {"assigned", "outbound"} and destination_room_id and room_id == destination_room_id:
+                if int(data.get("escort_npc_id") or 0):
+                    self._despawn_temp_npc(data, "escort")
                 data["phase"] = "return"
-                self.server.db.update_character_bounty_data(int(active["id"]), data)
+                self._save_bounty_data(active, data)
                 return await self._record_adventurer_bounty_progress(
                     session,
                     active,
-                    complete_text=f"  Delivery made at {data.get('destination_name') or 'your destination'}.  Return to the taskmaster for payment.",
+                    complete_text=f"  Your escorted charge reaches {data.get('destination_name') or 'the destination'} safely.  Return to the taskmaster for payment.",
                 )
             if phase == "return" and report_room_id and room_id == report_room_id:
                 return await self._record_adventurer_bounty_progress(
@@ -720,20 +868,71 @@ class GuildEngine:
                 )
             return None
 
-        if phase in {"assigned", "search"} and self._search_bounty_matches_room(active, room):
+        if phase in {"assigned", "search"} and int(data.get("rescue_npc_id") or 0):
             data["phase"] = "return"
-            self.server.db.update_character_bounty_data(int(active["id"]), data)
+            self._save_bounty_data(active, data)
             return await self._record_adventurer_bounty_progress(
                 session,
                 active,
-                complete_text=f"  You locate signs of {active.get('target_display_name') or active.get('target')}.  Return to the taskmaster.",
+                complete_text=f"  You locate {active.get('target_display_name') or active.get('target')} and lead them out.  Return to the taskmaster.",
             )
         if phase == "return" and report_room_id and room_id == report_room_id:
+            if int(data.get("rescue_npc_id") or 0):
+                self._despawn_temp_npc(data, "rescue")
+                self._save_bounty_data(active, data)
             return await self._record_adventurer_bounty_progress(
                 session,
                 active,
                 complete_text="  Rescue report complete.  Your contract is ready to turn in.",
             )
+        return None
+
+    async def on_character_enter_room(self, session, *, from_room=None, to_room=None):
+        if not getattr(session, "character_id", None):
+            return None
+        active = self.get_character_bounty(session.character_id)
+        if not active or str(active.get("status") or "").lower() not in ("active", "completed"):
+            return None
+        room = to_room or getattr(session, "current_room", None)
+        if not room:
+            return None
+
+        data = self._load_bounty_data(active)
+        bounty_type = str(active.get("bounty_type") or data.get("type") or "").lower()
+
+        # Escort/rescue companions should actually follow the player room-to-room.
+        creature_mgr = getattr(self.server, "creatures", None)
+        room_hostiles = []
+        if creature_mgr:
+            room_hostiles = [
+                c for c in creature_mgr.get_creatures_in_room(room.id)
+                if getattr(c, "alive", False) and not getattr(c, "is_stunned", False)
+            ]
+
+        if bounty_type == "escort" and int(data.get("escort_npc_id") or 0):
+            escort_npc = self._get_temp_npc(data, "escort")
+            if escort_npc and from_room and int(getattr(escort_npc, "current_room_id", 0) or 0) == int(getattr(from_room, "id", 0) or 0):
+                if room_hostiles:
+                    await session.send_line(colorize("  Your escorted charge refuses to enter while hostile creatures still hold the room.", TextPresets.WARNING))
+                else:
+                    self._move_temp_npc(data, "escort", room.id)
+        if bounty_type == "rescue" and int(data.get("rescue_npc_id") or 0):
+            rescue_npc = self._get_temp_npc(data, "rescue")
+            if rescue_npc and from_room and int(getattr(rescue_npc, "current_room_id", 0) or 0) == int(getattr(from_room, "id", 0) or 0):
+                if room_hostiles:
+                    await session.send_line(colorize("  The rescued traveler hangs back, unwilling to walk into active danger.", TextPresets.WARNING))
+                else:
+                    self._move_temp_npc(data, "rescue", room.id)
+
+        if bounty_type in {"bandit", "boss", "escort", "rescue"}:
+            await self._maybe_spawn_field_encounter(session, active, data)
+
+        self._save_bounty_data(active, data)
+
+        if bounty_type == "heirloom":
+            return await self.maybe_complete_search_bounty(session)
+        if bounty_type in {"escort", "rescue"}:
+            return await self.maybe_complete_travel_bounty(session)
         return None
 
     async def checkin_adventurer_guild(self, session, npc=None):
@@ -787,6 +986,9 @@ class GuildEngine:
         active = self.get_character_bounty(session.character_id)
         if not active:
             return False, "You have no active Adventurer's Guild contract.", None
+        data = self._load_bounty_data(active)
+        self._despawn_temp_npc(data, "escort")
+        self._despawn_temp_npc(data, "rescue")
         self.server.db.close_character_bounty(int(active["id"]))
         return True, None, active
 

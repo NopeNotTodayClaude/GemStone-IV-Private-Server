@@ -331,6 +331,11 @@ class Room:
             visible_hidden = self.get_visible_hidden_exits(session)
             for key in sorted(visible_hidden.keys()):
                 display_names.append(self.display_exit_name(key) + " (hidden path)")
+            server = getattr(session, "server", None)
+            pets = getattr(server, "pets", None) if server else None
+            if pets:
+                for key in sorted((pets.get_dynamic_room_exits(session, self) or {}).keys()):
+                    display_names.append(self.display_exit_name(key) + " (hidden path)")
 
         seen = set()
         ordered: List[str] = []
@@ -367,6 +372,12 @@ class Room:
                         continue
                     if direction in self._exit_aliases(key):
                         matches[key] = he["target_room_id"]
+            server = getattr(session, "server", None)
+            pets = getattr(server, "pets", None) if server else None
+            if pets:
+                for key, target_id in (pets.get_dynamic_room_exits(session, self) or {}).items():
+                    if direction in self._exit_aliases(key):
+                        matches[key] = target_id
 
         return matches
 
@@ -399,6 +410,17 @@ class Room:
             if direction_lower in match_keys:
                 if char_id in revealed.get(key, set()):
                     return he["target_room_id"]
+
+        server = getattr(session, "server", None)
+        pets = getattr(server, "pets", None) if server else None
+        if pets:
+            for key, target_id in (pets.get_dynamic_room_exits(session, self) or {}).items():
+                key_lower = normalize_exit_key(key)
+                match_keys = {key_lower}
+                if "_" in key_lower:
+                    match_keys.add(key_lower.split("_", 1)[1])
+                if direction_lower in match_keys:
+                    return target_id
 
         return None
 

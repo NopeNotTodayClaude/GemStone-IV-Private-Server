@@ -92,7 +92,8 @@ local handlers = {}
 
 handlers[501] = function(ctx) -- Sleep
     if not ctx.result.hit then return end
-    local sdur = 5 + math.floor(math.max(0, (ctx.result.total or 101) - 100) / 10)
+    local air = (ctx.lore_ranks and ctx.lore_ranks.air) or 0
+    local sdur = 5 + math.floor(math.max(0, (ctx.result.total or 101) - 100) / 10) + math.floor(air / 25)
     ActiveBuffs.apply(tid(ctx), 501, CIRCLE_ID, ctx.caster.id, sdur, { asleep=true, immobilized=true })
     DB.execute("UPDATE characters SET position='sleeping' WHERE id=?", { tid(ctx) })
     return string.format("%s slumps into an unnatural slumber!", tname(ctx))
@@ -123,9 +124,13 @@ end
 
 handlers[505] = function(ctx) -- Hand of Tonis
     if not ctx.result.hit then return end
-    local dmg = math.max(5, math.floor((ctx.result.total or 101) - 100))
+    local air = (ctx.lore_ranks and ctx.lore_ranks.air) or 0
+    local dmg = math.max(5, math.floor((ctx.result.total or 101) - 100) + math.floor(air / 12))
     DB.execute("UPDATE characters SET health_current=MAX(0,health_current-?), position='prone' WHERE id=?",
         { dmg, tid(ctx) })
+    if air >= 30 then
+        ActiveBuffs.apply(tid(ctx), 505, CIRCLE_ID, ctx.caster.id, 4 + math.floor(air / 40), { stunned=true })
+    end
     return string.format("A concussive fist of air slams %s to the ground for %d damage!", tname(ctx), dmg)
 end
 
@@ -146,7 +151,10 @@ handlers[508] = function(ctx) -- Elemental Bias
 end
 
 handlers[509] = function(ctx) -- Strength
-    ActiveBuffs.apply(tid(ctx), 509, CIRCLE_ID, ctx.caster.id, BUFF_SECS, { strength_bonus=10, as_bonus=5 })
+    local earth = (ctx.lore_ranks and ctx.lore_ranks.earth) or 0
+    local str_bonus = 10 + math.floor(earth / 6)
+    local as_bonus = 5 + math.floor(earth / 15)
+    ActiveBuffs.apply(tid(ctx), 509, CIRCLE_ID, ctx.caster.id, BUFF_SECS, { strength_bonus=str_bonus, as_bonus=as_bonus })
     return string.format("The strength of %s swells with elemental power.", tname(ctx))
 end
 
@@ -165,8 +173,9 @@ end
 
 handlers[512] = function(ctx) -- Cold Snap
     if not ctx.result.hit then return end
-    local dmg = math.max(5, math.floor((ctx.result.total or 101) - 100))
-    local sdur = 3 + math.floor(dmg / 10)
+    local water = (ctx.lore_ranks and ctx.lore_ranks.water) or 0
+    local dmg = math.max(5, math.floor((ctx.result.total or 101) - 100) + math.floor(water / 12))
+    local sdur = 3 + math.floor(dmg / 10) + math.floor(water / 30)
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
     ActiveBuffs.apply(tid(ctx), 512, CIRCLE_ID, ctx.caster.id, sdur, { slowed=true })
@@ -181,7 +190,8 @@ end
 
 handlers[514] = function(ctx) -- Stone Fist
     if not ctx.result.hit then return end
-    local dmg = math.max(8, math.floor((ctx.result.total or 101) - 100))
+    local earth = (ctx.lore_ranks and ctx.lore_ranks.earth) or 0
+    local dmg = math.max(8, math.floor((ctx.result.total or 101) - 100) + math.floor(earth / 10))
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
     return string.format("A stone fist SLAMS into %s for %d damage!", tname(ctx), dmg)
@@ -246,11 +256,12 @@ end
 
 handlers[519] = function(ctx) -- Immolation
     if not ctx.result.hit then return end
-    local dmg = math.max(10, math.floor((ctx.result.total or 101) - 100))
-    local burn_dur = 5 + math.floor((ctx.circle_ranks or 1) / 5)
+    local fire = (ctx.lore_ranks and ctx.lore_ranks.fire) or 0
+    local dmg = math.max(10, math.floor((ctx.result.total or 101) - 100) + math.floor(fire / 8))
+    local burn_dur = 5 + math.floor((ctx.circle_ranks or 1) / 5) + math.floor(fire / 25)
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
-    ActiveBuffs.apply(tid(ctx), 519, CIRCLE_ID, ctx.caster.id, burn_dur, { burning=true, burn_dmg=5 })
+    ActiveBuffs.apply(tid(ctx), 519, CIRCLE_ID, ctx.caster.id, burn_dur, { burning=true, burn_dmg=5 + math.floor(fire / 30) })
     return string.format("%s bursts into flames, taking %d damage and continuing to burn!", tname(ctx), dmg)
 end
 
@@ -285,7 +296,8 @@ handlers[530] = function(ctx) -- Elemental Disjunction
 end
 
 handlers[535] = function(ctx) -- Haste
-    local rt_redux = math.min(60, math.floor((ctx.circle_ranks or 1) / 5))
+    local air = (ctx.lore_ranks and ctx.lore_ranks.air) or 0
+    local rt_redux = math.min(75, math.floor((ctx.circle_ranks or 1) / 5) + math.floor(air / 10))
     ActiveBuffs.apply(tid(ctx), 535, CIRCLE_ID, ctx.caster.id, BUFF_SECS,
         { rt_reduction_pct=rt_redux })
     return string.format("Time bends around %s, reducing roundtimes by %d%%.", tname(ctx), rt_redux)

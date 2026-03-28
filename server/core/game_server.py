@@ -28,6 +28,7 @@ from server.core.engine.status_manager import StatusManager
 from server.core.engine.death.death_manager import DeathManager
 from server.core.web.training_server import TrainingWebServer
 from server.core.web.character_creator_server import CharacterCreatorWebServer
+from server.core.web.pet_server import PetWebServer
 from server.core.protocol.colors import colorize, TextPresets
 from server.core.scripting.lua_manager import LuaManager
 from server.core.scripting.wound_bridge import WoundBridge
@@ -35,6 +36,8 @@ from server.core.sync.sync_server import SyncServer
 from server.core.sync.sync_broadcaster import SyncBroadcaster
 from server.core.commands.player.party import PartyManager
 from server.core.engine.guild_engine import GuildEngine
+from server.core.engine.tracking.trail_tracker import TrailTracker
+from server.core.engine.pets.pet_manager import PetManager
 from server.core.commands.player.training import _try_load_lua_skills
 from server.core.commands.player.inventory import restore_inventory_state
 from server.core.scripting.loaders.ambush_loader import load_ambush_cfg
@@ -80,12 +83,15 @@ class GameServer:
         self.death = DeathManager(self)
         self.party_manager   = PartyManager()               # Co-op party system
         self.guild = GuildEngine(self)
+        self.tracking = TrailTracker(self)
+        self.pets = PetManager(self)
         self.perception_cfg  = {}                           # Loaded from globals/perception.lua after Lua init
 
         self._tcp_server  = None
         self._loop = None
         self.training_web = None
         self.char_web = None
+        self.pet_web = None
         self._loop = None
 
     def start(self):
@@ -182,6 +188,9 @@ class GameServer:
         await self.status.initialize()
         log.info("StatusManager ready (%d effect defs loaded)", len(self.status._defs))
 
+        await self.pets.initialize()
+        log.info("Pet system ready")
+
         # Commands
         self.commands.register_default_commands()
         log.info("Command router ready (%d commands)", self.commands.command_count)
@@ -193,6 +202,10 @@ class GameServer:
         # Character creation web portal
         self.char_web = CharacterCreatorWebServer(self)
         self.char_web.start()
+
+        # Pet shop / companion web portal
+        self.pet_web = PetWebServer(self)
+        self.pet_web.start()
         self._loop = asyncio.get_event_loop()
 
         # Boot real-time sync server (port 4902)
@@ -498,6 +511,12 @@ class GameServer:
         # Resume tutorial if character is still in tutorial
         if not session.tutorial_complete and room and is_tutorial_room_id(room.id):
             await self.tutorial.resume_tutorial(session)
+
+        if getattr(self, "pets", None):
+            try:
+                await self.pets.on_login(session)
+            except Exception as _pet_err:
+                log.error("Pet login hook failed for %s: %s", session.character_name, _pet_err, exc_info=True)
 
     # ===== WEB CHARACTER CREATOR =====
 

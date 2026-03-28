@@ -494,12 +494,25 @@ class StatusManager:
             await self._tick_frenzied(entity, se, is_player)
         elif eid == "webbed":
             await self._tick_webbed(entity, se, is_player)
+        elif eid == "floofer_glow":
+            await self._tick_floofer_glow(entity, se, is_player)
 
     # ── DOT ticks ─────────────────────────────────────────────────────────────
 
     async def _tick_bleed(self, entity, se: StatusEffect, is_player: bool, major: bool):
         import random
         from server.core.protocol.colors import colorize, TextPresets
+
+        if is_player:
+            wb = getattr(self._server, "wound_bridge", None)
+            if wb and getattr(entity, "character_id", None):
+                try:
+                    if not wb.is_bleeding(entity):
+                        se.expires = 0
+                        wb.sync_session_state(entity)
+                        return
+                except Exception:
+                    pass
 
         if major:
             # Major bleed: percentage of remaining health
@@ -666,6 +679,35 @@ class StatusManager:
         import random
         if is_player and random.random() < 0.10:
             se.expires = 0  # will expire next cleanup
+
+    async def _tick_floofer_glow(self, entity, se: StatusEffect, is_player: bool):
+        """Silent pet-driven regeneration that stacks with other regen sources, but not itself."""
+        if not is_player:
+            return
+        if getattr(entity, "is_dead", False):
+            return
+
+        heal_pct = float(se.data.get("heal_pct", se.magnitude or 0.01))
+        if heal_pct <= 0:
+            return
+
+        health_max = int(getattr(entity, "health_max", 0) or 0)
+        current_hp = int(getattr(entity, "health_current", 0) or 0)
+        if health_max <= 0 or current_hp >= health_max:
+            return
+
+        heal_amount = max(1, int(health_max * heal_pct))
+        entity.health_current = min(health_max, current_hp + heal_amount)
+
+        if self._server.db and getattr(entity, "character_id", None):
+            self._server.db.save_character_resources(
+                entity.character_id,
+                entity.health_current,
+                entity.mana_current,
+                entity.spirit_current,
+                entity.stamina_current,
+                entity.silver,
+            )
 
     # ── Effect expiry ─────────────────────────────────────────────────────────
 

@@ -267,41 +267,57 @@ def _parse_spells_block(lines: list, start_idx: int):
     Entries may be plain strings OR table dicts:
         { name = "petrifying_gaze", cs = 115, as = 0 },
         "minor_shock",
-    Returns (list_of_spell_name_strings, next_idx).
+    Returns (list_of_spell_entries, next_idx). Plain string entries remain
+    strings, while table entries are preserved as dicts so runtime AI can use
+    the authored spell metadata instead of flattening it away.
     """
     result = []
     i = start_idx
-    depth = 0
-    current = {}
+    depth = 1
+    current = None
 
     while i < len(lines):
         line = lines[i].strip()
         i += 1
         if not line or line.startswith("--"):
             continue
+        if "--" in line:
+            line = line[:line.index("--")].strip()
+        if not line:
+            continue
 
-        opens  = line.count("{")
+        opens = line.count("{")
         closes = line.count("}")
-        depth += opens
 
-        # Plain quoted string entry (not inside a sub-table)
-        if depth == 0 or (opens == 0 and closes == 0):
+        if depth == 1 and opens == 0:
             for m in re.finditer(r'"([^"]*)"', line):
                 val = m.group(1)
                 if val:
                     result.append(val)
 
-        # Sub-table entry — extract "name" field
-        if opens and depth > 0:
-            for pair in re.finditer(r'(\w+)\s*=\s*(".*?"|\'.*?\'|\d+)', line):
+        if opens > 0 and depth >= 1:
+            if depth == 1:
+                current = {}
+            for pair in re.finditer(r'(\w+)\s*=\s*(".*?"|\'.*?\'|-?\d+(?:\.\d+)?)', line):
                 k, v = pair.group(1), pair.group(2)
-                if k == "name":
-                    result.append(v.strip('"\''))
+                if v.startswith(("'", '"')):
+                    current[k] = v[1:-1]
+                else:
+                    try:
+                        current[k] = int(v)
+                    except ValueError:
+                        try:
+                            current[k] = float(v)
+                        except ValueError:
+                            current[k] = v
 
+        depth += opens
         depth -= closes
 
-        if closes and current:
-            current = {}
+        if closes and current and depth == 1:
+            if current.get("name"):
+                result.append(dict(current))
+            current = None
 
         if depth <= 0:
             break

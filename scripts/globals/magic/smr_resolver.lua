@@ -21,6 +21,7 @@
 
 local Hindrance    = require("globals/magic/spell_hindrance")
 local SpellCircles = require("globals/magic/spell_circles")
+local GS4Math      = require("globals/utils/gs4_math")
 
 local SMR = {}
 
@@ -134,18 +135,7 @@ function SMR.resolve(caster, target, spell_number, circle_ranks,
     end
 
     -- ── Compute SMR components ────────────────────────────────────────
-    local sa_bonus = 0
-    if spell_aiming_ranks and spell_aiming_ranks > 0 then
-        local r = spell_aiming_ranks
-        local tiers = {{20,5},{20,3},{60,2}}
-        for _, tier in ipairs(tiers) do
-            if r <= 0 then break end
-            local take = math.min(r, tier[1])
-            sa_bonus = sa_bonus + take * tier[2]
-            r = r - take
-        end
-        if r > 0 then sa_bonus = sa_bonus + r end
-    end
+    local sa_bonus = GS4Math.skill_bonus_from_ranks(spell_aiming_ranks or 0)
 
     local spell_power = calc_spell_power(
         caster, target, circle_ranks or 0,

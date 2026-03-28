@@ -77,19 +77,32 @@ function ActiveBuffs.apply(character_id, spell_number, circle_id,
     end
 
     local effects_json = JSON.encode(effects or {})
+    local circle_sql = "NULL"
+    local caster_sql = "NULL"
+    local params = { character_id, spell_number }
+
+    if circle_id ~= nil then
+        circle_sql = "?"
+        table.insert(params, circle_id)
+    end
+    if caster_id ~= nil then
+        caster_sql = "?"
+        table.insert(params, caster_id)
+    end
+    table.insert(params, effects_json)
 
     if expires_at then
         DB.execute([[
             INSERT INTO character_active_buffs
                 (character_id, spell_number, circle_id, caster_id, effects_json, expires_at)
-            VALUES (?, ?, ?, ?, ?, ]] .. expires_at .. [[)
-        ]], { character_id, spell_number, circle_id, caster_id, effects_json })
+            VALUES (?, ?, ]] .. circle_sql .. [[, ]] .. caster_sql .. [[, ?, ]] .. expires_at .. [[)
+        ]], params)
     else
         DB.execute([[
             INSERT INTO character_active_buffs
                 (character_id, spell_number, circle_id, caster_id, effects_json, expires_at)
-            VALUES (?, ?, ?, ?, ?, NULL)
-        ]], { character_id, spell_number, circle_id, caster_id, effects_json })
+            VALUES (?, ?, ]] .. circle_sql .. [[, ]] .. caster_sql .. [[, ?, NULL)
+        ]], params)
     end
 end
 

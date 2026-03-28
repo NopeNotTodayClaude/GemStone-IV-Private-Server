@@ -36,6 +36,7 @@ class Creature:
         self.level = template.get("level", 1)
         self.body_type = template.get("body_type", "biped")
         self.family = template.get("family", "")
+        self.classification = template.get("classification", "living")
         self.description = template.get("description", "You see nothing unusual.")
 
         # Combat stats (from template)
@@ -62,8 +63,14 @@ class Creature:
             "coins": False, "gems": False, "magic": False, "boxes": False
         })
         self.skin = template.get("skin", None)
+        self.special_loot = list(template.get("special_loot", []) or [])
+        self.stolen_items = list(template.get("stolen_items", []) or [])
         self.skinned = False
         self.searched = False
+        self.spells = list(template.get("spells", []) or [])
+        self.abilities = list(template.get("abilities", []) or [])
+        self.immune = list(template.get("immune", []) or [])
+        self.resist = list(template.get("resist", []) or [])
 
         # State
         self.current_room_id = 0
@@ -89,6 +96,13 @@ class Creature:
         self.stunned_until = 0
         self.prone = False
         self.immobilized = False
+        self.ai_as_bonus = 0
+        self.ai_ds_bonus = 0
+        self._forced_attack = None
+        self._last_spell_time = 0.0
+        self._ability_cooldowns: dict = {}
+        self._temp_bonuses: dict = {}
+        self._temp_states: dict = {}
 
         # ── Wound tracking (GS4 wiki: wounds reduce AS/DS per location) ──────
         # wounds = {location: severity}  severity 1-5 (minor→crippling)
@@ -151,6 +165,10 @@ class Creature:
 
     def choose_attack(self):
         """Pick a random attack from available attacks."""
+        if self._forced_attack:
+            attack = dict(self._forced_attack)
+            self._forced_attack = None
+            return attack
         if not self.attacks:
             return None
         usable = [atk for atk in self.attacks if self._attack_is_usable(atk)]
@@ -275,7 +293,13 @@ class Creature:
                 hp_penalty = int((0.75 - hp_pct) / 0.75 * 40)
                 penalty += hp_penalty
 
-        return max(0, base - penalty)
+        return max(
+            0,
+            base
+            - penalty
+            + int(getattr(self, "ai_as_bonus", 0) or 0)
+            + int(self.get_temp_as_bonus()),
+        )
 
     def get_melee_ds(self):
         """Get defensive strength, degraded by wounds and HP percentage."""
@@ -343,7 +367,13 @@ class Creature:
                 hp_penalty = int((0.75 - hp_pct) / 0.75 * 50)
                 penalty += hp_penalty
 
-        return max(0, ds - penalty)
+        return max(
+            0,
+            ds
+            - penalty
+            + int(getattr(self, "ai_ds_bonus", 0) or 0)
+            + int(self.get_temp_ds_bonus()),
+        )
 
     def apply_wound(self, location: str, crit_rank: int) -> int:
         """
@@ -397,8 +427,16 @@ class Creature:
         return result
 
     def choose_stance(self):
-        """Simple creature stance AI driven by HP, wounds, and gear profile."""
+        """Creature stance AI driven by HP, wounds, and current combat profile."""
         armed = any(self._attack_is_armed(atk) for atk in (self.attacks or []))
+        ranged_abilities = {
+            "hurl_weapon", "stone_throw", "aimed_shot", "fire_bolt", "water_bolt", "call_wind",
+            "acid_spray", "ant_acid_spray", "fire_spit", "tail_spike_volley", "gas_cloud",
+            "mind_blast", "sonic_wail", "earthen_fury_caster",
+        }
+        ranged_profile = bool(self.spells) or any(
+            str(ability or "").lower() in ranged_abilities for ability in (self.abilities or [])
+        )
         hp_pct = (self.health_current / self.health_max) if self.health_max else 1.0
         severe_wounds = sum(1 for sev in (self.wounds or {}).values() if int(sev or 0) >= 4)
         leg_disabled = self.location_disabled("right leg") or self.location_disabled("left leg")
@@ -407,6 +445,8 @@ class Creature:
         if leg_disabled or severe_wounds >= 2 or hp_pct <= 0.18:
             self.stance = "defensive"
         elif attack_limb_disabled or hp_pct <= 0.35:
+            self.stance = "guarded"
+        elif ranged_profile and hp_pct >= 0.45:
             self.stance = "guarded"
         elif armed and hp_pct >= 0.75 and severe_wounds == 0:
             self.stance = "forward"
@@ -431,6 +471,7 @@ class Creature:
 
     def can_act(self):
         """Check if the creature can take an action."""
+        self.prune_temporary_effects()
         if self.is_dead:
             return False
         if self.is_stunned:
@@ -445,6 +486,64 @@ class Creature:
         if self.immobilized or (immobile_fx and (getattr(immobile_fx, "expires", 0) < 0 or time.time() < getattr(immobile_fx, "expires", 0))):
             return False
         return True
+
+    def force_attack_once(self, attack: dict):
+        self._forced_attack = dict(attack or {})
+
+    def prune_temporary_effects(self, now=None):
+        now = time.time() if now is None else now
+        bonuses = getattr(self, "_temp_bonuses", {}) or {}
+        stale_bonus = [key for key, row in bonuses.items() if now >= float((row or {}).get("expires", 0) or 0)]
+        for key in stale_bonus:
+            bonuses.pop(key, None)
+        states = getattr(self, "_temp_states", {}) or {}
+        stale_states = [key for key, expires in states.items() if now >= float(expires or 0)]
+        for key in stale_states:
+            states.pop(key, None)
+
+    def apply_temporary_bonus(self, bonus_id: str, duration: float, *, as_bonus=0, ds_bonus=0):
+        if not hasattr(self, "_temp_bonuses") or self._temp_bonuses is None:
+            self._temp_bonuses = {}
+        self._temp_bonuses[str(bonus_id or "").lower()] = {
+            "as_bonus": int(as_bonus or 0),
+            "ds_bonus": int(ds_bonus or 0),
+            "expires": time.time() + max(0.0, float(duration or 0.0)),
+        }
+
+    def get_temp_as_bonus(self, now=None):
+        self.prune_temporary_effects(now)
+        return sum(int((row or {}).get("as_bonus", 0) or 0) for row in (self._temp_bonuses or {}).values())
+
+    def get_temp_ds_bonus(self, now=None):
+        self.prune_temporary_effects(now)
+        return sum(int((row or {}).get("ds_bonus", 0) or 0) for row in (self._temp_bonuses or {}).values())
+
+    def apply_temporary_state(self, state_id: str, duration: float):
+        if not hasattr(self, "_temp_states") or self._temp_states is None:
+            self._temp_states = {}
+        self._temp_states[str(state_id or "").lower()] = time.time() + max(0.0, float(duration or 0.0))
+
+    def has_temporary_state(self, state_id: str, now=None):
+        self.prune_temporary_effects(now)
+        states = getattr(self, "_temp_states", {}) or {}
+        return str(state_id or "").lower() in states
+
+    def can_cast_spell(self, now=None):
+        now = time.time() if now is None else now
+        return bool(self.spells) and now >= float(getattr(self, "_last_spell_time", 0.0) or 0.0)
+
+    def set_spell_cooldown(self, seconds):
+        self._last_spell_time = time.time() + max(0.0, float(seconds or 0.0))
+
+    def can_use_ability(self, ability_id: str, now=None):
+        now = time.time() if now is None else now
+        cooldowns = getattr(self, "_ability_cooldowns", {}) or {}
+        return now >= float(cooldowns.get(str(ability_id or "").lower(), 0.0) or 0.0)
+
+    def set_ability_cooldown(self, ability_id: str, seconds):
+        if not hasattr(self, "_ability_cooldowns") or self._ability_cooldowns is None:
+            self._ability_cooldowns = {}
+        self._ability_cooldowns[str(ability_id or "").lower()] = time.time() + max(0.0, float(seconds or 0.0))
 
     def __repr__(self):
         status = "alive" if self.alive else "dead"

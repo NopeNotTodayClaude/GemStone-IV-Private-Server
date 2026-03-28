@@ -161,6 +161,14 @@ class Session:
         self.tutorial_stage = 0
         self.tutorial_complete = False
 
+        # Pet / companion system
+        self.pet_progress = {}
+        self.pets = []
+        self.active_pet = None
+        self.pet_sprite_visible = False
+        self.pet_room_moves = 0
+        self.pet_last_shop_room_id = None
+
         # Inventory (loaded from DB)
         self.inventory = []  # list of dicts from DB
 

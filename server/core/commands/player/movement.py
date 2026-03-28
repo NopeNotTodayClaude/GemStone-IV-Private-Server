@@ -142,6 +142,10 @@ async def cmd_look(session, cmd, args, server):
         for npc in npcs:
             lines.append('You also see ' + fmt_npc_name(npc.display_name) + '.')
 
+    if hasattr(server, 'pets'):
+        for entity in server.pets.get_visible_entities_in_room(room.id, viewer=session):
+            lines.append(server.pets.format_room_line(entity))
+
     # Show creatures
     if hasattr(server, 'creatures'):
         living = server.creatures.get_creatures_in_room(room.id)
@@ -200,6 +204,20 @@ async def cmd_look(session, cmd, args, server):
         await server.npcs.on_player_enter_room(session, room.id)
 
 
+async def cmd_glance(session, cmd, args, server):
+    """GLANCE <target> - Quick visual check for a named target."""
+    target = (args or "").strip()
+    if not target:
+        await session.send_line("Glance at what?")
+        return
+    lowered = target.lower()
+    for prefix in ('at ', 'my '):
+        if lowered.startswith(prefix):
+            lowered = lowered[len(prefix):].strip()
+            break
+    await _look_at(session, lowered, server)
+
+
 async def _look_at(session, target, server):
     """Handle LOOK AT <target> -- examine a creature, player, NPC, item, or self."""
     room = session.current_room
@@ -232,6 +250,13 @@ async def _look_at(session, target, server):
                 await session.send_line('  ' + npc.description)
             if npc.title:
                 await session.send_line('  ' + npc.title)
+            return
+
+    if hasattr(server, 'pets'):
+        entity = server.pets.find_visible_entity(room.id, target, viewer=session)
+        if entity:
+            for line in server.pets.look_lines_for_entity(entity):
+                await session.send_line(line)
             return
 
     # Look at another player
@@ -682,7 +707,32 @@ async def _move_player(session, from_room, to_room, direction, server, sneaking=
         depart_msg = f'{fmt_player_name(session.character_name)} just went {direction}.'
         arrive_msg = f'{fmt_player_name(session.character_name)} just arrived.'
 
+    pets = getattr(server, "pets", None)
+    if pets:
+        pet_depart, pet_arrive = pets.move_messages(session, direction, sneaking and getattr(session, "hidden", False))
+        if pet_depart:
+            depart_msg = pet_depart
+        if pet_arrive:
+            arrive_msg = pet_arrive
+
     await server.world.broadcast_to_room(from_room.id, depart_msg, exclude=session)
+
+    tracker = getattr(server, "tracking", None)
+    if tracker:
+        try:
+            tracker.record_departure(
+                actor_kind="player",
+                actor_id=int(getattr(session, "character_id", 0) or 0),
+                actor_name=getattr(session, "character_name", "") or "someone",
+                from_room_id=int(from_room.id),
+                to_room_id=int(to_room.id),
+                direction=str(direction or "out"),
+                hidden=bool(getattr(session, "hidden", False)),
+                sneaking=bool(getattr(session, "sneaking", False)),
+                actor_level=int(getattr(session, "level", 1) or 1),
+            )
+        except Exception as e:
+            log.debug("Failed to record player trail: %s", e)
 
     server.world.remove_player_from_room(session, from_room.id)
     session.previous_room = from_room
@@ -716,8 +766,11 @@ async def _move_player(session, from_room, to_room, direction, server, sneaking=
 
     try:
         guild_engine = getattr(server, "guild", None)
-        if guild_engine and hasattr(guild_engine, "maybe_complete_travel_bounty"):
-            await guild_engine.maybe_complete_travel_bounty(session)
+        if guild_engine:
+            if hasattr(guild_engine, "on_character_enter_room"):
+                await guild_engine.on_character_enter_room(session, from_room=from_room, to_room=to_room)
+            elif hasattr(guild_engine, "maybe_complete_travel_bounty"):
+                await guild_engine.maybe_complete_travel_bounty(session)
     except Exception as e:
         log.error("Adventurer travel bounty hook failed: %s", e)
 
@@ -725,6 +778,9 @@ async def _move_player(session, from_room, to_room, direction, server, sneaking=
     if hasattr(session, 'tutorial_complete') and not session.tutorial_complete:
         if hasattr(server, 'tutorial'):
             await server.tutorial.on_room_enter(session, to_room.id)
+
+    if hasattr(server, "pets"):
+        await server.pets.on_room_enter(session, from_room, to_room)
 
 
 def _is_hearthstone_room(room) -> bool:

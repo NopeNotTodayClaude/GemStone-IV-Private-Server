@@ -107,8 +107,14 @@ handlers[902] = function(ctx)
     return string.format("Minor elemental energy crackles along your weapon (%d swings).", swings)
 end
 handlers[903] = function(ctx)
+    local water = (ctx.lore_ranks and ctx.lore_ranks.water) or 0
     local dmg = bolt_dmg(ctx, 2, 1)
-    if dmg then return string.format("A bolt of frigid water strikes %s for %d damage!", tname(ctx), dmg) end
+    if dmg then
+        if water >= 15 then
+            ActiveBuffs.apply(tid(ctx), 903, CIRCLE_ID, ctx.caster.id, 3 + math.floor(water / 40), { slowed=true })
+        end
+        return string.format("A bolt of frigid water strikes %s for %d damage!", tname(ctx), dmg)
+    end
 end
 handlers[904] = function(ctx)
     local dmg = bolt_dmg(ctx, 2, 1)
@@ -124,8 +130,14 @@ handlers[905] = function(ctx)
     return string.format("A prismatic guard shimmers around %s (+%d DS).", tname(ctx), ds_bonus)
 end
 handlers[906] = function(ctx)
+    local fire = (ctx.lore_ranks and ctx.lore_ranks.fire) or 0
     local dmg = bolt_dmg(ctx, 3, 1)
-    if dmg then return string.format("A bolt of fire ignites %s for %d damage!", tname(ctx), dmg) end
+    if dmg then
+        if fire >= 10 then
+            ActiveBuffs.apply(tid(ctx), 906, CIRCLE_ID, ctx.caster.id, 3 + math.floor(fire / 35), { burning=true, burn_dmg=1 + math.floor(fire / 50) })
+        end
+        return string.format("A bolt of fire ignites %s for %d damage!", tname(ctx), dmg)
+    end
 end
 handlers[907] = function(ctx)
     local dmg = bolt_dmg(ctx, 5, 1)
@@ -135,9 +147,10 @@ handlers[907] = function(ctx)
     end
 end
 handlers[908] = function(ctx)
+    local fire = (ctx.lore_ranks and ctx.lore_ranks.fire) or 0
     local dmg = bolt_dmg(ctx, 5, 1)
     if dmg then
-        ActiveBuffs.apply(tid(ctx), 9912, nil, ctx.caster.id, 5, { burning=true, burn_dmg=3 })
+        ActiveBuffs.apply(tid(ctx), 9912, nil, ctx.caster.id, 5 + math.floor(fire / 35), { burning=true, burn_dmg=3 + math.floor(fire / 30) })
         return string.format("A fireball engulfs %s for %d damage and sets them ablaze!", tname(ctx), dmg)
     end
 end
@@ -166,10 +179,17 @@ handlers[911] = function(ctx) -- Mass Blur — group DS
 end
 handlers[912] = function(ctx) -- Call Wind
     if not ctx.result.hit then return end
+    local air = (ctx.lore_ranks and ctx.lore_ranks.air) or 0
     local room_id = ctx.caster.current_room_id
     if room_id then
         DB.execute("UPDATE characters SET position='prone' WHERE current_room_id=? AND id!=?",
             { room_id, ctx.caster.id })
+    end
+    if air >= 20 and room_id then
+        local targets = DB.query("SELECT id FROM characters WHERE current_room_id=? AND id!=?", { room_id, ctx.caster.id })
+        for _, t in ipairs(targets) do
+            ActiveBuffs.apply(t.id, 912, CIRCLE_ID, ctx.caster.id, 3 + math.floor(air / 40), { stunned=true })
+        end
     end
     return "Howling winds tear through the area, knocking all foes to the ground!"
 end
@@ -193,7 +213,8 @@ handlers[914] = function(ctx) -- Sandstorm
     end
 end
 handlers[915] = function(ctx) -- Weapon Fire
-    local swings = 20 + (ctx.circle_ranks or 1) * 2
+    local fire = (ctx.lore_ranks and ctx.lore_ranks.fire) or 0
+    local swings = 20 + (ctx.circle_ranks or 1) * 2 + math.floor(fire / 8)
     DB.execute([[
         UPDATE character_inventory SET extra_data=JSON_SET(COALESCE(extra_data,'{}'),'$.fire_flares',1,'$.fire_swings',?)
         WHERE character_id=? AND slot IN ('right_hand','left_hand') LIMIT 1
@@ -206,8 +227,18 @@ handlers[916] = function(ctx) -- Invisibility
     return string.format("You fade from sight, invisible for %d seconds.", d)
 end
 handlers[917] = function(ctx) -- Earthen Fury
+    local earth = (ctx.lore_ranks and ctx.lore_ranks.earth) or 0
     local dmg = bolt_dmg(ctx, 10, 1)
-    if dmg then return string.format("Stone and earth SLAM into %s for %d damage!", tname(ctx), dmg) end
+    if dmg then
+        local extra = math.floor(earth / 10)
+        if extra > 0 then
+            DB.execute("UPDATE characters SET health_current=GREATEST(0,health_current-?) WHERE id=?", { extra, tid(ctx) })
+        end
+        if earth >= 20 then
+            ActiveBuffs.apply(tid(ctx), 917, CIRCLE_ID, ctx.caster.id, 3 + math.floor(earth / 35), { stunned=true })
+        end
+        return string.format("Stone and earth SLAM into %s for %d damage!", tname(ctx), dmg + extra)
+    end
 end
 handlers[918] = function(ctx)
     local held = ItemMagic.get_held_item(ctx.caster.id)

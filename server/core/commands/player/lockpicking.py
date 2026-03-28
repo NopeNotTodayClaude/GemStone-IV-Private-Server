@@ -99,16 +99,48 @@ def _find_box(session, target_name: str):
     held, not buried in a backpack or sitting on the floor.
     An empty target_name matches the first container found in either hand.
     """
-    target = (target_name or "").lower().strip()
+    target = _normalize_box_target(target_name)
     for slot in ("right_hand", "left_hand"):
         item = getattr(session, slot, None)
         if item and item.get("item_type") == "container":
             # empty target → match whatever container is in hand
-            if not target \
-            or target in (item.get("short_name") or "").lower() \
-            or target in (item.get("noun") or "").lower():
+            if _box_name_matches(item, target):
                 return item, slot
     return None, None
+
+
+def _normalize_box_target(text: str) -> str:
+    raw = str(text or "").strip().lower()
+    if not raw:
+        return ""
+    raw = re.sub(r"\{[^}]+\}", " ", raw)
+    raw = raw.replace("â€”", " ").replace("â€œ", " ").replace("â€", " ").replace("â€", " ")
+    raw = raw.encode("ascii", "ignore").decode("ascii")
+    raw = re.sub(r"[^a-z0-9' -]+", " ", raw)
+    raw = re.sub(r"\s+", " ", raw)
+    return raw.strip()
+
+
+def _box_name_matches(item: dict, target: str) -> bool:
+    if not target:
+        return True
+    candidates = [
+        item.get("short_name"),
+        item.get("name"),
+        item.get("base_name"),
+        item.get("noun"),
+    ]
+    target_words = target.split()
+    for candidate in candidates:
+        normalized = _normalize_box_target(candidate)
+        if not normalized:
+            continue
+        if target == normalized or target in normalized:
+            return True
+        words = normalized.split()
+        if target_words and all(word in words for word in target_words):
+            return True
+    return False
 
 
 def _find_lockpick(session):
@@ -772,6 +804,9 @@ async def cmd_disarm(session, cmd, args, server):
 
 async def _trigger_trap(session, server, box: dict, trap: dict):
     """Fire a trap — deal damage, apply effect, broadcast."""
+    box["trapped"] = False
+    box["trap_disarmed"] = True
+    box["trap_detected"] = True
     dmg = random.randint(trap["dmg_min"], trap["dmg_max"])
     try:
         from server.core.engine.magic_effects import has_effect
@@ -807,6 +842,8 @@ async def _trigger_trap(session, server, box: dict, trap: dict):
         box["destroyed"] = True
         box["contents"]  = []
         await session.send_line(colorize("  The box is destroyed in the explosion!", TextPresets.WARNING))
+    elif not box.get("is_locked"):
+        box["opened"] = True
 
     if session.current_room:
         room_msg = trap["room_msg"].replace("{name}", session.character_name)
@@ -817,6 +854,7 @@ async def _trigger_trap(session, server, box: dict, trap: dict):
         )
 
     if getattr(server, "db", None) and session.character_id:
+        _save_box_state(server, box)
         server.db.save_character_resources(
             session.character_id,
             session.health_current, session.mana_current,
@@ -967,12 +1005,13 @@ async def cmd_pick(session, cmd, args, server):
     # ── Success ───────────────────────────────────────────────────────────
     if raw_endroll >= 100:
         box["is_locked"] = False
-        box["opened"]    = True
         box["pick_mod_down"] = 0  # reset mod-down
+        trapped_but_live = box.get("trapped") and not box.get("trap_disarmed")
+        box["opened"] = False if trapped_but_live else True
 
         inv_id = box.get("inv_id")
         if inv_id and getattr(server, "db", None):
-            _save_box_state(server, box, is_locked=False, opened=True, trapped=False, pick_mod_down=0)
+            _save_box_state(server, box, is_locked=False, opened=box["opened"], pick_mod_down=0)
 
         rt = 5
         if raw_endroll >= 200: rt = 1
@@ -991,7 +1030,13 @@ async def cmd_pick(session, cmd, args, server):
                 TextPresets.COMBAT_HIT
             ))
 
-        await _show_contents(session, box)
+        if trapped_but_live:
+            await session.send_line(colorize(
+                "  The lock yields, but the trap is still armed.  DISARM it before you dare open the lid.",
+                TextPresets.WARNING
+            ))
+        else:
+            await _show_contents(session, box)
 
         # ── Award XP for successful lockpick ─────────────────────────────
         if hasattr(server, 'experience'):

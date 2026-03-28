@@ -78,9 +78,17 @@ def _target_pickpocket_defense(target_kind, target):
         skills = getattr(target, "skills", {}) or {}
         perc = skills.get(27, {}) if isinstance(skills, dict) else {}
         perc_ranks = int(perc.get("ranks", 0)) if isinstance(perc, dict) else 0
+        pick = skills.get(32, {}) if isinstance(skills, dict) else {}
+        pick_ranks = int(pick.get("ranks", 0)) if isinstance(pick, dict) else 0
         intuition = int(getattr(target, "stat_intuition", 50) or 50)
-        dexterity = int(getattr(target, "stat_dexterity", 50) or 50)
-        return 60 + _pick_skill_bonus(perc_ranks) + (intuition - 50) // 2 + (dexterity - 50) // 3
+        wisdom = int(getattr(target, "stat_wisdom", 50) or 50)
+        return (
+            70
+            + _pick_skill_bonus(perc_ranks)
+            + (_pick_skill_bonus(pick_ranks) // 2)
+            + (intuition - 50) // 2
+            + (wisdom - 50) // 2
+        )
     if target_kind == "npc":
         base = int(getattr(target, "level", 1) or 1) * 8
         if getattr(target, "can_shop", False) or getattr(target, "is_guild", False):
@@ -124,6 +132,365 @@ def _available_pickpocket_silver(target_kind, target, character_id):
 
     level = int(getattr(target, "level", 1) or 1)
     return random.randint(2, max(4, level * 6))
+
+
+def _room_pickpocket_mod(room) -> int:
+    if not room:
+        return 0
+    mod = 0
+    if getattr(room, "dark", False):
+        mod += 15
+    elif not getattr(room, "indoor", False):
+        mod += 5
+    if getattr(room, "safe", False):
+        mod -= 25
+    if getattr(room, "has_fog", False):
+        mod += 10
+    return mod
+
+
+def _pickpocket_offense(session, server) -> int:
+    from server.core.engine.encumbrance import encumbrance_tier
+    from server.core.engine.magic_effects import get_active_buff_totals
+
+    skills = getattr(session, "skills", {}) or {}
+    pick = skills.get(32, {})
+    pick_ranks = int(pick.get("ranks", 0)) if isinstance(pick, dict) else 0
+    dex_bonus = (int(getattr(session, "stat_dexterity", 50) or 50) - 50) // 2
+    dis_bonus = (int(getattr(session, "stat_discipline", 50) or 50) - 50) // 2
+    agi_bonus = (int(getattr(session, "stat_agility", 50) or 50) - 50) // 3
+    room = getattr(session, "current_room", None)
+    room_mod = _room_pickpocket_mod(room)
+    hide_bonus = 25 if getattr(session, "hidden", False) else 0
+    rogue_bonus = 15 if int(getattr(session, "profession_id", 0) or 0) == 2 else 0
+    position_penalty = 0 if getattr(session, "position", "standing") == "standing" else 20
+    hand_penalty = 0
+    if getattr(session, "right_hand", None):
+        hand_penalty += 10
+    if getattr(session, "left_hand", None):
+        hand_penalty += 10
+    armor_penalty = 0
+    for item in getattr(session, "inventory", []) or []:
+        if item.get("container_id"):
+            continue
+        if item.get("item_type") == "armor" and item.get("slot") == "torso":
+            armor_penalty += max(0, int(item.get("armor_asg", 0) or 0) - 6) * 4
+            break
+    buffs = get_active_buff_totals(server, session)
+    mobility = int(buffs.get("steal_bonus", 0) or 0)
+    enc_penalty = encumbrance_tier(session) * 8
+    return (
+        _open_d100()
+        + _pick_skill_bonus(pick_ranks)
+        + dex_bonus
+        + dis_bonus
+        + agi_bonus
+        + room_mod
+        + hide_bonus
+        + rogue_bonus
+        + mobility
+        - hand_penalty
+        - armor_penalty
+        - enc_penalty
+        - position_penalty
+    )
+
+
+def _stealable_worn_slot(slot: str) -> bool:
+    slot = str(slot or "").lower()
+    return slot in {
+        "belt", "waist", "wrist", "finger", "neck", "cloak",
+        "shoulders", "back", "pouch", "backpack", "tabard", "skinning_sheath",
+    }
+
+
+def _is_valid_pickpocket_item(item, source_kind: str) -> bool:
+    if not isinstance(item, dict):
+        return False
+    item_type = str(item.get("item_type") or "").lower()
+    noun = str(item.get("noun") or "").lower()
+    weight = int(item.get("weight", 1) or 1)
+    if item_type in {"armor", "shield"}:
+        return False
+    if item_type == "container" and not source_kind.startswith("container:"):
+        return False
+    if weight > 12:
+        return False
+    if noun in {"coffer", "chest", "trunk", "strongbox", "lockbox"}:
+        return False
+    return True
+
+
+def _pickpocket_item_penalty(item, source_kind: str) -> int:
+    item_type = str(item.get("item_type") or "").lower()
+    weight = int(item.get("weight", 1) or 1)
+    penalty = min(25, max(0, weight) * 2)
+    if source_kind.startswith("hand:"):
+        penalty += 35
+    elif source_kind.startswith("worn:"):
+        penalty += 24
+    elif source_kind.startswith("container:"):
+        penalty += 12
+        if "backpack" in source_kind or "cloak" in source_kind:
+            penalty += 6
+    elif source_kind == "loose":
+        penalty += 5
+    if item_type == "weapon":
+        penalty += 15
+    if item.get("is_locked") or item.get("trapped"):
+        penalty += 15
+    return penalty
+
+
+def _find_player_pickpocket_candidates(target, item_phrase=None):
+    from server.core.commands.player.inventory import _get_worn_containers, _match_target
+
+    phrase = (item_phrase or "").strip().lower()
+    containers = {}
+    for cont in _get_worn_containers(target):
+        inv_id = cont.get("inv_id")
+        if inv_id is not None:
+            containers[int(inv_id)] = cont
+    for hand_name in ("right_hand", "left_hand"):
+        hand_item = getattr(target, hand_name, None)
+        if hand_item and hand_item.get("item_type") == "container" and hand_item.get("inv_id") is not None:
+            containers[int(hand_item["inv_id"])] = hand_item
+
+    candidates = []
+    for hand_name in ("right_hand", "left_hand"):
+        hand_item = getattr(target, hand_name, None)
+        if hand_item and _is_valid_pickpocket_item(hand_item, f"hand:{hand_name}"):
+            if not phrase or _match_target(hand_item, phrase):
+                candidates.append((hand_item, f"hand:{hand_name}"))
+
+    for item in list(getattr(target, "inventory", []) or []):
+        container_id = item.get("container_id")
+        if container_id is not None:
+            try:
+                container_id = int(container_id)
+            except Exception:
+                container_id = None
+        source = None
+        if container_id and container_id in containers:
+            parent = containers[container_id]
+            source = f"container:{str(parent.get('noun') or parent.get('short_name') or 'container').lower()}"
+        else:
+            slot = str(item.get("slot") or "").lower()
+            if slot and slot not in {"right_hand", "left_hand"}:
+                if not _stealable_worn_slot(slot):
+                    continue
+                source = f"worn:{slot}"
+            elif not slot:
+                source = "loose"
+        if not source or not _is_valid_pickpocket_item(item, source):
+            continue
+        if phrase and not _match_target(item, phrase):
+            continue
+        candidates.append((item, source))
+
+    candidates.sort(key=lambda row: _pickpocket_item_penalty(row[0], row[1]))
+    return candidates
+
+
+def _lookup_pickpocket_special_item(db, requested_name, choices):
+    if not db or not choices:
+        return None
+    wanted = (requested_name or "").strip().lower()
+    rows = db.execute_query(
+        """
+        SELECT id, name, short_name, noun, article, value, description, item_type, weight
+        FROM items
+        WHERE is_template = 1
+        """
+    )
+    for row in rows or []:
+        item = {
+            "item_id": row[0],
+            "name": row[1],
+            "short_name": row[2],
+            "noun": row[3],
+            "article": row[4],
+            "value": row[5],
+            "description": row[6],
+            "item_type": row[7],
+            "weight": row[8],
+        }
+        short_name = (item.get("short_name") or "").lower()
+        if short_name not in {str(x).lower() for x in choices}:
+            continue
+        if not wanted or wanted in short_name:
+            return item
+    return None
+
+
+def _generate_pickpocket_item(target_kind, target, server, item_phrase=None):
+    from server.core.engine.treasure import generate_gem, generate_herb, generate_scroll, generate_wand
+
+    db = getattr(server, "db", None)
+    level = int(getattr(target, "level", 1) or 1)
+    wanted = (item_phrase or "").strip().lower()
+
+    special_loot = getattr(target, "special_loot", None) or []
+    item = _lookup_pickpocket_special_item(db, wanted, special_loot)
+    if item:
+        return item
+
+    choices = []
+    treasure = getattr(target, "treasure", {}) or {}
+    if treasure.get("gems"):
+        choices.append(generate_gem(db, level))
+    if treasure.get("magic"):
+        choices.append(generate_wand(db, level) or generate_scroll(db, level))
+    if target_kind == "npc":
+        choices.append(generate_herb(db, level))
+
+    choices = [c for c in choices if c]
+    if wanted:
+        from server.core.commands.player.inventory import _match_target
+
+        filtered = [c for c in choices if _match_target(c, wanted)]
+        choices = filtered
+    return random.choice(choices) if choices else None
+
+
+def _place_generated_stolen_item(session, item, server):
+    from server.core.commands.player.inventory import _find_best_stow_container
+
+    if not item or not getattr(session, "character_id", None) or not getattr(server, "db", None):
+        return False, None
+
+    if not item.get("item_id"):
+        item_id = server.db.get_or_create_item(
+            name=item.get("name") or item.get("short_name") or "something",
+            short_name=item.get("short_name") or item.get("name") or "something",
+            noun=item.get("noun") or "item",
+            item_type=item.get("item_type") or "misc",
+            article=item.get("article") or "a",
+            value=item.get("value") or 0,
+            description=item.get("description") or "",
+        )
+        if not item_id:
+            return False, None
+        item["item_id"] = item_id
+
+    if not getattr(session, "right_hand", None):
+        hand_slot = "right_hand"
+        inv_id = server.db.insert_inventory_item_instance(session.character_id, item["item_id"], slot=hand_slot)
+        if not inv_id:
+            return False, None
+        item["inv_id"] = inv_id
+        item["slot"] = hand_slot
+        item["container_id"] = None
+        extra = {
+            key: item.get(key)
+            for key in ("charges", "spell_number", "spell_name", "spell_type", "spell_level", "heal_type", "heal_amount", "heal_rank")
+            if item.get(key) is not None
+        }
+        if extra:
+            server.db.save_item_extra_data(inv_id, extra)
+        session.right_hand = item
+        return True, "right hand"
+
+    if not getattr(session, "left_hand", None):
+        hand_slot = "left_hand"
+        inv_id = server.db.insert_inventory_item_instance(session.character_id, item["item_id"], slot=hand_slot)
+        if not inv_id:
+            return False, None
+        item["inv_id"] = inv_id
+        item["slot"] = hand_slot
+        item["container_id"] = None
+        extra = {
+            key: item.get(key)
+            for key in ("charges", "spell_number", "spell_name", "spell_type", "spell_level", "heal_type", "heal_amount", "heal_rank")
+            if item.get(key) is not None
+        }
+        if extra:
+            server.db.save_item_extra_data(inv_id, extra)
+        session.left_hand = item
+        return True, "left hand"
+
+    cont = _find_best_stow_container(session, server, item)
+    if not cont:
+        return False, None
+
+    inv_id = server.db.insert_inventory_item_instance(
+        session.character_id,
+        item["item_id"],
+        slot=None,
+        container_id=cont.get("inv_id"),
+    )
+    if not inv_id:
+        return False, None
+    item["inv_id"] = inv_id
+    item["slot"] = None
+    item["container_id"] = cont.get("inv_id")
+    extra = {
+        key: item.get(key)
+        for key in ("charges", "spell_number", "spell_name", "spell_type", "spell_level", "heal_type", "heal_amount", "heal_rank")
+        if item.get(key) is not None
+    }
+    if extra:
+        server.db.save_item_extra_data(inv_id, extra)
+    session.inventory.append(item)
+    return True, f"your {cont.get('short_name') or cont.get('noun') or 'container'}"
+
+
+def _transfer_stolen_player_item(session, target, item, source_kind, server):
+    from server.core.commands.player.inventory import _clear_hand, _find_best_stow_container
+
+    if not item:
+        return False, None
+
+    destination_slot = None
+    destination_container = None
+    destination_label = None
+    if not getattr(session, "right_hand", None):
+        destination_slot = "right_hand"
+        destination_label = "right hand"
+    elif not getattr(session, "left_hand", None):
+        destination_slot = "left_hand"
+        destination_label = "left hand"
+    else:
+        destination_container = _find_best_stow_container(session, server, item)
+        if not destination_container:
+            return False, "You have nowhere discreet to hide what you steal."
+        destination_label = f"your {destination_container.get('short_name') or destination_container.get('noun') or 'container'}"
+
+    if source_kind.startswith("hand:"):
+        which = source_kind.split(":", 1)[1]
+        _clear_hand(target, "right" if which == "right_hand" else "left", server)
+    elif item in getattr(target, "inventory", []):
+        target.inventory.remove(item)
+
+    if item.get("inv_id") and getattr(server, "db", None):
+        ok = server.db.transfer_inventory_item(
+            item["inv_id"],
+            session.character_id,
+            slot=destination_slot,
+            container_id=(destination_container.get("inv_id") if destination_container else None),
+        )
+        if not ok:
+            return False, "The theft slips out of your grasp at the last moment."
+    elif getattr(server, "db", None) and getattr(session, "character_id", None) and item.get("item_id"):
+        inv_id = server.db.insert_inventory_item_instance(
+            session.character_id,
+            item["item_id"],
+            slot=destination_slot,
+            container_id=(destination_container.get("inv_id") if destination_container else None),
+        )
+        if not inv_id:
+            return False, "The theft slips out of your grasp at the last moment."
+        item["inv_id"] = inv_id
+
+    item["slot"] = destination_slot
+    item["container_id"] = destination_container.get("inv_id") if destination_container else None
+    if destination_slot == "right_hand":
+        session.right_hand = item
+    elif destination_slot == "left_hand":
+        session.left_hand = item
+    else:
+        session.inventory.append(item)
+    return True, destination_label
 
 
 def _parse_use_target(raw_args: str):
@@ -326,7 +693,7 @@ async def _use_magic_item(session, use_item, hand, target_name, server):
 
 
 async def cmd_steal(session, cmd, args, server):
-    """STEAL <target> - Attempt to pickpocket silver from a visible target."""
+    """STEAL [item] FROM <target> - Attempt to pickpocket silver or an item."""
     from server.core.protocol.colors import colorize, roundtime_msg, TextPresets
 
     if not args or not args.strip():
@@ -342,9 +709,7 @@ async def cmd_steal(session, cmd, args, server):
         item_phrase = arg[:idx].strip() or "silver"
         target_phrase = arg[idx + 6 :].strip()
 
-    if item_phrase.lower() not in ("silver", "coins", "coin", "money", "purse", "pocket"):
-        await session.send_line("This first pass of STEAL only supports lifting silver and coin purses.")
-        return
+    wants_silver = item_phrase.lower() in ("silver", "coins", "coin", "money", "purse", "pocket")
 
     target_kind, target = _resolve_steal_target(session, server, target_phrase)
     if not target:
@@ -358,23 +723,88 @@ async def cmd_steal(session, cmd, args, server):
         await session.send_line("You lack the Pickpocketing training to try that cleanly.")
         return
 
-    dex_bonus = (int(getattr(session, "stat_dexterity", 50) or 50) - 50) // 2
-    agi_bonus = (int(getattr(session, "stat_agility", 50) or 50) - 50) // 3
-    hide_bonus = 20 if getattr(session, "hidden", False) else 0
-    result = _open_d100_roll() + _pick_skill_bonus(pick_ranks) + dex_bonus + agi_bonus + hide_bonus
+    if _pickpocket_on_cooldown(target, getattr(session, "character_id", 0)):
+        await session.send_line("You've already lifted what you can from that mark for now.")
+        return
+
+    result = _pickpocket_offense(session, server)
     defense = _target_pickpocket_defense(target_kind, target)
+
+    stolen_item = None
+    stolen_source = None
+    if not wants_silver:
+        if target_kind == "player":
+            candidates = _find_player_pickpocket_candidates(target, item_phrase)
+            if candidates:
+                stolen_item, stolen_source = candidates[0]
+                defense += _pickpocket_item_penalty(stolen_item, stolen_source)
+        else:
+            stolen_item = _generate_pickpocket_item(target_kind, target, server, item_phrase)
+            if stolen_item:
+                defense += _pickpocket_item_penalty(stolen_item, "generated")
+        if not stolen_item:
+            await session.send_line("You do not spot anything like that worth lifting.")
+            session.set_roundtime(3)
+            await session.send_line(roundtime_msg(3))
+            return
 
     if result < defense:
         session.hidden = False
         session.sneaking = False
         await session.send_line(colorize("You fumble the attempt and get noticed!", TextPresets.WARNING))
         if target_kind == "player":
-            await target.send_line(colorize(f"You feel {session.character_name} tugging at your purse!", TextPresets.WARNING))
+            what = "your purse" if wants_silver or not stolen_item else (stolen_item.get("short_name") or "your belongings")
+            await target.send_line(colorize(f"You feel {session.character_name} tugging at {what}!", TextPresets.WARNING))
+        session.set_roundtime(3)
+        await session.send_line(roundtime_msg(3))
+        return
+
+    if not wants_silver and stolen_item:
+        if target_kind == "player":
+            ok, detail = _transfer_stolen_player_item(session, target, stolen_item, stolen_source, server)
+        else:
+            ok, detail = _place_generated_stolen_item(session, stolen_item, server)
+        if not ok:
+            await session.send_line(detail or "You fail to get the item clear.")
+            session.set_roundtime(3)
+            await session.send_line(roundtime_msg(3))
+            return
+
+        _mark_pickpocketed(target, getattr(session, "character_id", 0))
+        await session.send_line(colorize(
+            f"You deftly lift {stolen_item.get('short_name') or stolen_item.get('name') or 'an item'} from "
+            f"{getattr(target, 'display_name', getattr(target, 'character_name', getattr(target, 'full_name', 'your target')))}"
+            f" and hide it in {detail}.",
+            TextPresets.SYSTEM,
+        ))
         session.set_roundtime(3)
         await session.send_line(roundtime_msg(3))
         return
 
     available = _available_pickpocket_silver(target_kind, target, getattr(session, "character_id", 0))
+    if available <= 0 and not wants_silver:
+        if target_kind == "player":
+            candidates = _find_player_pickpocket_candidates(target)
+            if candidates:
+                stolen_item, stolen_source = candidates[0]
+                second_result = _pickpocket_offense(session, server)
+                second_defense = _target_pickpocket_defense(target_kind, target) + _pickpocket_item_penalty(stolen_item, stolen_source)
+                if second_result >= second_defense:
+                    ok, detail = _transfer_stolen_player_item(session, target, stolen_item, stolen_source, server)
+                    if ok:
+                        _mark_pickpocketed(target, getattr(session, "character_id", 0))
+                        await session.send_line(colorize(
+                            f"You deftly lift {stolen_item.get('short_name') or stolen_item.get('name') or 'an item'} from "
+                            f"{getattr(target, 'character_name', 'your target')} and hide it in {detail}.",
+                            TextPresets.SYSTEM,
+                        ))
+                        session.set_roundtime(3)
+                        await session.send_line(roundtime_msg(3))
+                        return
+        await session.send_line("You find nothing worth lifting.")
+        session.set_roundtime(3)
+        await session.send_line(roundtime_msg(3))
+        return
     if available <= 0:
         await session.send_line("You find nothing worth lifting.")
         session.set_roundtime(3)

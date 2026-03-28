@@ -467,6 +467,21 @@ class NPCManager:
             depart_msg = npc_emote(f"{npc.display_name} heads off.")
             arrive_msg = npc_emote(f"{npc.display_name} arrives.")
 
+        tracker = getattr(self.server, "tracking", None)
+        if tracker:
+            try:
+                tracker.record_departure(
+                    actor_kind="npc",
+                    actor_id=int(getattr(npc, "id", 0) or 0),
+                    actor_name=getattr(npc, "display_name", None) or getattr(npc, "name", None) or "someone",
+                    from_room_id=int(old_room),
+                    to_room_id=int(target_room_id),
+                    direction=direction or "out",
+                    actor_level=int(getattr(npc, "level", 1) or 1),
+                )
+            except Exception as e:
+                log.debug("Failed to record NPC trail: %s", e)
+
         self._move_npc_index(npc, target_room_id)
         npc.record_move()
 

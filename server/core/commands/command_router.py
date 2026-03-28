@@ -4,7 +4,7 @@ CommandRouter - Parses player input and dispatches to command handlers.
 
 import logging
 from typing import Dict, Callable
-from server.core.commands.player.movement import cmd_move, cmd_go, cmd_look
+from server.core.commands.player.movement import cmd_move, cmd_go, cmd_look, cmd_glance
 from server.core.commands.player.communication import (
     cmd_say, cmd_whisper, cmd_shout, cmd_sing, cmd_ask, cmd_tell
 )
@@ -54,9 +54,10 @@ from server.core.commands.player.fixstat_convert import cmd_fixstats, cmd_conver
 from server.core.commands.player.weapon_techniques import cmd_weapon, cmd_stop
 from server.core.commands.player.party import cmd_party
 from server.core.commands.player.esp import cmd_esp, cmd_think, cmd_chat
-from server.core.commands.player.foraging import cmd_forage
+from server.core.commands.player.foraging import cmd_forage, cmd_track
 from server.core.commands.player.crafting import cmd_artisan, cmd_fletching, cmd_cobbling, cmd_cut, cmd_measure
 from server.core.commands.player.guild import cmd_gld, cmd_questlog, cmd_questslog, cmd_answer, cmd_bounty
+from server.core.commands.player.pets import cmd_pet, cmd_touch_companion, cmd_kick_companion
 
 log = logging.getLogger(__name__)
 
@@ -107,6 +108,7 @@ class CommandRouter:
 
         # ---- Movement ----
         self.register("look", cmd_look, aliases=["l"])
+        self.register("glance", cmd_glance, aliases=["gl"])
         self.register("north", cmd_move, aliases=["n"])
         self.register("south", cmd_move, aliases=["s"])
         self.register("east", cmd_move, aliases=["e"])
@@ -172,6 +174,9 @@ class CommandRouter:
         self.register("lie",   cmd_lie)
         self.register("use",   cmd_use, aliases=["eat", "drink", "apply"])
         self.register("steal", cmd_steal)
+        self.register("pet", cmd_pet)
+        self.register("touch", cmd_touch_companion)
+        self.register("kick", cmd_kick_companion)
         self.register("tend",   cmd_tend)
         self.register("wounds", cmd_wounds, aliases=["wound", "injuries", "inj"])
         self.register("prepare", cmd_prepare, aliases=["prep"])
@@ -185,6 +190,7 @@ class CommandRouter:
         self.register("read", cmd_read)
         self.register("invoke", cmd_invoke)
         self.register("forage", cmd_forage)
+        self.register("track", cmd_track)
         self.register("artisan", cmd_artisan)
         self.register("fletching", cmd_fletching)
         self.register("cobbling", cmd_cobbling)
@@ -332,7 +338,7 @@ class CommandRouter:
             parts = raw_input.split(None, 1)
             cmd_check = parts[0].lower() if parts else ""
             resolved_check = self._aliases.get(cmd_check, cmd_check)
-            GHOST_ALLOWED = {"look", "l", "say", "yell", "whisper", "think",
+            GHOST_ALLOWED = {"look", "l", "glance", "gl", "say", "yell", "whisper", "think",
                              "ooc", "who", "experience", "exp", "party", "pt",
                              "esp", "chat", "tell"}
             if resolved_check not in GHOST_ALLOWED:
@@ -360,12 +366,13 @@ class CommandRouter:
 
         # Check roundtime (some commands bypass RT)
         rt_exempt = {
-            "look", "l", "who", "health", "inventory", "inv", "think",
+            "look", "l", "glance", "gl", "who", "health", "inventory", "inv", "think",
             "experience", "exp", "fame", "info", "skills", "skill", "stance",
             "wealth", "help", "time", "order", "list", "appraise", "sneak", "status", "stat",
             "set", "answer",
             "weight", "wt", "encumbrance", "encumb",
             "rest", "sit", "stand", "sleep", "lie", "kneel", "tend", "wounds", "wound", "injuries", "inj", "use", "eat", "drink",
+            "pet", "touch", "kick",
             "bank", "check", "deposit", "withdraw",
             "boxpick", "pickjobs", "myjobs", "repair", "ring", "pay",
             "claim", "done", "cancel", "forfeit", "submit",
@@ -410,6 +417,17 @@ class CommandRouter:
                         return
                 except Exception as e:
                     log.error("Tutorial command error (%s): %s", raw_input, e, exc_info=True)
+
+        if cmd == "accept":
+            pets = getattr(self.server, "pets", None)
+            if pets:
+                try:
+                    handled = await pets.handle_accept(session)
+                    if handled:
+                        await session.send_prompt()
+                        return
+                except Exception as e:
+                    log.error("Pet ACCEPT command error (%s): %s", raw_input, e, exc_info=True)
 
         # Find handler
         handler = self._commands.get(cmd)

@@ -527,6 +527,7 @@ class ExperienceManager:
     # ── Level up ──────────────────────────────────────────────────────────────
 
     async def _level_up(self, session):
+        old_level = int(getattr(session, "level", 1) or 1)
         session.level += 1
         new_level = session.level
 
@@ -666,6 +667,13 @@ class ExperienceManager:
                 await guild.maybe_issue_rogue_auto_invite(session, source="level_up")
             except Exception as e:
                 log.error("Rogue auto-invite failed for %s: %s", getattr(session, "character_name", "unknown"), e)
+
+        pets = getattr(self.server, "pets", None)
+        if pets:
+            try:
+                await pets.on_level_up(session, old_level, new_level)
+            except Exception as e:
+                log.error("Pet level-up hook failed for %s: %s", getattr(session, "character_name", "unknown"), e)
 
     # ── Convenience ───────────────────────────────────────────────────────────
 

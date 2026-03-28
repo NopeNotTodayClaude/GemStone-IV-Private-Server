@@ -23,6 +23,7 @@
 local DB           = require("globals/utils/db")
 local SpellCircles = require("globals/magic/spell_circles")
 local ActiveBuffs  = require("globals/magic/active_buffs")
+local GS4Math      = require("globals/utils/gs4_math")
 
 local TD = {}
 
@@ -61,12 +62,8 @@ TD.racial_bonuses = {
 }
 
 -- ── Stat bonus helper ─────────────────────────────────────────────────
-local function stat_bonus(raw_stat)
-    return math.floor((raw_stat - 50) / 5)
-end
-
 local function get_stat(char, key)
-    return stat_bonus(char["stat_" .. key] or 50)
+    return GS4Math.stat_bonus(char["stat_" .. key] or 50)
 end
 
 -- ── Active buff TD bonuses ─────────────────────────────────────────────

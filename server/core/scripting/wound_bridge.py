@@ -254,6 +254,30 @@ class WoundBridge:
             'bandaged': bandaged,
         }
 
+    def _clear_fully_recovered_minor_wound(self, session, entry: dict) -> Optional[dict]:
+        """
+        Preserve the legacy behavior where trivial wounds disappear once the
+        character is back at full health, but do it against canonical wounds.
+        """
+        cleaned = self._sanitize_wound_entry(entry)
+        if cleaned is None:
+            return None
+
+        try:
+            health_current = int(getattr(session, "health_current", 0) or 0)
+            health_max = int(getattr(session, "health_max", 0) or 0)
+        except Exception:
+            return cleaned
+
+        if health_max > 0 and health_current >= health_max and cleaned["wound_rank"] <= 1:
+            cleaned = dict(cleaned)
+            cleaned["wound_rank"] = 0
+            cleaned["is_bleeding"] = False
+            cleaned["bandaged"] = False
+            return self._sanitize_wound_entry(cleaned)
+
+        return cleaned
+
     @staticmethod
     def _set_wounds(session, wounds_dict: dict):
         session.wounds = wounds_dict
@@ -887,6 +911,7 @@ class WoundBridge:
         char_id = getattr(session, 'character_id', None)
         if not char_id or not self._server.db:
             session.wounds = {}
+            self.sync_session_state(session)
             return
 
         try:
@@ -919,7 +944,7 @@ class WoundBridge:
                     continue
                 if norm_loc != str(loc):
                     dirty = True
-                cleaned = self._sanitize_wound_entry({
+                cleaned = self._clear_fully_recovered_minor_wound(session, {
                     'wound_rank': wound_rank,
                     'scar_rank': scar_rank,
                     'is_bleeding': is_bleeding,
@@ -948,6 +973,7 @@ class WoundBridge:
         except Exception as e:
             log.error("WoundBridge.load_wounds: %s", e, exc_info=True)
             session.wounds = {}
+            self.sync_session_state(session)
 
     def save_wounds_now(self, session):
         """Persist session.wounds to DB immediately using canonical location keys."""

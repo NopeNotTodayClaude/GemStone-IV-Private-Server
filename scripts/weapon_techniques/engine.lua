@@ -76,7 +76,14 @@ local function safe_int(v)
 end
 
 local function player_stamina(player)
-    return safe_int(player.stamina or player:getStat and player:getStat("stamina") or 0)
+    local get_stat = player and player.getStat
+    if player and player.stamina ~= nil then
+        return safe_int(player.stamina)
+    end
+    if type(get_stat) == "function" then
+        return safe_int(get_stat(player, "stamina"))
+    end
+    return 0
 end
 
 local function player_skill_ranks(player, skill_name)

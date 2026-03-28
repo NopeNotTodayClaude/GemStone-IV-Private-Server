@@ -34,6 +34,12 @@ BOX_TIERS = {
 LOCK_DIFFICULTY_BASE = 5   # per creature level -- calibrated for ranks*3 skill formula
                             # GS4 uses 15 but their skill values are 3-4x higher per rank
 
+ABILITY_SPECIAL_LOOT = {
+    "crystal_core_drop": "a crystal core",
+    "essence_shard_drop": "an essence shard",
+    "drops_pale_water_sapphire": "a pale water sapphire",
+}
+
 
 def _get_tier_value(tiers, level):
     """Look up a value from a level-range tier dict."""
@@ -781,5 +787,51 @@ def generate_treasure(db, creature):
         herb = generate_herb(db, level)
         if herb:
             result["items"].append(herb)
+
+    # Some creatures carry special drops through authored abilities rather than
+    # explicit special_loot tables. Fold those in before building the corpse.
+    for ability_id, item_name in ABILITY_SPECIAL_LOOT.items():
+        if ability_id in {str(a or "").lower() for a in (getattr(creature, "abilities", []) or [])}:
+            if item_name not in (getattr(creature, "special_loot", []) or []):
+                creature.special_loot.append(item_name)
+
+    # Authored creature-specific loot should surface on corpses independently
+    # of the generic treasure flag lane.
+    for special_name in list(getattr(creature, "special_loot", []) or []):
+        if not isinstance(special_name, str):
+            continue
+        short_name = special_name.strip()
+        if not short_name or random.random() > 0.45:
+            continue
+        words = short_name.split()
+        first_word = words[0].lower() if words else ""
+        article = first_word if first_word in {"a", "an", "the", "some"} else "a"
+        noun = words[-1].lower() if words else "item"
+        item_id = None
+        if db:
+            item_id = db.get_or_create_item(
+                name=short_name,
+                short_name=short_name,
+                noun=noun,
+                item_type="misc",
+                article=article,
+                value=max(5, int(level or 1) * 20),
+                description=f"{short_name.capitalize()} recovered from {getattr(creature, 'full_name', getattr(creature, 'name', 'a creature'))}.",
+            )
+        result["items"].append({
+            "item_id": item_id,
+            "name": short_name,
+            "short_name": short_name,
+            "noun": noun,
+            "item_type": "misc",
+            "value": max(5, int(level or 1) * 20),
+            "description": f"{short_name.capitalize()} recovered from {getattr(creature, 'full_name', getattr(creature, 'name', 'a creature'))}.",
+        })
+
+    # If a creature stole real inventory from someone, that property should
+    # return when the creature is looted.
+    for stolen in list(getattr(creature, "stolen_items", []) or []):
+        if isinstance(stolen, dict):
+            result["items"].append(dict(stolen))
 
     return result

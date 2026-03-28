@@ -29,6 +29,7 @@
 local Hindrance    = require("globals/magic/spell_hindrance")
 local SpellCircles = require("globals/magic/spell_circles")
 local ActiveBuffs  = require("globals/magic/active_buffs")
+local GS4Math      = require("globals/utils/gs4_math")
 
 local Bolt = {}
 
@@ -49,20 +50,6 @@ Bolt.avd_table = {
 
 -- ── Spell Aiming skill bonus ──────────────────────────────────────────
 -- Each bonus point in Spell Aiming = +1 AS on bolt spells.
-local function skill_bonus_from_ranks(ranks)
-    local bonus = 0
-    local r = ranks
-    local tiers = {{20,5},{20,3},{60,2}}
-    for _, tier in ipairs(tiers) do
-        if r <= 0 then break end
-        local take = math.min(r, tier[1])
-        bonus = bonus + take * tier[2]
-        r = r - take
-    end
-    if r > 0 then bonus = bonus + r * 1 end
-    return bonus
-end
-
 -- ── Stance AS modifier ────────────────────────────────────────────────
 -- position: "offensive" | "advanced" | "neutral" | "guarded" | "defensive"
 local STANCE_AS_MOD = {
@@ -86,7 +73,7 @@ local STANCE_DS_MOD = {
 -- spell_aiming_ranks: caster's Spell Aiming ranks
 -- as_override:      flat AS override from active buffs (e.g. Enhancement spells)
 function Bolt.calculate_as(caster, spell_aiming_ranks, as_override)
-    local base_as = skill_bonus_from_ranks(spell_aiming_ranks or 0)
+    local base_as = GS4Math.skill_bonus_from_ranks(spell_aiming_ranks or 0)
     local stance  = STANCE_AS_MOD[caster.position or "neutral"] or 0
     local buff_as = (caster.id and ActiveBuffs.get_active(caster.id)) or {}
     local total_buff = 0

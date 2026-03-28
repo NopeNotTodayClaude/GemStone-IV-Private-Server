@@ -111,6 +111,12 @@ class GameLoop:
             except Exception as e:
                 log.error("Status effects tick error: %s", e, exc_info=True)
 
+        if hasattr(self.server, "pets"):
+            try:
+                await self.server.pets.tick(self.tick_count)
+            except Exception as e:
+                log.error("Pet tick error: %s", e, exc_info=True)
+
         # Passive health/mana/stamina regeneration (every ~60 seconds, matching GS4 regen cadence)
         if self.tick_count % 600 == 0:
             try:
@@ -251,12 +257,36 @@ class GameLoop:
                     session.spirit_current = min(session.spirit_max,
                                                  session.spirit_current + spirit_regen)
 
-            # Auto-clear minor injuries once health is full
+            # Auto-clear trivial recovered wounds once health is full.
+            # Legacy code only trimmed session.injuries, which let canonical
+            # session.wounds + character_wounds resurrect those same wounds
+            # on the next login.
             if session.health_current >= session.health_max:
                 injuries = getattr(session, 'injuries', {})
                 for loc in list(injuries.keys()):
                     if injuries[loc] <= 1:
                         del injuries[loc]
+
+                wb = getattr(self.server, "wound_bridge", None)
+                wounds = getattr(session, "wounds", {}) or {}
+                if wb and wounds:
+                    updated = {}
+                    changed = False
+                    for loc, entry in wounds.items():
+                        if not isinstance(entry, dict):
+                            changed = True
+                            continue
+                        cleaned = wb._clear_fully_recovered_minor_wound(session, entry)
+                        if cleaned is None:
+                            changed = True
+                            continue
+                        if cleaned != entry:
+                            changed = True
+                        updated[loc] = cleaned
+                    if changed:
+                        wb._set_wounds(session, updated)
+                        wb.sync_session_state(session)
+                        await wb.save_wounds(session)
 
             if buffs.get("wound_regen"):
                 wb = getattr(self.server, "wound_bridge", None)

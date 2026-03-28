@@ -412,44 +412,77 @@ def _build_room_enemies(session, server) -> list[dict]:
 
 
 def _build_room_npcs(session, server) -> list[dict]:
-    """Build clickable NPC interaction data for the current room."""
+    """Build clickable NPC and companion interaction data for the current room."""
     room = getattr(session, "current_room", None)
     npc_mgr = getattr(server, "npcs", None)
-    if not room or not npc_mgr:
+    if not room:
         return []
 
     out = []
-    for npc in npc_mgr.get_npcs_in_room(room.id):
+    if npc_mgr:
+        for npc in npc_mgr.get_npcs_in_room(room.id):
+            try:
+                actions = _build_npc_actions(session, server, npc)
+            except Exception:
+                log.exception("Failed building NPC actions for %s", getattr(npc, "template_id", "unknown"))
+                actions = []
+
+            if not actions:
+                continue
+
+            aliases = []
+            for value in (
+                getattr(npc, "name", None),
+                getattr(npc, "display_name", None),
+                getattr(npc, "full_name", None),
+            ):
+                text = str(value or "").strip()
+                if text and text not in aliases:
+                    aliases.append(text)
+
+            if not aliases:
+                continue
+
+            out.append({
+                "template_id": getattr(npc, "template_id", ""),
+                "kind": "npc",
+                "name": getattr(npc, "name", ""),
+                "display": getattr(npc, "display_name", getattr(npc, "name", "")),
+                "aliases": aliases,
+                "marker": "",
+                "actions": actions,
+            })
+
+    try:
+        from server.core.engine.magic_effects import is_visible_to
+    except Exception:
+        is_visible_to = None
+
+    world = getattr(server, "world", None)
+    if world:
+        for other in world.get_players_in_room(room.id):
+            if other is session:
+                continue
+            if not getattr(other, "character_name", None):
+                continue
+            try:
+                if is_visible_to and not is_visible_to(server, session, other):
+                    continue
+            except Exception:
+                continue
+            entry = _build_player_entry(session, other)
+            if entry:
+                out.append(entry)
+
+    pets = getattr(server, "pets", None)
+    if pets:
         try:
-            actions = _build_npc_actions(session, server, npc)
+            for entity in pets.get_visible_entities_in_room(room.id, viewer=session):
+                entry = _build_companion_entry(session, server, entity)
+                if entry:
+                    out.append(entry)
         except Exception:
-            log.exception("Failed building NPC actions for %s", getattr(npc, "template_id", "unknown"))
-            actions = []
-
-        if not actions:
-            continue
-
-        aliases = []
-        for value in (
-            getattr(npc, "name", None),
-            getattr(npc, "display_name", None),
-            getattr(npc, "full_name", None),
-        ):
-            text = str(value or "").strip()
-            if text and text not in aliases:
-                aliases.append(text)
-
-        if not aliases:
-            continue
-
-        out.append({
-            "template_id": getattr(npc, "template_id", ""),
-            "name": getattr(npc, "name", ""),
-            "display": getattr(npc, "display_name", getattr(npc, "name", "")),
-            "aliases": aliases,
-            "marker": " ·",
-            "actions": actions,
-        })
+            log.exception("Failed building companion actions for room %s", getattr(room, "id", 0))
 
     return out
 
@@ -504,6 +537,13 @@ def _build_npc_actions(session, server, npc) -> list[dict]:
         add("Sell...", "sell ", prefill=True)
         add("Appraise...", "appraise ", prefill=True)
 
+    pets = getattr(server, "pets", None)
+    room = getattr(session, "current_room", None)
+    if pets and room and pets.is_pet_shop_room(getattr(room, "id", 0)):
+        add("Open pet shop", "pet shop")
+        add("Pet status", "pet status")
+        add("Pet help", "pet help")
+
     if "bank" in service_tags:
         add("Check balance", "check balance")
         add("Deposit...", "deposit ", prefill=True)
@@ -538,6 +578,135 @@ def _build_npc_actions(session, server, npc) -> list[dict]:
     _extend_guild_actions(actions, seen, session, server, npc)
     _extend_quest_actions(actions, seen, session, server, npc)
     return actions
+
+
+def _build_companion_entry(session, server, entity) -> dict | None:
+    actions = _build_companion_actions(session, server, entity)
+    if not actions:
+        return None
+
+    owner = entity.get("owner")
+    aliases = []
+    for value in (
+        entity.get("name"),
+        entity.get("display_name"),
+    ):
+        text = str(value or "").strip()
+        if text and text not in aliases:
+            aliases.append(text)
+
+    if entity.get("kind") == "sprite":
+        for value in ("sprite", "guide"):
+            if value not in aliases:
+                aliases.append(value)
+    elif owner and getattr(owner, "character_name", None):
+        owner_name = str(owner.character_name).strip()
+        for value in (f"{owner_name}'s pet", f"{owner_name} pet"):
+            if value not in aliases:
+                aliases.append(value)
+
+    if not aliases:
+        return None
+
+    template_id = "pet_sprite" if entity.get("kind") == "sprite" else "pet_companion"
+    display = str(entity.get("display_name") or aliases[0]).strip()
+    name = str(entity.get("name") or display).strip()
+    marker = ""
+    if entity.get("kind") == "sprite":
+        marker = ""
+
+    return {
+        "template_id": template_id,
+        "kind": str(entity.get("kind") or ""),
+        "name": name,
+        "display": display,
+        "aliases": aliases,
+        "marker": marker,
+        "actions": actions,
+    }
+
+
+def _build_companion_actions(session, server, entity) -> list[dict]:
+    actions = []
+    seen: set[tuple[str, str, bool]] = set()
+
+    def add(label: str, command: str, *, prefill: bool = False):
+        key = (label, command, prefill)
+        if not command or key in seen:
+            return
+        seen.add(key)
+        actions.append({
+            "label": label,
+            "command": command,
+            "prefill": bool(prefill),
+        })
+
+    target = str(entity.get("name") or entity.get("display_name") or "").strip()
+    if not target:
+        return actions
+
+    add("Look", f"look {target}")
+    add("Glance", f"glance {target}")
+
+    kind = str(entity.get("kind") or "").strip().lower()
+    owner = entity.get("owner")
+
+    if kind == "sprite":
+        add("Pet", f"pet {target}")
+        add("Touch", f"touch {target}")
+        if owner is session:
+            progress = getattr(session, "pet_progress", {}) or {}
+            quest_state = str(progress.get("quest_state") or "").strip().lower()
+            if quest_state == "offered":
+                add("Accept quest", "accept")
+            elif quest_state == "accepted" and not progress.get("first_pet_claimed"):
+                add("Open pet shop", "pet shop")
+                add("Pet help", "pet help")
+        return actions
+
+    add("Pet", f"pet {target}")
+    add("Touch", f"touch {target}")
+    add("Kick", f"kick {target}")
+
+    if owner is session:
+        add("Pet status", "pet status")
+        add("Feed...", "pet feed ", prefill=True)
+        add("Pet gear", "pet gear")
+        add("Call", "pet call")
+        add("Dismiss", "pet dismiss")
+        add("Release", "pet release")
+
+    return actions
+
+
+def _build_player_entry(session, other) -> dict | None:
+    name = str(getattr(other, "character_name", "") or "").strip()
+    if not name:
+        return None
+    return {
+        "template_id": "room_player",
+        "kind": "player",
+        "name": name,
+        "display": name,
+        "aliases": [name],
+        "marker": "",
+        "actions": _build_player_actions(other),
+    }
+
+
+def _build_player_actions(other) -> list[dict]:
+    name = str(getattr(other, "character_name", "") or "").strip()
+    if not name:
+        return []
+    return [
+        {"label": "Look", "command": f"look {name}", "prefill": False},
+        {"label": "Glance", "command": f"glance {name}", "prefill": False},
+        {"label": "Whisper...", "command": f"whisper {name} ", "prefill": True},
+        {"label": "Tell...", "command": f"tell {name} ", "prefill": True},
+        {"label": "Wave", "command": f"wave {name}", "prefill": False},
+        {"label": "Smile", "command": f"smile {name}", "prefill": False},
+        {"label": "Nod", "command": f"nod {name}", "prefill": False},
+    ]
 
 
 def _extend_guild_actions(actions: list[dict], seen: set[tuple[str, str, bool]], session, server, npc) -> None:
@@ -670,7 +839,7 @@ def _build_wounds(session) -> dict:
     """
     # Primary: WoundBridge-managed session.wounds dict
     wounds_dict = getattr(session, "wounds", None)
-    if wounds_dict:
+    if wounds_dict is not None:
         out = {}
         for loc_key, entry in wounds_dict.items():
             if not isinstance(entry, dict):

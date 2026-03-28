@@ -27,7 +27,8 @@
 --   Attempting to cast without sufficient mana causes nervous system injury.
 ------------------------------------------------------------------------
 
-local DB        = require("globals/utils/db")
+local DB          = require("globals/utils/db")
+local GS4Math     = require("globals/utils/gs4_math")
 local Professions = require("data/professions")
 
 local Mana = {}
@@ -43,20 +44,10 @@ local STAT_BONUS_TABLE = {
     -- for typical values. The real bonus is stored in the character row.
 }
 
--- Returns the actual stat bonus from a character db row.
--- character row must have: stat_aura, stat_wisdom, stat_logic,
---                           stat_discipline, stat_influence, stat_intuition
--- The BONUS is derived from the raw stat per the GS4 stat bonus table.
--- For simplicity, bonus = floor((raw_stat - 50) / 5) (standard formula).
-local function stat_bonus(raw_stat)
-    local val = math.floor((raw_stat - 50) / 5)
-    return val  -- can be negative for stats under 50
-end
-
 local function get_char_stat_bonus(char, stat_name)
     -- stat_name: "aura","wisdom","logic","discipline","influence","intuition"
     local raw = char["stat_" .. stat_name] or 50
-    return stat_bonus(raw)
+    return GS4Math.stat_bonus(raw)
 end
 
 -- ── Mana stat bonus for a profession ─────────────────────────────────
@@ -89,32 +80,10 @@ function Mana.calc_base_mana(char, profession_id)
 end
 
 -- ── Harness Power bonus ───────────────────────────────────────────────
--- HP ranks capped at character level + HP skill bonus.
--- HP skill bonus is calculated from the standard GS4 skill bonus table.
--- Simplified: skill bonus = floor(ranks * 3) for ranks 1-100.
--- (The real bonus table is non-linear; a full table can be added later.)
-local function skill_bonus_from_ranks(ranks)
-    -- GS4 skill bonus table approximation (from play.net skill bonus table):
-    -- rank 1-20: +5 per rank, rank 21-40: +3 per rank,
-    -- rank 41-100: +2 per rank, rank 101+: +1 per rank
-    local bonus = 0
-    if ranks <= 0 then return 0 end
-    local r = ranks
-    local tiers = {{20,5},{20,3},{60,2}}
-    for _, tier in ipairs(tiers) do
-        if r <= 0 then break end
-        local take = math.min(r, tier[1])
-        bonus = bonus + take * tier[2]
-        r = r - take
-    end
-    if r > 0 then bonus = bonus + r * 1 end
-    return bonus
-end
-
 function Mana.calc_harness_power_bonus(char, hp_ranks)
     local level = char.level or 1
     local capped_ranks = math.min(hp_ranks, level)
-    local hp_skill_bonus = skill_bonus_from_ranks(hp_ranks)
+    local hp_skill_bonus = GS4Math.skill_bonus_from_ranks(hp_ranks)
     return capped_ranks + hp_skill_bonus
 end
 

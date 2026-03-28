@@ -959,6 +959,12 @@ async def cmd_attack(session, cmd, args, server):
             return
     else:
         target_name = args.strip()
+        pets = getattr(server, "pets", None)
+        if pets and getattr(session, "current_room", None):
+            entity = pets.find_visible_entity(session.current_room.id, target_name, viewer=session)
+            if entity:
+                await session.send_line("Companions are immune to direct attacks.")
+                return
         creature = server.creatures.find_creature_in_room(
             session.current_room.id, target_name
         )

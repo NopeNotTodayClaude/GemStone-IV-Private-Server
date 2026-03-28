@@ -132,10 +132,11 @@ handlers[1603] = function(ctx) -- Templar's Verdict
 end
 
 handlers[1604] = function(ctx) -- Consecrate
-    local swings = 20 + (ctx.circle_ranks or 1) * 3
+    local blessings = (ctx.lore_ranks and ctx.lore_ranks.blessings) or 0
+    local swings = 20 + (ctx.circle_ranks or 1) * 3 + math.floor(blessings / 5)
     DB.execute([[
         UPDATE character_inventory
-        SET extra_data=JSON_SET(COALESCE(extra_data,'{}'),'$.guiding_light',1,'$.consecrate_swings',?)
+        SET extra_data=JSON_SET(COALESCE(extra_data,'{}'),'$.guiding_light',1,'$.consecrate_swings',?,'$.holy_flares',1)
         WHERE character_id=? AND slot IN ('right_hand','left_hand') LIMIT 1
     ]], { swings, tid(ctx) })
     return string.format("A holy light consecrates the weapon of %s (%d swings).", tname(ctx), swings)
@@ -181,7 +182,8 @@ handlers[1610] = function(ctx) -- Higher Vision
 end
 
 handlers[1611] = function(ctx) -- Patron's Blessing
-    local phantom_cm = math.floor(math.max(0, (ctx.circle_ranks or 0) - 11) * 0.75)
+    local blessings = (ctx.lore_ranks and ctx.lore_ranks.blessings) or 0
+    local phantom_cm = math.floor(math.max(0, (ctx.circle_ranks or 0) - 11) * 0.75) + math.floor(blessings / 20)
     ActiveBuffs.apply(tid(ctx), 1611, CIRCLE_ID, ctx.caster.id, dur(ctx),
         { phantom_cm=phantom_cm })
     return string.format("Your patron blesses %s with +%d phantom CM ranks.", tname(ctx), phantom_cm)
@@ -205,8 +207,9 @@ end
 
 handlers[1614] = function(ctx) -- Aura of the Arkati
     if not ctx.result.hit then return end
+    local religion = (ctx.lore_ranks and ctx.lore_ranks.religion) or 0
     local dmg = math.max(8, math.floor((ctx.result.total or 101) - 100))
-    if is_undead_or_evil(ctx) then dmg = math.floor(dmg * 1.75) end
+    if is_undead_or_evil(ctx) then dmg = math.floor(dmg * (1.75 + religion / 200)) end
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
     return string.format("The Arkati's aura BLAZES through %s for %d damage!", tname(ctx), dmg)
@@ -214,8 +217,9 @@ end
 
 handlers[1615] = function(ctx) -- Repentance
     if not ctx.result.hit then return end
+    local religion = (ctx.lore_ranks and ctx.lore_ranks.religion) or 0
     local dmg = math.max(10, math.floor((ctx.result.total or 101) - 100))
-    if is_undead_or_evil(ctx) then dmg = dmg * 3 end
+    if is_undead_or_evil(ctx) then dmg = math.floor(dmg * (3 + religion / 150)) end
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
     return string.format("Repentance BURNS through %s for %d damage!", tname(ctx), dmg)
@@ -266,7 +270,8 @@ handlers[1620] = function(ctx) -- Battle Standard
 end
 
 handlers[1625] = function(ctx) -- Holy Weapon
-    local bond_level = math.min(5, math.floor(math.max(0, (ctx.circle_ranks or 0) - 25)) + 1)
+    local blessings = (ctx.lore_ranks and ctx.lore_ranks.blessings) or 0
+    local bond_level = math.min(5, math.floor(math.max(0, (ctx.circle_ranks or 0) - 25)) + 1 + math.floor(blessings / 40))
     DB.execute([[
         UPDATE character_inventory
         SET extra_data=JSON_SET(COALESCE(extra_data,'{}'),'$.holy_bonded',1,'$.bond_level',?)

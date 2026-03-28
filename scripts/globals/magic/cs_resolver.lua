@@ -29,6 +29,7 @@
 local DB           = require("globals/utils/db")
 local SpellCircles = require("globals/magic/spell_circles")
 local ActiveBuffs  = require("globals/magic/active_buffs")
+local GS4Math      = require("globals/utils/gs4_math")
 
 local CS = {}
 
@@ -98,10 +99,9 @@ end
 -- ── Get stat bonus from a character row ──────────────────────────────
 -- Returns the numeric stat bonus for the given stat key.
 -- stat_key: "aura","wisdom","logic","discipline","influence","intuition"
--- Uses the formula: bonus = floor((raw_stat - 50) / 5)
 local function stat_bonus(char, stat_key)
     local raw = char["stat_" .. stat_key] or 50
-    return math.floor((raw - 50) / 5)
+    return GS4Math.stat_bonus(raw)
 end
 
 -- ── Stat bonus for a specific circle ─────────────────────────────────

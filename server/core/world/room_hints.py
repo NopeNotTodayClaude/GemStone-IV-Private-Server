@@ -70,6 +70,23 @@ SERVICE_TAG_HINTS = {
     "priest":     ("Temple",     ["TALK TO {priest}", "ASK {priest} ABOUT arkati"]),
 }
 
+MENAGERIE_HINT = (
+    "Menagerie",
+    [
+        "PET SHOP",
+        "PET STATUS",
+        "PET HELP",
+        "TALK TO {keeper}",
+        "ASK {keeper} ABOUT floofer",
+        "ASK {keeper} ABOUT treat",
+        "ASK {keeper} ABOUT swap",
+        "PET FEED {treat}",
+        "PET CALL",
+        "PET DISMISS",
+        "PET RELEASE",
+    ],
+)
+
 
 def _fmt(label, commands):
     return colorize(f"[{label}: {', '.join(commands)}]", HINT_COLOR)
@@ -161,6 +178,20 @@ def _is_locksmith_npc(npc):
 async def show_room_hints(session, room, server):
     """Called after cmd_look on every room entry."""
     shown = set()
+
+    pets = getattr(server, "pets", None)
+    if pets and getattr(pets, "is_pet_shop_room", None) and pets.is_pet_shop_room(room.id):
+        keeper = "keeper"
+        if hasattr(server, "npcs"):
+            for npc in server.npcs.get_npcs_in_room(room.id):
+                name = str(getattr(npc, "name", "") or "").strip()
+                if name:
+                    keeper = name
+                    break
+        label, cmds = MENAGERIE_HINT
+        cmds = [cmd.replace("{keeper}", keeper).replace("{treat}", "treat") for cmd in cmds]
+        await session.send_line(_fmt(label, cmds))
+        shown.add("menagerie")
 
     locker_ctx = _get_public_locker_context(server, room.id)
     if locker_ctx:

@@ -116,9 +116,10 @@ end
 
 handlers[304] = function(ctx) -- Bless
     -- Bless target's held weapon with holy flares
-    local swings = 25 + (ctx.circle_ranks or 1) * 3
+    local blessings = (ctx.lore_ranks and ctx.lore_ranks.blessings) or 0
+    local swings = 25 + (ctx.circle_ranks or 1) * 3 + math.floor(blessings / 5)
     DB.execute([[
-        UPDATE character_inventory SET extra_data=JSON_SET(COALESCE(extra_data,'{}'),'$.holy_blessed',1,'$.bless_swings',?)
+        UPDATE character_inventory SET extra_data=JSON_SET(COALESCE(extra_data,'{}'),'$.holy_blessed',1,'$.bless_swings',?,'$.holy_flares',1)
         WHERE character_id=? AND slot IN ('right_hand','left_hand') LIMIT 1
     ]], { swings, tid(ctx) })
     return string.format("The weapon of %s glows with holy light.", tname(ctx))
@@ -141,7 +142,8 @@ handlers[306] = function(ctx) -- Holy Bolt
 end
 
 handlers[307] = function(ctx) -- Benediction
-    local bonus = 7 + math.floor(math.max(0, (ctx.circle_ranks or 0) - 7) / 2)
+    local blessings = (ctx.lore_ranks and ctx.lore_ranks.blessings) or 0
+    local bonus = 7 + math.floor(math.max(0, (ctx.circle_ranks or 0) - 7) / 2) + math.floor(blessings / 30)
     local capped = math.min(bonus, 15)
     ActiveBuffs.apply(tid(ctx), 307, CIRCLE_ID, ctx.caster.id, dur(ctx), { as_bonus=capped, ds=capped })
     return string.format("Benediction empowers %s.", tname(ctx))
@@ -209,8 +211,9 @@ end
 
 handlers[317] = function(ctx) -- Divine Fury
     if not ctx.result.hit then return end
+    local religion = (ctx.lore_ranks and ctx.lore_ranks.religion) or 0
     local dmg = math.max(10, math.floor((ctx.result.total or 101) - 100) * 2)
-    if is_undead(ctx) then dmg = math.floor(dmg * 1.75) end
+    if is_undead(ctx) then dmg = math.floor(dmg * (1.75 + (religion / 200))) end
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
     return string.format("Divine fury descends upon %s for %d damage!", tname(ctx), dmg)
@@ -242,7 +245,8 @@ handlers[318] = function(ctx) -- Raise Dead
 end
 
 handlers[319] = function(ctx) -- Soul Ward
-    local td_bonus = 15 + math.floor((ctx.circle_ranks or 1) / 3)
+    local religion = (ctx.lore_ranks and ctx.lore_ranks.religion) or 0
+    local td_bonus = 15 + math.floor((ctx.circle_ranks or 1) / 3) + math.floor(religion / 20)
     ActiveBuffs.apply(tid(ctx), 319, CIRCLE_ID, ctx.caster.id, dur(ctx),
         { td_spiritual=td_bonus, death_resist=true })
     return string.format("A soul ward of divine light envelops %s.", tname(ctx))
@@ -250,12 +254,13 @@ end
 
 handlers[320] = function(ctx) -- Ethereal Censer (room-wide undead attack)
     local room_id = ctx.caster.current_room_id
+    local religion = (ctx.lore_ranks and ctx.lore_ranks.religion) or 0
     if room_id then
         local undead = DB.query(
             "SELECT id, health_current FROM characters WHERE current_room_id=? AND is_undead=1",
             { room_id })
         for _, u in ipairs(undead) do
-            local dmg = 20 + (ctx.circle_ranks or 1)
+            local dmg = 20 + (ctx.circle_ranks or 1) + math.floor(religion / 8)
             DB.execute("UPDATE characters SET health_current=? WHERE id=?",
                 { math.max(0, (u.health_current or 0) - dmg), u.id })
         end

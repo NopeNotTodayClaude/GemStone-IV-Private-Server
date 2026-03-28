@@ -1,18 +1,23 @@
 """
-FORAGE / FORAGE SENSE
----------------------
-SQL-driven foraging backed by room tags_json + items.short_name.
+FORAGE / FORAGE SENSE / TRACK
+-----------------------------
+SQL-driven foraging backed by room tags_json + items.short_name, plus
+room-based trail tracking for rangers.
 """
 
 import random
+import time
 from typing import List
 
+from server.core.world.room import Room
 from server.core.protocol.colors import roundtime_msg
 
 FORAGE_SLOT_MAX = 5
 FORAGE_MIN_REGEN = 300
 FORAGE_MAX_REGEN = 600
 SKILL_SURVIVAL = 23
+SKILL_PERCEPTION = 27
+PROF_RANGER = 7
 
 _PROFESSION_BONUS = {
     1: 0,
@@ -113,6 +118,148 @@ def _open_d100() -> int:
         if dip > 5:
             break
     return total
+
+
+def _skill_bonus(session, skill_id: int) -> int:
+    row = (getattr(session, "skills", {}) or {}).get(skill_id, {})
+    if not isinstance(row, dict):
+        return 0
+    bonus = int(row.get("bonus", 0) or 0)
+    if bonus:
+        return bonus
+    ranks = int(row.get("ranks", 0) or 0)
+    if ranks <= 0:
+        return 0
+    if ranks <= 10:
+        return ranks * 5
+    if ranks <= 20:
+        return 50 + (ranks - 10) * 4
+    if ranks <= 30:
+        return 90 + (ranks - 20) * 3
+    if ranks <= 40:
+        return 120 + (ranks - 30) * 2
+    return 140 + (ranks - 40)
+
+
+def _track_direction_label(direction: str) -> str:
+    text = str(direction or "out")
+    if text.startswith("go_"):
+        text = text[3:]
+    return Room.display_exit_name(text)
+
+
+def _trail_freshness(age_secs: float) -> str:
+    if age_secs <= 45:
+        return "a very fresh"
+    if age_secs <= 120:
+        return "a fresh"
+    if age_secs <= 300:
+        return "a fading"
+    return "an old"
+
+
+def _trail_surface_desc(record) -> str:
+    if getattr(record, "hidden", False):
+        return "trail"
+    if getattr(record, "sneaking", False):
+        return "trail"
+    if getattr(record, "actor_kind", "") == "creature":
+        return "trail"
+    return "set of tracks"
+
+
+def _trail_roll_total(session, trail) -> int:
+    survival = _skill_bonus(session, SKILL_SURVIVAL)
+    perception = _skill_bonus(session, SKILL_PERCEPTION)
+    intuition = _stat_bonus(getattr(session, "stat_intuition", 50))
+    logic = _stat_bonus(getattr(session, "stat_logic", 50))
+    dex = _stat_bonus(getattr(session, "stat_dexterity", 50))
+    bonus = survival + perception // 2 + intuition + logic // 2 + dex // 2
+    if int(getattr(session, "profession_id", 0) or 0) == PROF_RANGER:
+        bonus += 20
+    if getattr(session, "position", "") == "kneeling":
+        bonus += 10
+    if getattr(session, "position", "") in {"sitting", "resting"}:
+        bonus += 5
+    age_penalty = int(max(0, time.time() - float(getattr(trail, "created_at", 0.0) or 0.0)) // 30) * 3
+    stealth_penalty = 0
+    if getattr(trail, "hidden", False):
+        stealth_penalty += 35
+    elif getattr(trail, "sneaking", False):
+        stealth_penalty += 18
+    level_penalty = max(
+        0,
+        int(getattr(trail, "actor_level", 1) or 1) - int(getattr(session, "level", 1) or 1),
+    ) * 2
+    return _open_d100() + bonus - age_penalty - stealth_penalty - level_penalty
+
+
+async def cmd_track(session, cmd, args, server):
+    from server.core.protocol.colors import colorize, TextPresets
+
+    room = getattr(session, "current_room", None)
+    if not room:
+        await session.send_line("You are nowhere to track from.")
+        return
+
+    if int(getattr(session, "profession_id", 0) or 0) != PROF_RANGER:
+        await session.send_line("You lack the ranger's training needed to read a living trail.")
+        return
+
+    survival_ranks = int(
+        (((getattr(session, "skills", {}) or {}).get(SKILL_SURVIVAL, {}) or {}).get("ranks", 0) or 0)
+    )
+    if survival_ranks <= 0:
+        await session.send_line("You need Survival training before TRACK will mean anything to you.")
+        return
+
+    if getattr(room, "safe", False):
+        await session.send_line("Too many mixed footprints and city signs crisscross the area for reliable tracking.")
+        return
+
+    tracker = getattr(server, "tracking", None)
+    if not tracker:
+        await session.send_line("The trail of this land feels strangely unreadable right now.")
+        return
+
+    query = (args or "").strip()
+    trails = tracker.trails_in_room(room.id, max_age=900.0, name_query=query or None)
+    if not trails:
+        if query:
+            await session.send_line(f"You find no fresh sign of '{query}' here.")
+        else:
+            await session.send_line("You find no fresh trail to follow.")
+        return
+
+    best = None
+    best_total = -9999
+    for trail in trails:
+        total = _trail_roll_total(session, trail)
+        if total > best_total:
+            best_total = total
+            best = trail
+
+    if not best or best_total < 90:
+        if query:
+            await session.send_line(f"You study the ground but cannot make out a readable trail for '{query}'.")
+        else:
+            await session.send_line("You study the ground but cannot make out a readable trail.")
+        session.set_roundtime(3)
+        await session.send_line(roundtime_msg(3))
+        return
+
+    age = max(0.0, time.time() - float(best.created_at or 0.0))
+    freshness = _trail_freshness(age)
+    trail_desc = _trail_surface_desc(best)
+    direction = _track_direction_label(best.direction)
+    await session.send_line(
+        colorize(
+            f"You pick up {freshness} {trail_desc} from {best.actor_name} leading {direction}.",
+            TextPresets.SYSTEM,
+        )
+    )
+    session.set_roundtime(3)
+    await session.send_line(roundtime_msg(3))
 
 
 def _sense_remaining_message(remaining: int) -> str:

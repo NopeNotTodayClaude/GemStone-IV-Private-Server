@@ -175,6 +175,10 @@ class LuaManager:
         from server.core.scripting.loaders.level_milestones_loader import load_level_milestones
         return self._load_once("level_milestones", lambda: load_level_milestones(self._engine))
 
+    def get_pets(self) -> Optional[dict]:
+        from server.core.scripting.loaders.pets_loader import load_pets
+        return self._load_once("pets", lambda: load_pets(self._engine))
+
     # ── Spell seeding ─────────────────────────────────────────────────────────
 
     async def seed_spells(self) -> dict:

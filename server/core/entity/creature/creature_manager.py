@@ -22,6 +22,13 @@ import time
 import logging
 from typing import Dict, List, Optional
 
+from server.core.entity.creature.ai_runtime import (
+    apply_passive_behavior,
+    attempt_special_action,
+    pack_follow_candidates,
+    recompute_group_modifiers,
+    sniff_bonus,
+)
 from server.core.entity.creature.creature import Creature
 from server.core.entity.creature.creature_data import get_template, get_all_templates, register_templates
 from server.core.entity.creature.lua_mob_loader import load_all_mob_luas
@@ -431,6 +438,8 @@ class CreatureManager:
 
     async def _creature_ai_tick(self, now: float):
         for creature in list(self._creatures.values()):
+            apply_passive_behavior(self, creature, now)
+            recompute_group_modifiers(self, creature)
             if not creature.can_act():
                 continue
             if creature.in_combat and creature.target:
@@ -447,6 +456,8 @@ class CreatureManager:
                             creature.current_room_id,
                             colorize(f"{creature.full_name.capitalize()} looks around, having lost sight of its target.",
                                      TextPresets.CREATURE_NAME))
+                        continue
+                    if await attempt_special_action(self, creature, target, now):
                         continue
                     await self._creature_attack(creature, target)
                 else:
@@ -482,7 +493,7 @@ class CreatureManager:
                       if p.state == "playing" and p.hidden and not has_effect(self.server, p, "invisible")]
             if not hidden:
                 continue
-            perception = creature.level * 3 + random.randint(1, 50)
+            perception = creature.level * 3 + sniff_bonus(creature) + random.randint(1, 50)
             for target in hidden:
                 stalking = target.skills.get("stalking_hiding", {}).get("bonus", 0) or \
                            ((getattr(target, "stat_dexterity", 50) - 50) // 3 + target.level * 2)
@@ -529,21 +540,50 @@ class CreatureManager:
                 continue
             if target_room_id not in self._hunting_rooms:
                 continue
-            old = creature.current_room_id
-            try:
-                self._room_creatures.get(old, []).remove(creature.id)
-            except ValueError:
-                pass
-            creature.current_room_id = target_room_id
-            self._room_creatures.setdefault(target_room_id, []).append(creature.id)
-            await self.server.world.broadcast_to_room(old,
-                creature_departure(creature.full_name.capitalize(), direction))
-            await self.server.world.broadcast_to_room(target_room_id,
-                creature_arrival(creature.full_name.capitalize(), "just arrived"))
+            await self._move_creature(creature, target_room_id, direction)
+            for follower in pack_follow_candidates(self, creature):
+                if random.random() > 0.70:
+                    continue
+                if follower.wander_rooms and target_room_id not in follower.wander_rooms:
+                    continue
+                await self._move_creature(follower, target_room_id, direction, group_follow=True)
 
     @property
     def creature_count(self):
         return len(self._creatures)
+
+    async def _move_creature(self, creature: Creature, target_room_id: int, direction: str | None = None, *, group_follow=False):
+        old = creature.current_room_id
+        direction = direction or self.server.world.get_direction_between(old, target_room_id) or "out"
+        try:
+            self._room_creatures.get(old, []).remove(creature.id)
+        except ValueError:
+            pass
+        tracker = getattr(self.server, "tracking", None)
+        if tracker:
+            try:
+                tracker.record_departure(
+                    actor_kind="creature",
+                    actor_id=int(getattr(creature, "id", 0) or 0),
+                    actor_name=getattr(creature, "name", "") or "creature",
+                    from_room_id=int(old),
+                    to_room_id=int(target_room_id),
+                    direction=str(direction or "out"),
+                    actor_level=int(getattr(creature, "level", 1) or 1),
+                )
+            except Exception as e:
+                log.debug("Failed to record creature trail: %s", e)
+
+        creature.current_room_id = target_room_id
+        self._room_creatures.setdefault(target_room_id, []).append(creature.id)
+        await self.server.world.broadcast_to_room(
+            old,
+            creature_departure(creature.full_name.capitalize(), direction),
+        )
+        await self.server.world.broadcast_to_room(
+            target_room_id,
+            creature_arrival(creature.full_name.capitalize(), "pads in close behind its pack" if group_follow else "just arrived"),
+        )
 
     @property
     def alive_count(self):

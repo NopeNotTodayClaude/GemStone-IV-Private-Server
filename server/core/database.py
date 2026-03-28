@@ -1287,6 +1287,358 @@ class Database:
             conn.close()
 
     # =========================================================
+    # PET / COMPANION OPERATIONS
+    # =========================================================
+
+    def get_or_create_pet_progress(self, character_id):
+        """Return character pet-progress row, creating a default one if needed."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                "SELECT * FROM character_pet_progress WHERE character_id = %s",
+                (int(character_id),),
+            )
+            row = cur.fetchone()
+            if row:
+                return row
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO character_pet_progress
+                    (character_id, quest_state, sprite_name)
+                VALUES (%s, 'locked', 'Twillip')
+                """,
+                (int(character_id),),
+            )
+            conn.commit()
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                "SELECT * FROM character_pet_progress WHERE character_id = %s",
+                (int(character_id),),
+            )
+            return cur.fetchone()
+        finally:
+            conn.close()
+
+    def save_pet_progress(self, character_id, progress: dict):
+        """Persist one character's pet quest/unlock progress."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO character_pet_progress (
+                    character_id, quest_state, sprite_name, first_pet_claimed,
+                    path_unlocked, active_pet_id, last_sprite_nag_at,
+                    last_shop_nag_at, room_moves_since_nag, accepted_at, completed_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    quest_state = VALUES(quest_state),
+                    sprite_name = VALUES(sprite_name),
+                    first_pet_claimed = VALUES(first_pet_claimed),
+                    path_unlocked = VALUES(path_unlocked),
+                    active_pet_id = VALUES(active_pet_id),
+                    last_sprite_nag_at = VALUES(last_sprite_nag_at),
+                    last_shop_nag_at = VALUES(last_shop_nag_at),
+                    room_moves_since_nag = VALUES(room_moves_since_nag),
+                    accepted_at = VALUES(accepted_at),
+                    completed_at = VALUES(completed_at)
+                """,
+                (
+                    int(character_id),
+                    progress.get("quest_state", "locked"),
+                    progress.get("sprite_name", "Twillip"),
+                    1 if progress.get("first_pet_claimed") else 0,
+                    1 if progress.get("path_unlocked") else 0,
+                    progress.get("active_pet_id"),
+                    int(progress.get("last_sprite_nag_at") or 0),
+                    int(progress.get("last_shop_nag_at") or 0),
+                    int(progress.get("room_moves_since_nag") or 0),
+                    progress.get("accepted_at"),
+                    progress.get("completed_at"),
+                ),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            log.error("Failed to save pet progress for char %s: %s", character_id, e)
+            return False
+        finally:
+            conn.close()
+
+    def load_character_pets(self, character_id):
+        """Return all non-deleted pets owned by a character."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                """
+                SELECT *
+                FROM character_pets
+                WHERE character_id = %s AND is_deleted = 0
+                ORDER BY acquired_at ASC, id ASC
+                """,
+                (int(character_id),),
+            )
+            rows = cur.fetchall()
+            for row in rows:
+                try:
+                    row["extra_state"] = json.loads(row.get("extra_state_json") or "{}")
+                except Exception:
+                    row["extra_state"] = {}
+            return rows
+        finally:
+            conn.close()
+
+    def create_character_pet(self, character_id, species_key, pet_name, *, image_key=None, active=False, extra_state=None):
+        """Create a new owned pet and return its id."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            if active:
+                cur.execute(
+                    "UPDATE character_pets SET is_active = 0 WHERE character_id = %s",
+                    (int(character_id),),
+                )
+            cur.execute(
+                """
+                INSERT INTO character_pets (
+                    character_id, species_key, pet_name, pet_level, pet_xp,
+                    is_active, image_key, extra_state_json
+                ) VALUES (%s, %s, %s, 1, 0, %s, %s, %s)
+                """,
+                (
+                    int(character_id),
+                    str(species_key),
+                    str(pet_name),
+                    1 if active else 0,
+                    image_key,
+                    json.dumps(_json_safe_snapshot(extra_state or {})),
+                ),
+            )
+            conn.commit()
+            return cur.lastrowid
+        except Exception as e:
+            log.error("Failed to create character pet for char %s: %s", character_id, e)
+            return None
+        finally:
+            conn.close()
+
+    def save_character_pet(self, pet: dict):
+        """Persist mutable pet progression/runtime fields."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE character_pets
+                SET pet_name = %s,
+                    pet_level = %s,
+                    pet_xp = %s,
+                    is_active = %s,
+                    is_deleted = %s,
+                    is_released = %s,
+                    image_key = %s,
+                    last_fed_at = %s,
+                    last_random_emote_at = %s,
+                    last_state_emote_at = %s,
+                    extra_state_json = %s
+                WHERE id = %s
+                """,
+                (
+                    pet.get("pet_name"),
+                    int(pet.get("pet_level") or 1),
+                    int(pet.get("pet_xp") or 0),
+                    1 if pet.get("is_active") else 0,
+                    1 if pet.get("is_deleted") else 0,
+                    1 if pet.get("is_released") else 0,
+                    pet.get("image_key"),
+                    int(pet.get("last_fed_at") or 0),
+                    int(pet.get("last_random_emote_at") or 0),
+                    int(pet.get("last_state_emote_at") or 0),
+                    json.dumps(_json_safe_snapshot(pet.get("extra_state") or {})),
+                    int(pet["id"]),
+                ),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            log.error("Failed to save pet %s: %s", pet.get('id'), e)
+            return False
+        finally:
+            conn.close()
+
+    def set_active_pet(self, character_id, pet_id):
+        """Set exactly one active pet for the character."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE character_pets SET is_active = 0 WHERE character_id = %s",
+                (int(character_id),),
+            )
+            if pet_id:
+                cur.execute(
+                    "UPDATE character_pets SET is_active = 1, is_released = 0 WHERE id = %s AND character_id = %s",
+                    (int(pet_id), int(character_id)),
+                )
+            cur.execute(
+                "UPDATE character_pet_progress SET active_pet_id = %s WHERE character_id = %s",
+                (pet_id, int(character_id)),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            log.error("Failed to set active pet %s for char %s: %s", pet_id, character_id, e)
+            return False
+        finally:
+            conn.close()
+
+    def soft_delete_character_pet(self, character_id, pet_id):
+        """Permanently remove an owned pet from active use."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE character_pets
+                SET is_deleted = 1, is_active = 0, is_released = 1
+                WHERE id = %s AND character_id = %s
+                """,
+                (int(pet_id), int(character_id)),
+            )
+            cur.execute(
+                """
+                UPDATE character_pet_progress
+                SET active_pet_id = NULL
+                WHERE character_id = %s AND active_pet_id = %s
+                """,
+                (int(character_id), int(pet_id)),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        except Exception as e:
+            log.error("Failed to delete pet %s for char %s: %s", pet_id, character_id, e)
+            return False
+        finally:
+            conn.close()
+
+    def load_pet_ability_state(self, pet_id):
+        """Return ability state rows keyed by ability_key."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                """
+                SELECT *
+                FROM character_pet_abilities
+                WHERE pet_id = %s
+                ORDER BY ability_key
+                """,
+                (int(pet_id),),
+            )
+            rows = cur.fetchall()
+            out = {}
+            for row in rows:
+                try:
+                    row["extra_state"] = json.loads(row.get("extra_state_json") or "{}")
+                except Exception:
+                    row["extra_state"] = {}
+                out[row["ability_key"]] = row
+            return out
+        finally:
+            conn.close()
+
+    def upsert_pet_ability_state(self, pet_id, ability_key, *, charges_current=0, cooldown_until=0, last_triggered_at=0, extra_state=None):
+        """Insert or update one pet ability row."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO character_pet_abilities (
+                    pet_id, ability_key, charges_current, cooldown_until, last_triggered_at, extra_state_json
+                ) VALUES (%s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    charges_current = VALUES(charges_current),
+                    cooldown_until = VALUES(cooldown_until),
+                    last_triggered_at = VALUES(last_triggered_at),
+                    extra_state_json = VALUES(extra_state_json)
+                """,
+                (
+                    int(pet_id),
+                    str(ability_key),
+                    int(charges_current or 0),
+                    int(cooldown_until or 0),
+                    int(last_triggered_at or 0),
+                    json.dumps(_json_safe_snapshot(extra_state or {})),
+                ),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            log.error("Failed to upsert pet ability %s for pet %s: %s", ability_key, pet_id, e)
+            return False
+        finally:
+            conn.close()
+
+    def load_pet_equipment(self, pet_id):
+        """Return equipped pet gear keyed by slot_name."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                """
+                SELECT *
+                FROM character_pet_equipment
+                WHERE pet_id = %s
+                ORDER BY slot_name
+                """,
+                (int(pet_id),),
+            )
+            rows = cur.fetchall()
+            out = {}
+            for row in rows:
+                try:
+                    row["item_snapshot"] = json.loads(row.get("item_snapshot_json") or "{}")
+                except Exception:
+                    row["item_snapshot"] = {}
+                out[row["slot_name"]] = row
+            return out
+        finally:
+            conn.close()
+
+    def set_pet_equipment(self, pet_id, slot_name, *, inventory_item_id=None, item_snapshot=None):
+        """Persist one pet equipment slot."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO character_pet_equipment (
+                    pet_id, slot_name, inventory_item_id, item_snapshot_json
+                ) VALUES (%s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    inventory_item_id = VALUES(inventory_item_id),
+                    item_snapshot_json = VALUES(item_snapshot_json)
+                """,
+                (
+                    int(pet_id),
+                    str(slot_name),
+                    inventory_item_id,
+                    json.dumps(_json_safe_snapshot(item_snapshot or {})),
+                ),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            log.error("Failed to set pet equipment %s for pet %s: %s", slot_name, pet_id, e)
+            return False
+        finally:
+            conn.close()
+
+    # =========================================================
     # INVENTORY OPERATIONS
     # =========================================================
 
@@ -1788,6 +2140,31 @@ class Database:
             return True
         except Exception as e:
             log.error("Failed to remove inventory item: %s", e)
+            return False
+        finally:
+            conn.close()
+
+    def transfer_inventory_item(self, inv_id, to_character_id, slot=None, container_id=None):
+        """Transfer an existing inventory row to another character."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            if slot in ("right_hand", "left_hand"):
+                cur.execute(
+                    "UPDATE character_inventory SET slot = NULL WHERE character_id = %s AND slot = %s",
+                    (to_character_id, slot),
+                )
+            cur.execute(
+                """
+                UPDATE character_inventory
+                SET character_id = %s, slot = %s, container_id = %s
+                WHERE id = %s
+                """,
+                (to_character_id, slot, container_id, inv_id),
+            )
+            return cur.rowcount > 0
+        except Exception as e:
+            log.error("Failed to transfer inventory item %s: %s", inv_id, e)
             return False
         finally:
             conn.close()

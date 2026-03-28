@@ -359,7 +359,7 @@ MIND_STATES = [
 SYNC_INIT_RE = re.compile(r"\x00SYNC:([0-9a-f]{64}):(\d+)\x00")
 # Server sends the training/character-creator URL as a plain text line.
 # Detect it client-side and open the browser here — not on the server.
-AUTOOPEN_URL_RE = re.compile(r"https?://\S+(?:8765|8766)/\S+token=\S+")
+AUTOOPEN_URL_RE = re.compile(r"https?://\S+(?:8765|8766|8767)/\S+token=\S+")
 # HUD strips it from display and pre-loads shop items into _known_items.
 SHOP_CATALOG_RE = re.compile(r"\x00SHOP_CATALOG:(.+?)\x00")
 # Server injects \x00CUSTOMIZE_MENU:{json}\x00 when showing material options
@@ -918,6 +918,7 @@ STATUS_ICON_DEFS = {
     "death_sting": {"shape":"skull",  "color":"#000000","border":"#424242","symbol":"DS","label":"DeathSting","tip":"Death\'s Sting\nXP absorption reduced to 25%%.\nDecays as experience is absorbed."},
     "lumnis":      {"shape":"circle", "color":"#6a1b9a","border":"#e1bee7","symbol":"LM","label":"Lumnis", "tip":"Gift of Lumnis\nWeekend blessing active.\nBonus experience absorption is in effect."},
     "bonus_xp":    {"shape":"square", "color":"#ad1457","border":"#f48fb1","symbol":"XP","label":"BonusXP", "tip":"Bonus Experience\nEvent bonus active.\nCreatures award additional experience."},
+    "floofer_glow":{"shape":"circle", "color":"#8e24aa","border":"#f8bbd0","symbol":"FG","label":"Glow", "tip":"Comforting Glow\nA Floofer's regen spell is active.\nHeals you every 5 seconds for a short duration."},
     "in_combat":   {"shape":"diamond","color":"#b71c1c","border":"#ff5252","symbol":"⚔","label":"Combat",  "tip":"In Combat\nEngaged in active combat."},
 }
 
@@ -2889,6 +2890,7 @@ class HUDApp:
                     patterns.append(re.compile(rf"(?<![A-Za-z0-9_])({escaped})(?![A-Za-z0-9_])", re.IGNORECASE))
                 normalized_npcs.append({
                     "template_id": str(entry.get("template_id") or "").strip(),
+                    "kind": str(entry.get("kind") or "").strip().lower(),
                     "name": str(entry.get("name") or "").strip(),
                     "display": str(entry.get("display") or aliases[0]).strip(),
                     "aliases": aliases,
@@ -2916,7 +2918,7 @@ class HUDApp:
 
     def _refresh_sync_hand_cache(self):
         """Keep lockbox button state aligned with the live sync snapshot."""
-        box_nouns = {"box", "coffer", "chest", "crate", "strongbox", "lockbox", "safe"}
+        box_nouns = {"box", "coffer", "chest", "crate", "strongbox", "lockbox", "safe", "trunk"}
         for hand_key in ("right_hand", "left_hand"):
             noun = str(self._last_sync.get(hand_key) or "").strip().lower()
             if noun and any(box in noun for box in box_nouns):
@@ -4511,6 +4513,7 @@ class HUDApp:
         self._text.tag_configure("err",     foreground=ACCENT_RED,  font=fn)
         self._text.tag_configure("path",    foreground=ACCENT_GRN,  font=fn)
         self._text.tag_configure("default", foreground=TEXT_MAIN,   font=fn)
+        self._text.tag_configure("companion_emote", foreground="#9ee7a4", font=(self._game_font, self._font_size, "italic"))
         self._text.tag_configure("exit_link", foreground=ACCENT_CYN,
                                  font=(self._game_font, self._font_size, "underline"),
                                  underline=True)
@@ -5106,12 +5109,13 @@ class HUDApp:
         segments = parse_ansi(line)
         should_follow = self._text_should_follow()
         self._text.config(state="normal")
+        base_override = "companion_emote" if self._line_starts_with_companion_emote(line) else None
 
         # ITEM_NAME color = YELLOW (ANSI 33) → hex #aaaa33
         ITEM_HEX = "aaaa33"
 
         for chunk, color in segments:
-            tag = self._color_tag(color)
+            tag = base_override or self._color_tag(color)
             col_key = (color or "").lstrip("#").lower()
 
             if col_key == ITEM_HEX and chunk.strip():
@@ -5162,6 +5166,34 @@ class HUDApp:
         self._text.config(state="disabled")
         self._text_follow_if_needed(should_follow)
 
+    def _line_starts_with_companion_emote(self, line: str) -> bool:
+        if not self._room_npcs:
+            return False
+        clean = ANSI_RE.sub("", line or "").strip()
+        if not clean or clean.lower().startswith("you also see "):
+            return False
+        for npc in self._room_npcs:
+            kind = str(npc.get("kind") or "").strip().lower()
+            if kind not in {"pet", "sprite"}:
+                continue
+            for alias in npc.get("aliases", []):
+                alias_text = str(alias or "").strip()
+                if alias_text and clean.lower().startswith(alias_text.lower()):
+                    return True
+        return False
+
+    def _npc_style(self, kind: str, base_tag: str, *, marker: bool = False) -> tuple[str, tuple]:
+        kind = str(kind or "").strip().lower()
+        if kind in {"pet", "sprite"}:
+            return "#9ee7a4", (self._game_font, self._font_size, "italic")
+        if kind == "player":
+            return "#9ee7a4", (self._game_font, self._font_size)
+        default_fg = self._text.tag_cget(base_tag, "foreground") or TEXT_MAIN
+        default_font = self._text.tag_cget(base_tag, "font") or (self._game_font, self._font_size)
+        if marker:
+            return ACCENT_CYN, (self._game_font, self._font_size)
+        return default_fg, default_font
+
     def _insert_chunk_with_npc_links(self, chunk: str, base_tag: str):
         if not chunk or not self._room_npcs:
             self._text.insert("end", chunk, base_tag)
@@ -5205,16 +5237,19 @@ class HUDApp:
     def _insert_npc_link(self, display_text: str, base_tag: str, npc_info: dict):
         tag_name = self._new_inline_tag("npc")
         marker_tag = self._new_inline_tag("npcm")
+        kind = str(npc_info.get("kind") or "").strip().lower()
+        link_fg, link_font = self._npc_style(kind, base_tag, marker=False)
+        marker_fg, marker_font = self._npc_style(kind, base_tag, marker=True)
 
         self._text.tag_configure(
             tag_name,
-            foreground=self._text.tag_cget(base_tag, "foreground") or TEXT_MAIN,
-            font=self._text.tag_cget(base_tag, "font") or (self._game_font, self._font_size),
+            foreground=link_fg,
+            font=link_font,
         )
         self._text.tag_configure(
             marker_tag,
-            foreground=ACCENT_CYN,
-            font=(self._game_font, self._font_size),
+            foreground=marker_fg,
+            font=marker_font,
         )
         self._bind_npc_tags(tag_name, marker_tag, npc_info)
 
@@ -5263,11 +5298,19 @@ class HUDApp:
 
                         tag_name = self._new_inline_tag("npc")
                         marker_tag = self._new_inline_tag("npcm")
-                        self._text.tag_configure(tag_name, underline=False)
+                        kind = str(npc_info.get("kind") or "").strip().lower()
+                        link_fg, link_font = self._npc_style(kind, "default", marker=False)
+                        marker_fg, marker_font = self._npc_style(kind, "default", marker=True)
+                        self._text.tag_configure(
+                            tag_name,
+                            underline=False,
+                            foreground=link_fg,
+                            font=link_font,
+                        )
                         self._text.tag_configure(
                             marker_tag,
-                            foreground=ACCENT_CYN,
-                            font=(self._game_font, self._font_size),
+                            foreground=marker_fg,
+                            font=marker_font,
                         )
                         self._bind_npc_tags(tag_name, marker_tag, npc_info)
                         self._text.tag_add(tag_name, match_at, match_end)
@@ -6420,8 +6463,8 @@ class HUDApp:
         if state in ('right_hand', 'left_hand', 'worn', 'in_container'):
             self._inventory_counts[key] = self._inventory_counts.get(key, 0) + 1
 
-        # Track last lockbox/coffer in hand for Pick/Detect/Disarm buttons
-        if any(b in noun for b in ("box", "coffer", "chest", "strongbox", "lockbox")):
+        # Track last lockbox/coffer/trunk in hand for Pick/Detect/Disarm buttons
+        if any(b in noun for b in ("box", "coffer", "chest", "strongbox", "lockbox", "trunk", "safe")):
             if state in ('right_hand', 'left_hand'):
                 self._last_lockbox_noun = noun
 
@@ -7854,7 +7897,7 @@ class HUDApp:
         Prefer sync state, then parsed inventory, and only fall back to the
         remembered noun when sync is unavailable.
         """
-        BOX_NOUNS = {"box", "coffer", "chest", "crate", "strongbox", "lockbox", "safe"}
+        BOX_NOUNS = {"box", "coffer", "chest", "crate", "strongbox", "lockbox", "safe", "trunk"}
         for hand_key in ("right_hand", "left_hand"):
             noun = str(self._last_sync.get(hand_key) or "").strip().lower()
             if noun and any(b in noun for b in BOX_NOUNS):

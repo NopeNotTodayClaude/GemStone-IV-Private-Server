@@ -1601,6 +1601,22 @@ async def cmd_open(session, cmd, args, server):
                 )
             )
         else:
+            if cont.get("trapped") and not cont.get("trap_disarmed"):
+                try:
+                    from server.core.commands.player.lockpicking import _trigger_trap
+                    from server.core.engine.treasure import TRAP_DEFS
+                    trap = TRAP_DEFS.get(cont.get("trap_type"), TRAP_DEFS.get("needle"))
+                    await session.send_line(colorize(
+                        f"You carefully start to open {_item_display(cont)}...",
+                        TextPresets.WARNING
+                    ))
+                    if trap:
+                        await _trigger_trap(session, server, cont, trap)
+                    else:
+                        await session.send_line(colorize("Something hidden in the latch snaps at you!", TextPresets.WARNING))
+                    return
+                except Exception as e:
+                    log.error("OPEN trap trigger failed: %s", e, exc_info=True)
             cont['opened'] = True
             await session.send_line('You open ' + _item_display(cont) + '.')
         return

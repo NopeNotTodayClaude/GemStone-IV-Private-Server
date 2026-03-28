@@ -110,6 +110,19 @@ class DeathManager:
         Ends combat, plays death scene, presents revival menu.
         """
         # ── End all combat in the room ─────────────────────────────────────
+        pets = getattr(self.server, "pets", None)
+        if pets:
+            try:
+                if await pets.before_owner_death(session, killer):
+                    return
+            except Exception as e:
+                log.error(
+                    "Pet death-prevention hook failed for %s: %s",
+                    getattr(session, "character_name", "?"),
+                    e,
+                    exc_info=True,
+                )
+
         session.in_combat  = False
         session.target     = None
         if killer:
@@ -130,6 +143,17 @@ class DeathManager:
         session.death_room_id       = session.current_room.id if session.current_room else 0
         session.health_current      = 0
         session.position            = "lying"
+
+        if pets:
+            try:
+                await pets.on_owner_death(session)
+            except Exception as e:
+                log.error(
+                    "Pet death broadcast hook failed for %s: %s",
+                    getattr(session, "character_name", "?"),
+                    e,
+                    exc_info=True,
+                )
 
         # ── Notify party that this member has fallen ───────────────────────
         try:
@@ -268,6 +292,17 @@ class DeathManager:
             )
 
         self._save_session(session)
+        pets = getattr(self.server, "pets", None)
+        if pets:
+            try:
+                await pets.on_owner_revived(session)
+            except Exception as e:
+                log.error(
+                    "Pet deed-revival hook failed for %s: %s",
+                    getattr(session, "character_name", "?"),
+                    e,
+                    exc_info=True,
+                )
 
     # ══════════════════════════════════════════════════════════════════════════
     # Path B — Ghost / Sergeant Beefy
@@ -603,6 +638,17 @@ class DeathManager:
         await cmd_look(session, "look", "", self.server)
 
         self._save_session(session)
+        pets = getattr(self.server, "pets", None)
+        if pets:
+            try:
+                await pets.on_owner_revived(session)
+            except Exception as e:
+                log.error(
+                    "Pet ghost-revival hook failed for %s: %s",
+                    getattr(session, "character_name", "?"),
+                    e,
+                    exc_info=True,
+                )
 
     # ══════════════════════════════════════════════════════════════════════════
     # Stat penalty recovery tick — called every 5s from game_loop
