@@ -678,7 +678,7 @@ class CombatEngine:
 
         # Roll
         d100 = random.randint(1, 100)
-        endroll = d100 + player_as - creature_ds + avd
+        endroll = None
 
         # Determine hit location — respects session.aimed_location and does aim roll
         location, aim_succeeded = self._resolve_hit_location(
@@ -693,6 +693,7 @@ class CombatEngine:
         damage_type = profile["damage_type"]
         weapon_df = profile["df"]
         avd = profile["avd"]
+        endroll = d100 + player_as - creature_ds + avd
 
         # Build the attack line (GS4 format)
         creature_display = fmt_creature_name(creature.full_name_with_level)
