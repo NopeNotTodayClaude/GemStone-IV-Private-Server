@@ -6152,6 +6152,9 @@ class HUDApp:
     }
 
     def _guess_type(self, key: str) -> str:
+        container_words = self._TYPE_KEYWORDS.get('container', [])
+        if any(w in key for w in container_words):
+            return 'container'
         for itype, words in self._TYPE_KEYWORDS.items():
             for w in words:
                 if w in key:
@@ -6510,20 +6513,24 @@ class HUDApp:
             if len(containers) == 0:
                 _add(f"Stow {noun}", f"stow {cmd_target}")
             elif len(containers) == 1:
-                cont_noun = self._item_key(containers[0]).split()[-1]
-                _add(f"Stow in {cont_noun}", f"put {cmd_target} in {cont_noun}")
+                cont_target = self._item_key(containers[0])
+                cont_label = self._strip_articles(containers[0]).strip()
+                _add(f"Stow in {cont_label}", f"put {cmd_target} in {cont_target}")
             else:
                 menu.add_command(label=f"Stow {noun} ▶", state="disabled")
                 for cont in containers:
-                    cont_noun = self._item_key(cont).split()[-1]
-                    _add(f"  → in {cont_noun}", f"put {cmd_target} in {cont_noun}")
+                    cont_target = self._item_key(cont)
+                    cont_label = self._strip_articles(cont).strip()
+                    _add(f"  → in {cont_label}", f"put {cmd_target} in {cont_target}")
 
             # Sheathe option for weapons if a sheath/scabbard is worn
             if itype == 'weapon':
                 for cont in self._worn_containers:
                     if 'sheath' in cont.lower() or 'scabbard' in cont.lower():
-                        _add(f"Sheathe in {self._item_key(cont).split()[-1]}",
-                             f"put {cmd_target} in {self._item_key(cont).split()[-1]}")
+                        cont_target = self._item_key(cont)
+                        cont_label = self._strip_articles(cont).strip()
+                        _add(f"Sheathe in {cont_label}",
+                             f"put {cmd_target} in {cont_target}")
 
             _add(f"Drop {noun}", f"drop {cmd_target}")
 

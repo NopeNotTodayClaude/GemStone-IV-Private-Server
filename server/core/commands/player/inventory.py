@@ -1501,6 +1501,10 @@ async def cmd_stow(session, cmd, args, server):
     """STOW [item] - Stow held item into first available container."""
     _ensure_hands(session)
 
+    if args and ' in ' in args.lower():
+        await cmd_put(session, "put", args, server)
+        return
+
     if not args:
         if session.right_hand:
             item = session.right_hand
