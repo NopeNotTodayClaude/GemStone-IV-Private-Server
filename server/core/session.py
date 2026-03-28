@@ -42,6 +42,7 @@ class Session:
         self.race = None
         self.race_id = 0
         self.profession = None
+        self.profession_name = None
         self.profession_id = 0
         self.gender = "female"
         self.age = 0  # Set from DB or defaulted by race on load
@@ -179,6 +180,8 @@ class Session:
         self.character_name = char_data["name"]
         self.race_id = char_data["race_id"]
         self.profession_id = char_data["profession_id"]
+        self.profession = char_data.get("profession_name", "") or None
+        self.profession_name = char_data.get("profession_name", "") or None
         self.gender = char_data.get("gender", "female")
 
         # Age: use stored value or default by race (GS4 canon starting ages)
@@ -344,6 +347,12 @@ class SessionManager:
 
     def remove_session(self, session: Session):
         if session.id in self._sessions:
+            assault_state = getattr(session, "weapon_assault_state", None) or {}
+            assault_task = assault_state.get("task")
+            if assault_task and not assault_task.done():
+                assault_task.cancel()
+            session.weapon_assault_state = None
+
             # Save character before removing
             if session.character_id:
                 try:

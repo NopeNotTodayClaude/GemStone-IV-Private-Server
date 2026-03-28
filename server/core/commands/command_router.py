@@ -51,7 +51,7 @@ from server.core.commands.player.climbing import cmd_climb, cmd_swim
 from server.core.commands.player.training import cmd_train
 from server.core.commands.player.spellcasting import cmd_prepare, cmd_cast, cmd_incant, cmd_release, cmd_send
 from server.core.commands.player.fixstat_convert import cmd_fixstats, cmd_convert
-from server.core.commands.player.weapon_techniques import cmd_weapon
+from server.core.commands.player.weapon_techniques import cmd_weapon, cmd_stop
 from server.core.commands.player.party import cmd_party
 from server.core.commands.player.esp import cmd_esp, cmd_think, cmd_chat
 from server.core.commands.player.foraging import cmd_forage
@@ -244,6 +244,7 @@ class CommandRouter:
         self.register("fire", cmd_fire)
         self.register("hurl", cmd_hurl, aliases=["throw"])
         self.register("mstrike", cmd_mstrike, aliases=["mstr"])
+        self.register("stop", cmd_stop, aliases=["stop assault"])
         self.register("hide", cmd_hide)
         self.register("sneak", cmd_sneak)
         self.register("stance", cmd_stance)
@@ -370,7 +371,7 @@ class CommandRouter:
             "claim", "done", "cancel", "forfeit", "submit",
             "customize", "order", "list", "mark",
             "look in", "detect", "get all", "getall", "empty",
-            "party", "pt", "gld",
+            "party", "pt", "gld", "stop",
             "esp", "think", "chat", "tell", "whisper",
         }
         # All social emotes (Lua + legacy) bypass RT automatically

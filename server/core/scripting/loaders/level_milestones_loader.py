@@ -18,6 +18,28 @@ def _as_list(value):
     return []
 
 
+def _iter_level_rows(value):
+    """
+    Iterate sparse Lua level tables safely after lua_to_python() conversion.
+
+    Sparse integer-keyed Lua tables like {[10] = {...}, [15] = {...}} currently
+    arrive as Python lists with None holes because the bridge preserves integer
+    indices as a 1-based array shape.  Accept both dict and list forms here.
+    """
+    if isinstance(value, dict):
+        for level_key, entries in value.items():
+            try:
+                yield int(level_key), entries
+            except Exception:
+                continue
+        return
+    if isinstance(value, list):
+        for idx, entries in enumerate(value, start=1):
+            if entries is None:
+                continue
+            yield idx, entries
+
+
 def _load_entry(row):
     if not isinstance(row, dict):
         return None
@@ -40,25 +62,17 @@ def load_level_milestones(lua_engine) -> Optional[dict]:
 
         out = {"general": {}, "profession": {}}
 
-        for level_key, entries in (data.get("general") or {}).items():
-            try:
-                level = int(level_key)
-            except Exception:
-                continue
+        for level, entries in _iter_level_rows(data.get("general") or {}):
             parsed = [entry for entry in (_load_entry(row) for row in _as_list(entries)) if entry]
             if parsed:
                 out["general"][level] = parsed
 
         for prof_name, levels in (data.get("profession") or {}).items():
             prof_key = str(prof_name or "").strip()
-            if not prof_key or not isinstance(levels, dict):
+            if not prof_key:
                 continue
             prof_rows = {}
-            for level_key, entries in levels.items():
-                try:
-                    level = int(level_key)
-                except Exception:
-                    continue
+            for level, entries in _iter_level_rows(levels):
                 parsed = [entry for entry in (_load_entry(row) for row in _as_list(entries)) if entry]
                 if parsed:
                     prof_rows[level] = parsed

@@ -888,6 +888,20 @@ Effects["hidden"] = {
     description      = "Hidden from sight; revealed by movement or combat.",
 }
 
+Effects["sneaking"] = {
+    name             = "Sneaking",
+    category         = "STATE",
+    prompt_char      = nil,
+    stackable        = false,
+    max_stacks       = 1,
+    tick_interval    = 0,
+    duration_default = -1,
+    combat_mods      = { as = 0, ds = 0, evade_pct = 0, parry_pct = 0, block_pct = 0 },
+    blocks           = {},
+    can_clear        = {},
+    description      = "Moving with stealth; each step rolls stealth instead of immediately breaking hiding.",
+}
+
 Effects["invisible"] = {
     name             = "Invisible",
     category         = "STATE",
@@ -928,6 +942,34 @@ Effects["death_sting"] = {
     blocks           = {},
     can_clear        = {},
     description      = "XP absorption reduced to 25%; each stack decays as experience is absorbed.",
+}
+
+Effects["lumnis"] = {
+    name             = "Gift of Lumnis",
+    category         = "BUFF_SPECIAL",
+    prompt_char      = nil,
+    stackable        = false,
+    max_stacks       = 1,
+    tick_interval    = 0,
+    duration_default = -1,
+    combat_mods      = { as = 0, ds = 0, evade_pct = 0, parry_pct = 0, block_pct = 0 },
+    blocks           = {},
+    can_clear        = {},
+    description      = "Weekend blessing; bonus experience absorption is active.",
+}
+
+Effects["bonus_xp"] = {
+    name             = "Bonus Experience",
+    category         = "BUFF_SPECIAL",
+    prompt_char      = nil,
+    stackable        = false,
+    max_stacks       = 1,
+    tick_interval    = 0,
+    duration_default = -1,
+    combat_mods      = { as = 0, ds = 0, evade_pct = 0, parry_pct = 0, block_pct = 0 },
+    blocks           = {},
+    can_clear        = {},
+    description      = "Server-wide event bonus; creatures award additional experience.",
 }
 
 Effects["roundtime"] = {

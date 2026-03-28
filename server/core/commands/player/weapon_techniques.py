@@ -24,6 +24,7 @@ from server.core.scripting.lua_bindings.weapon_api import (
     execute_technique,
     check_and_grant_techniques,
     load_techniques_for_session,
+    stop_active_weapon_assault,
 )
 
 log = logging.getLogger(__name__)
@@ -162,17 +163,38 @@ def _parse_weapon_args(args: str):
         # No target — ok for AoE
         return (mnemonic, "", "", "")
 
-    # parts[1] onward = target + optional limb
-    # Limb for cripple: "cripple kobold right leg"
-    #                    parts[0]=cripple, parts[1]=kobold, parts[2:]=right leg
-    if mnemonic == "cripple" and len(parts) >= 3:
-        target_name = parts[1]
-        limb_raw    = " ".join(parts[2:])
-        limb        = _normalize_limb(limb_raw)
-        return (mnemonic, target_name, limb, "")
+    remainder = parts[1:]
 
-    target_name = parts[1]
+    # parts[1] onward = target + optional limb
+    # Limb for cripple can trail a multi-word target:
+    #   "cripple raider orc right leg"
+    if mnemonic == "cripple" and len(remainder) >= 2:
+        for size in (2, 1):
+            if len(remainder) <= size:
+                continue
+            limb_raw = " ".join(remainder[-size:])
+            if limb_raw.lower() in _VALID_LIMBS:
+                target_name = " ".join(remainder[:-size]).strip()
+                limb = _normalize_limb(limb_raw)
+                if target_name:
+                    return (mnemonic, target_name, limb, "")
+
+    target_name = " ".join(remainder).strip()
     return (mnemonic, target_name, "", "")
+
+
+async def cmd_stop(session, cmd: str, args: str, server):
+    """STOP [ASSAULT] - Interrupt an active weapon-technique assault."""
+    if not session or not getattr(session, 'authenticated', False):
+        return
+
+    raw = (args or "").strip().lower()
+    if raw not in ("", "assault"):
+        await session.send_line("Stop what?  You can STOP an active assault.")
+        return
+
+    stopped, message = stop_active_weapon_assault(session)
+    await session.send_line(message or ("You are not committed to an assault right now." if not stopped else "You stop your assault."))
 
 
 async def cmd_weapon(session, cmd: str, args: str, server):

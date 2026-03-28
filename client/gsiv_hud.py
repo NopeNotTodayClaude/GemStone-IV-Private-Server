@@ -913,8 +913,11 @@ STATUS_ICON_DEFS = {
     "sitting":     {"shape":"circle", "color":"#33691e","border":"#b9f6ca","symbol":"s","label":"Sit",     "tip":"Sitting\nSeated. -15 AS, -20 DS."},
     "kneeling":    {"shape":"circle", "color":"#558b2f","border":"#ccff90","symbol":"K","label":"Kneel",   "tip":"Kneeling\n-10 AS, -15 DS."},
     "hidden":      {"shape":"square", "color":"#1a1a2e","border":"#4a4a8a","symbol":"H","label":"Hidden",  "tip":"Hidden\nConcealed from sight.\nRevealed by movement or combat."},
+    "sneaking":    {"shape":"diamond","color":"#263238","border":"#80cbc4","symbol":"SN","label":"Sneak",  "tip":"Sneaking\nMoving with stealth.\nEach step rolls stealth instead of immediately breaking hiding."},
     "invisible":   {"shape":"circle", "color":"#e0e0e0","border":"#ffffff","symbol":"i","label":"Invis",   "tip":"Invisible\nCannot be directly targeted."},
     "death_sting": {"shape":"skull",  "color":"#000000","border":"#424242","symbol":"DS","label":"DeathSting","tip":"Death\'s Sting\nXP absorption reduced to 25%%.\nDecays as experience is absorbed."},
+    "lumnis":      {"shape":"circle", "color":"#6a1b9a","border":"#e1bee7","symbol":"LM","label":"Lumnis", "tip":"Gift of Lumnis\nWeekend blessing active.\nBonus experience absorption is in effect."},
+    "bonus_xp":    {"shape":"square", "color":"#ad1457","border":"#f48fb1","symbol":"XP","label":"BonusXP", "tip":"Bonus Experience\nEvent bonus active.\nCreatures award additional experience."},
     "in_combat":   {"shape":"diamond","color":"#b71c1c","border":"#ff5252","symbol":"⚔","label":"Combat",  "tip":"In Combat\nEngaged in active combat."},
 }
 
@@ -2326,7 +2329,10 @@ class HUDApp:
             insertbackground=ACCENT_BLUE,
             selectbackground="#2a3f5f",
         )
-        self._text_follow_threshold = 0.98
+        # Only resume live-follow when the viewport is effectively at the end.
+        # A high threshold avoids the old "slightly scrolled up still snaps down"
+        # behavior while tolerating tiny Tk yview float variance.
+        self._text_follow_threshold = 0.9995
         self._text_follow_locked = False
         sb = ttk.Scrollbar(text_frame, command=self._on_text_scrollbar)
         self._text.config(yscrollcommand=sb.set)
@@ -4878,7 +4884,7 @@ class HUDApp:
     # Text output
     # 
 
-    def _text_is_near_bottom(self) -> bool:
+    def _text_is_at_bottom(self) -> bool:
         try:
             _top, bottom = self._text.yview()
             return bottom >= self._text_follow_threshold
@@ -4886,8 +4892,8 @@ class HUDApp:
             return True
 
     def _update_text_follow_lock(self, user_initiated: bool = False):
-        near_bottom = self._text_is_near_bottom()
-        if near_bottom:
+        at_bottom = self._text_is_at_bottom()
+        if at_bottom:
             self._text_follow_locked = False
         elif user_initiated:
             self._text_follow_locked = True
@@ -4904,9 +4910,9 @@ class HUDApp:
         self._on_text_user_scroll()
 
     def _text_should_follow(self) -> bool:
-        """Auto-follow only when the player is already near the bottom."""
+        """Auto-follow only when the player is already at the bottom."""
         self._update_text_follow_lock(user_initiated=False)
-        return (not self._text_follow_locked) and self._text_is_near_bottom()
+        return (not self._text_follow_locked) and self._text_is_at_bottom()
 
     def _text_follow_if_needed(self, should_follow: bool):
         if should_follow:
@@ -5716,7 +5722,8 @@ class HUDApp:
 
         # ── Parse room title (from LOOK output) ──
         clean = re.sub(r'\x1b\[[0-9;]*m', '', raw)  # strip ANSI for regex matching
-        self._handle_sfx_for_line(clean.strip())
+        for clean_line in clean.splitlines() or [clean]:
+            self._handle_sfx_for_line(clean_line.strip())
 
         # ── "Roundtime: 3 sec." — start bar at full duration ──
         rsm = RT_START_RE.search(clean)

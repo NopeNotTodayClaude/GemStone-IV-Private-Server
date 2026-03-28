@@ -92,6 +92,23 @@ def _json_safe(value):
     return value
 
 
+def _append_synth_effect(status_effects: list, active_ids: set, effect_id: str,
+                         name: str, category: str, remaining: float = -1,
+                         prompt_char=None, stacks: int = 1):
+    """Append a synthesized status row if it is not already present."""
+    if effect_id in active_ids:
+        return
+    status_effects.append({
+        "id":          effect_id,
+        "name":        name,
+        "category":    category,
+        "stacks":      stacks,
+        "remaining":   remaining,
+        "prompt_char": prompt_char,
+    })
+    active_ids.add(effect_id)
+
+
 def build_snapshot(session, server) -> dict:
     """
     Build a complete state snapshot dict from a live session.
@@ -184,6 +201,7 @@ def build_snapshot(session, server) -> dict:
 
     # Position effects that must be removed when standing
     POSITION_EFFECT_IDS = {"sleeping", "sitting", "kneeling", "resting", "prone"}
+    active_ids = {e["id"] for e in status_effects}
 
     if pos == "standing":
         # Strip any position-based effects that StatusManager still holds —
@@ -191,9 +209,9 @@ def build_snapshot(session, server) -> dict:
         # The icon bar must reflect reality: player is standing = no position fx.
         status_effects = [e for e in status_effects
                           if e.get("id") not in POSITION_EFFECT_IDS]
+        active_ids = {e["id"] for e in status_effects}
     else:
         # Synthesize the correct position effect if StatusManager missed it
-        active_ids = {e["id"] for e in status_effects}
         pos_map = {
             "sleeping": ("sleeping", "Sleeping",  "STATE",       -1, None),
             "sitting":  ("sitting",  "Sitting",   "STATE",       -1, "s"),
@@ -202,27 +220,37 @@ def build_snapshot(session, server) -> dict:
         }
         if pos in pos_map:
             eid, name, cat, rem, pchar = pos_map[pos]
-            if eid not in active_ids:
-                status_effects.append({
-                    "id":          eid,
-                    "name":        name,
-                    "category":    cat,
-                    "stacks":      1,
-                    "remaining":   rem,
-                    "prompt_char": pchar,
-                })
+            _append_synth_effect(status_effects, active_ids, eid, name, cat, rem, pchar)
 
-    # Also synthesize in_combat from raw boolean if StatusManager missed it
-    active_ids = {e["id"] for e in status_effects}
-    if "in_combat" not in active_ids and getattr(session, "in_combat", False):
-        status_effects.append({
-            "id":          "in_combat",
-            "name":        "In Combat",
-            "category":    "STATE",
-            "stacks":      1,
-            "remaining":   -1,
-            "prompt_char": None,
-        })
+    # Also synthesize stealth/combat/event state from the real live booleans
+    # and event manager state when they are not formal StatusManager entries.
+    if getattr(session, "hidden", False):
+        _append_synth_effect(status_effects, active_ids, "hidden", "Hidden", "STATE")
+    if getattr(session, "sneaking", False):
+        _append_synth_effect(status_effects, active_ids, "sneaking", "Sneaking", "STATE")
+    if getattr(session, "in_combat", False):
+        _append_synth_effect(status_effects, active_ids, "in_combat", "In Combat", "STATE")
+
+    events = getattr(server, "events", None)
+    if events:
+        if bool(getattr(events, "_lumnis_active", False)) and int(getattr(session, "lumnis_phase", 0) or 0) > 0:
+            phase = int(getattr(session, "lumnis_phase", 0) or 0)
+            _append_synth_effect(
+                status_effects,
+                active_ids,
+                "lumnis",
+                "Gift of Lumnis",
+                "BUFF_SPECIAL",
+                stacks=2 if phase == 1 else 1,
+            )
+        if bool(getattr(events, "_bonus_xp_active", False)):
+            _append_synth_effect(
+                status_effects,
+                active_ids,
+                "bonus_xp",
+                "Bonus Experience",
+                "BUFF_SPECIAL",
+            )
 
     # ── Combat ───────────────────────────────────────────────────────────────
     in_combat   = bool(getattr(session, "in_combat", False))

@@ -619,27 +619,70 @@ async def cmd_calendar(session, cmd, args, server):
 
 async def cmd_status(session, cmd, args, server):
     """STATUS - Show active status effects, injuries, and combat modifiers."""
-    from server.core.engine.combat.status_effects import get_combat_mods, EFFECT_DEFS
-    import time
+    from server.core.engine.combat.status_effects import get_combat_mods
 
     await session.send_line('')
     await session.send_line(colorize('  Status: ' + (session.character_name or 'Unknown'), TextPresets.SYSTEM))
     await session.send_line('')
 
     # Active status effects
-    effects = getattr(session, 'status_effects', {})
-    now = time.time()
-    active = {k: v for k, v in effects.items() if now < v.get('expires', 0)}
+    status_rows = []
+    sm = getattr(server, "status", None)
+    if sm:
+        for se in sm.get_all_active(session):
+            defn = sm.get_def(se.effect_id) or {}
+            if se.remaining < 0:
+                remaining = "indefinite"
+            else:
+                remaining = f"{max(0, int(se.remaining))}s"
+            status_rows.append({
+                "name": defn.get("name", se.effect_id.replace("_", " ").title()),
+                "remaining": remaining,
+                "stacks": int(getattr(se, "stacks", 1) or 1),
+                "description": defn.get("description", se.effect_id),
+            })
 
-    if active:
+    if getattr(session, "hidden", False) and not any(r["name"] == "Hidden" for r in status_rows):
+        status_rows.append({
+            "name": "Hidden",
+            "remaining": "indefinite",
+            "stacks": 1,
+            "description": "Hidden from sight; revealed by movement or combat.",
+        })
+    if getattr(session, "sneaking", False) and not any(r["name"] == "Sneaking" for r in status_rows):
+        status_rows.append({
+            "name": "Sneaking",
+            "remaining": "indefinite",
+            "stacks": 1,
+            "description": "Moving with stealth; each step rolls stealth instead of immediately breaking hiding.",
+        })
+
+    events = getattr(server, "events", None)
+    if events and bool(getattr(events, "_lumnis_active", False)) and int(getattr(session, "lumnis_phase", 0) or 0) > 0:
+        if not any(r["name"] == "Gift of Lumnis" for r in status_rows):
+            phase = int(getattr(session, "lumnis_phase", 0) or 0)
+            status_rows.append({
+                "name": "Gift of Lumnis",
+                "remaining": "indefinite",
+                "stacks": 2 if phase == 1 else 1,
+                "description": "Weekend blessing; bonus experience absorption is active.",
+            })
+    if events and bool(getattr(events, "_bonus_xp_active", False)):
+        if not any(r["name"] == "Bonus Experience" for r in status_rows):
+            status_rows.append({
+                "name": "Bonus Experience",
+                "remaining": "indefinite",
+                "stacks": 1,
+                "description": "Server-wide event bonus; creatures award additional experience.",
+            })
+
+    if status_rows:
         await session.send_line(colorize('  Active Effects:', TextPresets.SYSTEM))
-        for name, data in active.items():
-            remaining = max(0, int(data['expires'] - now))
-            stacks = data.get('stacks', 1)
-            desc = EFFECT_DEFS.get(name, {}).get('description', name)
+        for row in status_rows:
+            stacks = row.get('stacks', 1)
             stack_str = f' (x{stacks})' if stacks > 1 else ''
             await session.send_line(colorize(
-                f'    {desc}{stack_str} - {remaining}s remaining',
+                f'    {row["description"]}{stack_str} - {row["remaining"]}',
                 TextPresets.WARNING
             ))
         await session.send_line('')
@@ -684,11 +727,6 @@ async def cmd_status(session, cmd, args, server):
             await session.send_line(colorize(f'    Defense Strength: {total_ds:+d}', TextPresets.WARNING))
         await session.send_line('')
 
-    # Stealth state
-    if session.hidden:
-        await session.send_line(colorize('  You are hidden.', TextPresets.STEALTH))
-    if getattr(session, 'sneaking', False):
-        await session.send_line(colorize('  You are sneaking.', TextPresets.STEALTH))
     await session.send_line('')
 
 

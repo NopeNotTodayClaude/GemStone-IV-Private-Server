@@ -24,7 +24,7 @@ Called by:
 import asyncio
 import logging
 import time
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 from server.core.engine.combat.smr_engine import smr_roll, moc_hits, open_d100
 from server.core.engine.combat.status_effects import (
@@ -137,8 +137,8 @@ def _session_to_entity(session) -> dict:
         'race_id':             int(getattr(session, 'race_id', 0) or 0),
         'level':               int(getattr(session, 'level', 1) or 1),
         'stance':              getattr(session, 'stance', 'neutral') or 'neutral',
-        'profession_name':     getattr(session, 'profession_name', '') or '',
-        'stamina':             int(getattr(session, 'stamina', 0) or 0),
+        'profession_name':     getattr(session, 'profession_name', None) or getattr(session, 'profession', '') or '',
+        'stamina':             int(getattr(session, 'stamina_current', 0) or 0),
         'smr_off_bonus':       int(getattr(session, 'smr_off_bonus', 0) or 0),
         'smr_def_bonus':       int(getattr(session, 'smr_def_bonus', 0) or 0),
         'encumbrance_penalty': int(getattr(session, 'encumbrance_penalty', 0) or 0),
@@ -182,7 +182,7 @@ def _gather_room_targets(session, server, target_name: str, is_aoe: bool) -> lis
     For AoE: up to MOC-limited count of all hostiles.
     For single: find by name.
     """
-    room_id = getattr(session, 'current_room_id', None)
+    room_id = _session_room_id(session)
     if not room_id:
         return []
 
@@ -267,7 +267,7 @@ def _apply_effects(result: dict, session, targets: list, server):
                     log.warning("Effect apply error %s on self: %s", effect_name, e)
             if tgt_label == 'self_and_party' and hasattr(server, 'sessions'):
                 for s in server.sessions.get_room_sessions(
-                    getattr(session, 'current_room_id', None)
+                    _session_room_id(session)
                 ):
                     if s is not session and dispatcher and duration > 0:
                         try:
@@ -309,16 +309,523 @@ def _apply_effects(result: dict, session, targets: list, server):
 
 # ── Stamina drain ─────────────────────────────────────────────────────────────
 
+def _resolve_profession_name(session, server=None) -> str:
+    explicit = getattr(session, "profession_name", None) or getattr(session, "profession", None)
+    if explicit:
+        return str(explicit).strip().lower()
+
+    lua = getattr(server, "lua", None) if server else None
+    if lua:
+        try:
+            professions = (lua.get_professions() or {}).get("professions", [])
+            prof_id = int(getattr(session, "profession_id", 0) or 0)
+            for row in professions:
+                if int(row.get("id", 0) or 0) == prof_id:
+                    name = str(row.get("name") or "").strip().lower()
+                    if name:
+                        return name
+        except Exception:
+            pass
+    return ""
+
+
+def _normalize_weapon_skill_key(raw_skill: str) -> str:
+    raw = str(raw_skill or "").strip().lower()
+    return _CAT_TO_SKILL_KEY.get(raw, raw)
+
+
+def _weapon_matches_category(item: Optional[dict], category: str) -> bool:
+    if not item or item.get("item_type") != "weapon":
+        return False
+    return str(item.get("weapon_category") or item.get("weapon_type") or "").strip().lower() == str(category or "").strip().lower()
+
+
+def _active_hand_items(session) -> list[tuple[str, Optional[dict]]]:
+    return [
+        ("right_hand", getattr(session, "right_hand", None)),
+        ("left_hand", getattr(session, "left_hand", None)),
+    ]
+
+
+def _session_room_id(session) -> Optional[int]:
+    room = getattr(session, "current_room", None)
+    if room is not None and getattr(room, "id", None) is not None:
+        return int(room.id)
+    room_id = getattr(session, "current_room_id", None)
+    return int(room_id) if room_id is not None else None
+
+
+def _split_assault_messages(message: str, round_count: int) -> tuple[str, list[str], str]:
+    lines = [line for line in str(message or "").splitlines() if line.strip()]
+    if not lines:
+        return "", [], ""
+    if round_count <= 0:
+        return "\n".join(lines), [], ""
+
+    start_message = lines[0]
+    round_messages = lines[1:1 + round_count]
+    final_message = "\n".join(lines[1 + round_count:]).strip()
+    return start_message, round_messages, final_message
+
+
+def _technique_damage_scale(attack_spec: dict) -> float:
+    if attack_spec.get("minor"):
+        return 0.65
+    if attack_spec.get("moderate"):
+        return 0.85
+    return 1.0
+
+
+def _technique_weapon_hand(session, weapon: Optional[dict]) -> str:
+    if weapon and getattr(session, "right_hand", None) is weapon:
+        return "right"
+    if weapon and getattr(session, "left_hand", None) is weapon:
+        return "left"
+    return "right"
+
+
+def _stance_order() -> list[str]:
+    return ["offensive", "advance", "forward", "neutral", "guarded", "defensive"]
+
+
+def _shift_creature_stance_more_offensive(creature):
+    current = (getattr(creature, "stance", "neutral") or "neutral").lower()
+    order = _stance_order()
+    if current not in order:
+        current = "neutral"
+    idx = order.index(current)
+    if idx > 0:
+        creature.stance = order[idx - 1]
+
+
+def _validate_technique_loadout(session, tech_meta: dict) -> tuple[bool, str]:
+    category = str(tech_meta.get("category") or "").strip().lower()
+    gear = str(tech_meta.get("offensive_gear") or "").strip().lower()
+    right = getattr(session, "right_hand", None)
+    left = getattr(session, "left_hand", None)
+
+    if category == "brawling":
+        for _hand, item in _active_hand_items(session):
+            if not item:
+                continue
+            if item.get("item_type") == "shield":
+                return False, "You need both hands free of shields to use that brawling technique."
+            if item.get("item_type") == "weapon" and not _weapon_matches_category(item, "brawling"):
+                return False, "You need your hands free of weapons to use that brawling technique."
+        return True, ""
+
+    expected_category = category
+    if gear == "right_hand":
+        if not _weapon_matches_category(right, expected_category):
+            return False, f"You need a {expected_category.replace('twohanded', 'two-handed')} weapon readied in your right hand."
+        if left and left.get("item_type") == "shield" and expected_category in ("twohanded", "polearm", "ranged"):
+            return False, "That technique requires your off-hand free."
+        return True, ""
+
+    matching_hands = [hand for hand, item in _active_hand_items(session) if _weapon_matches_category(item, expected_category)]
+    if not matching_hands:
+        label = expected_category.replace("twohanded", "two-handed")
+        return False, f"You need an appropriate {label} weapon readied to use that technique."
+
+    if gear == "both_hands":
+        for _hand, item in _active_hand_items(session):
+            if item and item.get("item_type") == "shield":
+                return False, "You need both hands free of shields to use that technique."
+        if expected_category in ("twohanded", "polearm", "ranged") and right and left and right is not left:
+            return False, "That technique requires both hands committed to the proper weapon."
+
+    if expected_category == "ranged":
+        from server.core.commands.player.combat import _find_ready_ammo
+        ready_ammo = (
+            _find_ready_ammo(session, "arrow")
+            or _find_ready_ammo(session, "bolt")
+            or _find_ready_ammo(session, "pellet")
+            or _find_ready_ammo(session, "stone")
+        )
+        if not ready_ammo:
+            return False, "You need appropriate ammunition readied before using that ranged technique."
+
+    return True, ""
+
+
+def _clear_weapon_assault_state(session):
+    state = getattr(session, "weapon_assault_state", None) or {}
+    task = state.get("task")
+    current_task = None
+    try:
+        current_task = asyncio.current_task()
+    except RuntimeError:
+        current_task = None
+    if task and not task.done() and task is not current_task:
+        task.cancel()
+    session.weapon_assault_state = None
+
+
+def stop_active_weapon_assault(session) -> tuple[bool, str]:
+    state = getattr(session, "weapon_assault_state", None) or {}
+    if not state:
+        return False, "You are not committed to an assault right now."
+    task = state.get("task")
+    if task and not task.done():
+        task.cancel()
+    session.weapon_assault_state = None
+    if hasattr(session, "set_roundtime"):
+        session.set_roundtime(0)
+    return True, "You break off your assault."
+
+
+async def _apply_technique_hit(session, creature, server, roll: dict, attack_spec: dict,
+                               technique_name: str = "", aimed_location: str = "") -> dict:
+    from server.core.engine.combat.combat_engine import (
+        CRIT_DIVISORS, CRIT_MESSAGES, LETHAL_THRESHOLDS,
+        LOCATION_DAMAGE_MULT, LOCATION_CRIT_DIV_MULT, SEVERABLE_LOCATIONS,
+        _enter_combat, _exit_combat, _refresh_combat, _resolve_damage_profile,
+        _get_player_weapon,
+    )
+    from server.core.engine.combat.material_combat import resolve_flare, get_crit_phantom
+    from server.core.protocol.colors import combat_damage, combat_crit, combat_death
+    from server.core.scripting.loaders.body_types_loader import resolve_aim, random_location
+
+    if not creature or getattr(creature, "is_dead", False):
+        return {"killed": True, "damage": 0, "location": ""}
+
+    weapon, weapon_hand = _get_player_weapon(session)
+    weapon_hand = _technique_weapon_hand(session, weapon) if weapon else weapon_hand
+
+    raw_damage_type = str(attack_spec.get("damage_type") or "").strip().lower()
+    if not raw_damage_type or raw_damage_type == "weapon":
+        raw_damage_type = (weapon.get("damage_type", "crush") if weapon else "crush")
+    elif raw_damage_type == "unbalance":
+        raw_damage_type = "crush"
+
+    base_df = None
+    if weapon:
+        base_df = weapon.get("damage_factor", 0) or None
+    profile = _resolve_damage_profile(
+        raw_damage_type,
+        getattr(creature, "armor_asg", 5),
+        base_df,
+    )
+    damage_type = profile["damage_type"]
+    weapon_df = float(profile["df"] or 0.25) * _technique_damage_scale(attack_spec)
+
+    requested_location = str(attack_spec.get("limb") or aimed_location or "").strip().lower()
+    body_type = getattr(creature, "body_type", "biped") or "biped"
+    location = resolve_aim(body_type, requested_location) if requested_location else None
+    if not location:
+        location = random_location(body_type)
+
+    total = int((roll or {}).get("total", 100) or 100)
+    if total <= 100:
+        return {"killed": False, "damage": 0, "location": location}
+
+    loc_df_mult = LOCATION_DAMAGE_MULT.get(location, 1.0)
+    raw_damage = max(1, int((total - 100) * weapon_df * loc_df_mult))
+
+    crit_phantom = int(attack_spec.get("cer_bonus", 0) or 0)
+    if weapon and bool(attack_spec.get("flares_enabled", True)):
+        crit_phantom += get_crit_phantom(weapon, getattr(server, "lua", None))
+    adj_raw = raw_damage + crit_phantom
+    crit_divisor = max(1, int(CRIT_DIVISORS.get(getattr(creature, "armor_asg", 5), 5) * LOCATION_CRIT_DIV_MULT.get(location, 1.0)))
+    crit_rank_max = min(9, adj_raw // crit_divisor)
+    if crit_rank_max > 0:
+        import random as _random
+        crit_rank_min = max(1, (crit_rank_max + 1) // 2)
+        crit_rank = _random.randint(crit_rank_min, crit_rank_max)
+    else:
+        crit_rank = 0
+
+    hp_damage = max(1, int((total - 100) * (0.42 + (weapon_df * 0.25)) * loc_df_mult) + crit_rank * 3)
+    actual_damage = creature.take_damage(hp_damage)
+
+    flare_result = None
+    if weapon and bool(attack_spec.get("flares_enabled", True)):
+        flare_result = await resolve_flare(session, creature, weapon, weapon_hand)
+        if flare_result and int(flare_result.get("damage", 0) or 0) > 0:
+            creature.take_damage(int(flare_result["damage"]))
+
+    await session.send_line(combat_damage(actual_damage, location))
+    if crit_rank > 0:
+        crit_msgs = CRIT_MESSAGES.get(damage_type, CRIT_MESSAGES["slash"])
+        crit_msg = crit_msgs.get(crit_rank, "Critical hit!")
+        await session.send_line(combat_crit(crit_rank, crit_msg))
+
+    if flare_result:
+        await session.send_line(colorize(f"  {flare_result.get('attacker_msg', '')}", TextPresets.COMBAT_HIT))
+        if int(flare_result.get("damage", 0) or 0) > 0:
+            await session.send_line(colorize(
+                f"  The flare deals {int(flare_result['damage'])} additional points of damage!",
+                TextPresets.COMBAT_HIT,
+            ))
+        room_msg = flare_result.get("room_msg", "")
+        if room_msg:
+            await server.world.broadcast_to_room(
+                session.current_room.id,
+                colorize(f"  {room_msg}", TextPresets.COMBAT_HIT),
+                exclude=[session],
+            )
+
+    if attack_spec.get("force_target_stance"):
+        _shift_creature_stance_more_offensive(creature)
+
+    if crit_rank >= 1:
+        old_sev = creature.wounds.get(location, 0)
+        new_sev = creature.apply_wound(location, crit_rank)
+        if new_sev > old_sev:
+            await session.send_line(colorize(
+                f"  {getattr(creature, 'full_name', creature.name).capitalize()} suffers a wound to its {location}!",
+                TextPresets.COMBAT_HIT,
+            ))
+            impairment = creature.evaluate_combat_impairment(location, old_sev, new_sev)
+            if impairment.get("dropped_weapon"):
+                await session.send_line(colorize(
+                    f"  {getattr(creature, 'full_name', creature.name).capitalize()} drops its weapon as the limb goes slack!",
+                    TextPresets.COMBAT_HIT,
+                ))
+            if impairment.get("severed") and location in SEVERABLE_LOCATIONS:
+                await session.send_line(colorize(
+                    f"  The strike severs {getattr(creature, 'full_name', creature.name)}'s {location}!",
+                    TextPresets.COMBAT_HIT,
+                ))
+            if impairment.get("stance_shift"):
+                creature.stance = impairment["stance_shift"]
+
+    if crit_rank >= 3:
+        stun_dur = crit_rank * 2
+        creature.stun(stun_dur)
+        await session.send_line(colorize(f"  The {creature.name} is stunned!", TextPresets.COMBAT_HIT))
+        try:
+            from server.core.engine.combat.status_effects import apply_bleed, apply_fear
+            apply_bleed(creature, crit_rank, attacker=session)
+            await session.send_line(colorize(
+                f"  {getattr(creature, 'full_name', creature.name).capitalize()} is bleeding!",
+                TextPresets.COMBAT_HIT,
+            ))
+            if crit_rank >= 6:
+                apply_fear(creature, duration=30)
+                await session.send_line(colorize(
+                    f"  {getattr(creature, 'full_name', creature.name).capitalize()} looks terrified!",
+                    TextPresets.COMBAT_HIT,
+                ))
+        except ImportError:
+            pass
+
+    await server.world.broadcast_to_room(
+        session.current_room.id,
+        f"{session.character_name}'s {technique_name or 'technique'} strikes {getattr(creature, 'full_name', creature.name)} for {actual_damage} points of damage to the {location}.",
+        exclude=session,
+    )
+
+    killed = False
+    if getattr(creature, "is_dead", False) or crit_rank >= LETHAL_THRESHOLDS.get(location, 99):
+        if not getattr(creature, "is_dead", False):
+            creature.take_damage(getattr(creature, "health_current", 0))
+        killed = True
+        await session.send_line(combat_death(getattr(creature, "full_name", creature.name).capitalize()))
+        await server.world.broadcast_to_room(
+            session.current_room.id,
+            f"  {getattr(creature, 'full_name', creature.name).capitalize()} falls to the ground dead!",
+            exclude=session,
+        )
+        server.creatures.mark_dead(creature)
+        session.target = None
+        remaining = [
+            c for c in server.creatures.get_creatures_in_room(session.current_room.id)
+            if getattr(c, "alive", True) and getattr(c, "aggressive", False) and c is not creature
+        ]
+        if not remaining:
+            _exit_combat(server, session)
+        if hasattr(server, "experience"):
+            from server.core.commands.player.party import award_party_kill_xp
+            await award_party_kill_xp(session, creature, server)
+    else:
+        _enter_combat(server, session, creature)
+        _refresh_combat(server, session, creature)
+
+    return {"killed": killed, "damage": actual_damage, "location": location}
+
+
+async def _apply_attack_specs(session, target_obj, server, roll: dict, attack_specs: list[dict],
+                              technique_name: str = "", aimed_location: str = "", shared_flags: Optional[dict] = None) -> bool:
+    killed = False
+    shared_flags = shared_flags or {}
+    for attack_spec in attack_specs or []:
+        if not isinstance(attack_spec, dict):
+            continue
+        spec = dict(attack_spec)
+        for key, value in shared_flags.items():
+            spec.setdefault(key, value)
+        outcome = await _apply_technique_hit(
+            session, target_obj, server, roll, spec,
+            technique_name=technique_name, aimed_location=aimed_location,
+        )
+        killed = killed or bool(outcome.get("killed"))
+        if killed:
+            break
+    return killed
+
+
+async def _apply_completion_effects(session, server, targets: list, effects: list[dict]):
+    if effects:
+        _apply_effects({"effects_applied": effects}, session, targets, server)
+
+
+def _assault_effects_for_partial_execution(mnemonic: str, tech: dict, executed_rounds: list[dict], completed_full: bool) -> list[dict]:
+    effects: list[dict] = []
+    successes = [entry for entry in executed_rounds if entry.get("success")]
+    rank = int((tech or {}).get("_player_rank", 0) or 0)
+
+    if mnemonic in {"fury", "pummel", "flurry", "thrash", "barrage"} and successes:
+        if mnemonic == "fury":
+            effects.append({"effect": "frenzy", "duration": 120, "target": "self"})
+        elif mnemonic == "pummel":
+            effects.append({"effect": "forceful_blows", "duration": 120, "target": "self"})
+        elif mnemonic == "flurry":
+            effects.append({"effect": "slashing_strikes", "duration": 120, "target": "self"})
+        elif mnemonic == "thrash":
+            effects.append({"effect": "forceful_blows", "duration": 120, "target": "self"})
+        elif mnemonic == "barrage":
+            effects.append({"effect": "enhance_dexterity", "duration": 120, "magnitude": 10, "target": "self_and_party"})
+
+    if mnemonic in {"fury", "pummel", "flurry", "thrash"}:
+        divisor = 10 if mnemonic == "thrash" else 5
+        total = 0
+        for entry in successes:
+            roll = entry.get("roll") or {}
+            total += min(10, max(0, int((roll.get("margin", 0) or 0) // divisor)))
+        if total > 0:
+            effects.append({"effect": "parry_bonus", "duration": 30, "magnitude": total, "target": "self"})
+
+    if mnemonic == "barrage":
+        total = 0
+        for entry in successes:
+            roll = entry.get("roll") or {}
+            total += min(10, max(0, int((roll.get("margin", 0) or 0) // 10)))
+        if total > 0:
+            effects.append({"effect": "evade_bonus", "duration": 30, "magnitude": total, "target": "self"})
+
+    if mnemonic == "gthrusts":
+        per_round = int((tech or {}).get("ds_bonus_per_round", 5) or 5)
+        ds_total = min(rank * per_round if rank > 0 else len(executed_rounds) * per_round, len(executed_rounds) * per_round)
+        if ds_total > 0:
+            effects.append({"effect": "ds_bonus", "duration": 15, "magnitude": ds_total, "target": "self"})
+        if completed_full:
+            effects.append({"effect": "fortified_stance", "duration": int((tech or {}).get("completion_buff_duration", 30) or 30), "target": "self"})
+
+    return effects
+
+
+async def _start_weapon_assault(session, mnemonic: str, tech_meta: dict, target_obj, result: dict, server) -> str:
+    round_results = list(result.get("round_results") or [])
+    if not round_results:
+        return result.get("message", "")
+
+    start_message, round_messages, final_message = _split_assault_messages(result.get("message", ""), len(round_results))
+    targets = [target_obj] if target_obj else []
+    strike_delay = max(2, int(result.get("roundtime", tech_meta.get("base_rt", 2)) or 2))
+
+    state: Dict[str, Any] = {
+        "mnemonic": mnemonic,
+        "target_id": getattr(target_obj, "id", None),
+        "target_name": getattr(target_obj, "name", result.get("target") or ""),
+        "round_results": round_results,
+        "round_messages": round_messages,
+        "final_message": final_message,
+        "tech_meta": dict(tech_meta or {}),
+        "stop_requested": False,
+        "task": None,
+    }
+    state["tech_meta"]["_player_rank"] = int(result.get("rank") or tech_meta.get("_player_rank", 0) or 0)
+    session.weapon_assault_state = state
+    if hasattr(session, "set_roundtime"):
+        session.set_roundtime(strike_delay * len(round_results))
+
+    executed_rounds: list[dict] = []
+
+    async def _resolve_round(index: int) -> bool:
+        if not session.connected or getattr(session, "is_dead", False):
+            return True
+        if state.get("stop_requested"):
+            await session.send_line("You break off your assault.")
+            return True
+        if not target_obj or getattr(target_obj, "is_dead", False):
+            await session.send_line("Your assault falters as your target is no longer standing.")
+            return True
+        if getattr(target_obj, "current_room_id", None) != _session_room_id(session):
+            await session.send_line("Your assault ends as your target slips out of reach.")
+            return True
+
+        round_result = round_results[index]
+        if index < len(round_messages) and round_messages[index]:
+            await session.send_line(round_messages[index])
+        executed_rounds.append(round_result)
+        if round_result.get("success") and round_result.get("damage"):
+            killed = await _apply_attack_specs(
+                session,
+                target_obj,
+                server,
+                round_result.get("roll") or {},
+                [round_result.get("damage")],
+                technique_name=str(tech_meta.get("name") or mnemonic),
+            )
+            if killed:
+                return True
+        return False
+
+    if start_message:
+        await session.send_line(start_message)
+    stopped_now = await _resolve_round(0)
+    if stopped_now:
+        effects = _assault_effects_for_partial_execution(mnemonic, state["tech_meta"], executed_rounds, completed_full=False)
+        await _apply_completion_effects(session, server, targets, effects)
+        _clear_weapon_assault_state(session)
+        if hasattr(session, "set_roundtime"):
+            session.set_roundtime(0)
+        return ""
+
+    async def _runner():
+        completed_full = True
+        try:
+            for idx in range(1, len(round_results)):
+                await asyncio.sleep(strike_delay)
+                if await _resolve_round(idx):
+                    completed_full = False
+                    break
+            if completed_full and final_message:
+                await session.send_line(final_message)
+
+            effects = _assault_effects_for_partial_execution(
+                mnemonic,
+                state["tech_meta"],
+                executed_rounds,
+                completed_full=completed_full and len(executed_rounds) == len(round_results),
+            )
+            await _apply_completion_effects(session, server, targets, effects)
+        except asyncio.CancelledError:
+            completed_full = False
+        finally:
+            _clear_weapon_assault_state(session)
+            if hasattr(session, "set_roundtime"):
+                session.set_roundtime(0)
+            if session.connected:
+                await session.send_prompt()
+
+    task = asyncio.create_task(_runner())
+    state["task"] = task
+    session.weapon_assault_state = state
+    return ""
+
+
 def _drain_stamina(session, amount: int, server):
     if amount <= 0:
         return
-    current = int(getattr(session, 'stamina', 0) or 0)
-    session.stamina = max(0, current - amount)
+    current = int(getattr(session, 'stamina_current', 0) or 0)
+    session.stamina_current = max(0, current - amount)
     try:
         db = server.db
         db.execute_query(
-            "UPDATE characters SET stamina = %s WHERE id = %s",
-            (session.stamina, session.character_id)
+            "UPDATE characters SET stamina_current = %s WHERE id = %s",
+            (session.stamina_current, session.character_id)
         )
     except Exception as e:
         log.warning("Stamina drain DB error: %s", e)
@@ -334,17 +841,22 @@ def _assign_roundtime(session, result: dict):
         mod        = int(result.get('rt_mod', 0) or 0)
         rt         = max(1, current_rt + mod)
     if rt > 0:
-        session.roundtime = rt
+        if hasattr(session, "set_roundtime"):
+            session.set_roundtime(rt)
+        else:
+            session.roundtime = rt
 
 
 # ── Deferred AoE (Volley) ─────────────────────────────────────────────────────
 
 def _schedule_volley(result: dict, session, server):
     """Schedule Volley impact for next round."""
+    from types import SimpleNamespace
+
     delay      = int(result.get('deferred_delay', 1)) * 3   # ~3s per round
     num_shots  = int(result.get('num_shots', 1) or 1)
     snapshot   = result.get('attacker_snapshot', {})
-    room_id    = getattr(session, 'current_room_id', None)
+    room_id    = _session_room_id(session)
 
     async def _impact():
         await asyncio.sleep(delay)
@@ -353,21 +865,41 @@ def _schedule_volley(result: dict, session, server):
             if not targets:
                 return
             smr_opts = snapshot.get('smr_opts', {})
-            msgs = ["Arrows rain down from above!"]
+            attacker = SimpleNamespace(
+                skill_ranks=snapshot.get("skill_ranks", {}) or {},
+                stats=snapshot.get("stats", {}) or {},
+                race_id=int(snapshot.get("race_id", 0) or 0),
+                level=int(snapshot.get("level", 1) or 1),
+                stance=snapshot.get("stance", "neutral") or "neutral",
+                smr_off_bonus=0,
+                smr_def_bonus=0,
+                encumbrance_penalty=0,
+                armor_action_penalty=0,
+            )
+            if hasattr(server, 'sessions'):
+                for s in server.sessions.get_room_sessions(room_id) or []:
+                    await s.send_line("Arrows rain down from above!")
             for _ in range(num_shots):
                 import random as _random
                 tgt = _random.choice(targets)
-                # Quick attack resolve using smr_engine
-                from server.core.engine.combat.combat_engine import resolve_attack_hit
-                hit_msg = await resolve_attack_hit(session, tgt, server,
-                                                   damage_type='puncture',
-                                                   smr_opts=smr_opts)
-                if hit_msg:
-                    msgs.append(f"An arrow from above strikes {tgt.name}!  {hit_msg}")
-            # Broadcast to room
-            if hasattr(server, 'sessions'):
-                for s in server.sessions.get_room_sessions(room_id) or []:
-                    await s.send_line("\n".join(msgs))
+                defender = SimpleNamespace(**_creature_to_entity(tgt))
+                roll = smr_roll(attacker, defender, smr_opts)
+                if not roll.get("success"):
+                    await server.world.broadcast_to_room(
+                        room_id,
+                        f"An arrow from above whistles past {tgt.name} harmlessly.",
+                    )
+                    continue
+                if session.connected and _session_room_id(session) == room_id:
+                    await session.send_line(f"An arrow from above strikes {tgt.name}!")
+                await _apply_attack_specs(
+                    session,
+                    tgt,
+                    server,
+                    roll,
+                    [{"damage_type": "puncture", "flares_enabled": False}],
+                    technique_name="Volley",
+                )
         except Exception as e:
             log.error("Volley impact error: %s", e)
 
@@ -392,6 +924,9 @@ async def execute_technique(session, mnemonic: str, target_name: str,
 
     engine = lua.engine
 
+    if getattr(session, "weapon_assault_state", None):
+        return "You are already committed to an assault.  STOP first if you want to break it off."
+
     # Gather targets before calling Lua
     tech_defs = lua.engine.require("weapon_techniques/definitions")
     tech_meta = None
@@ -400,10 +935,18 @@ async def execute_technique(session, mnemonic: str, target_name: str,
             tech_meta = lua.engine.lua_to_python(tech_defs[mnemonic])
         except Exception:
             pass
+    if not tech_meta:
+        return "That weapon technique is unavailable right now."
+
+    loadout_ok, loadout_msg = _validate_technique_loadout(session, tech_meta)
+    if not loadout_ok:
+        return loadout_msg
 
     is_aoe       = tech_meta and tech_meta.get('type') in ('aoe',) if tech_meta else False
     targets      = _gather_room_targets(session, server, target_name, is_aoe)
     target_obj   = targets[0] if targets and not is_aoe else None
+    if not is_aoe and target_name and not target_obj:
+        return f"You don't see any '{target_name}' here."
 
     # Build the full player snapshot for Lua
     player_snap  = _session_to_entity(session)
@@ -459,7 +1002,56 @@ async def execute_technique(session, mnemonic: str, target_name: str,
 
     # Apply all side effects
     _drain_stamina(session, int(result.get('stamina_spent', 0) or 0), server)
+    result["rank"] = int(player_snap.get("weapon_techniques", {}).get(mnemonic, 0) or 0)
+
+    if result.get("is_assault") or result.get("round_results"):
+        return await _start_weapon_assault(session, mnemonic, tech_meta, target_obj, result, server)
+
+    if result.get("message"):
+        await session.send_line(result["message"])
+
     _assign_roundtime(session, result)
+
+    shared_flags = {
+        "force_target_stance": bool(result.get("force_target_stance")),
+        "flares_enabled": bool(tech_meta.get("flares_enabled", False)),
+    }
+
+    if target_obj and result.get("attack_results") and result.get("smr_result"):
+        await _apply_attack_specs(
+            session,
+            target_obj,
+            server,
+            result.get("smr_result") or {},
+            list(result.get("attack_results") or []),
+            technique_name=str(tech_meta.get("name") or mnemonic),
+            aimed_location=limb,
+            shared_flags=shared_flags,
+        )
+
+    for aoe_entry in (result.get("aoe_results") or []):
+        if not isinstance(aoe_entry, dict) or not aoe_entry.get("success") or not aoe_entry.get("damage"):
+            continue
+        target_name_l = str(aoe_entry.get("target") or "").strip().lower()
+        target = next(
+            (t for t in targets if str(getattr(t, "name", "") or "").strip().lower() == target_name_l),
+            None,
+        )
+        if not target:
+            continue
+        await _apply_attack_specs(
+            session,
+            target,
+            server,
+            aoe_entry.get("roll") or {},
+            [aoe_entry.get("damage")],
+            technique_name=str(tech_meta.get("name") or mnemonic),
+            shared_flags={
+                "force_target_stance": bool(aoe_entry.get("force_target_stance")),
+                "flares_enabled": bool(tech_meta.get("flares_enabled", False)),
+            },
+        )
+
     _apply_effects(result, session, targets, server)
 
     # Handle deferred AoE (Volley)
@@ -479,7 +1071,7 @@ async def execute_technique(session, mnemonic: str, target_name: str,
             if not v:
                 session.reaction_triggers.pop(k, None)
 
-    return result.get('message', '')
+    return ""
 
 
 # ── Creature technique execution ──────────────────────────────────────────────
@@ -559,6 +1151,13 @@ async def check_and_grant_techniques(session, skill_name: str,
     if not isinstance(granted, list) or not granted:
         return []
 
+    try:
+        defs_lua = lua_engine.require("weapon_techniques/definitions")
+        defs = lua_engine.lua_to_python(defs_lua) if defs_lua else {}
+    except Exception:
+        defs = {}
+    profession_key = _resolve_profession_name(session, server)
+
     messages = []
     wt = getattr(session, 'weapon_techniques', {}) or {}
 
@@ -569,6 +1168,11 @@ async def check_and_grant_techniques(session, skill_name: str,
         name     = str(entry.get('name', mnemonic))
         new_rank = int(entry.get('new_rank', 1))
         is_new   = bool(entry.get('is_new', True))
+
+        tech_meta = defs.get(mnemonic) if isinstance(defs, dict) else None
+        available_to = [str(v).strip().lower() for v in ((tech_meta or {}).get("available_to") or [])]
+        if available_to and profession_key not in available_to:
+            continue
 
         # Persist to DB
         try:
@@ -666,7 +1270,7 @@ def available_technique_summaries(session, server) -> List[dict]:
         if profession_key not in available_to:
             continue
 
-        skill_key = str(tech.get("weapon_skill") or "").strip().lower()
+        skill_key = _normalize_weapon_skill_key(str(tech.get("weapon_skill") or "").strip().lower())
         if not skill_key:
             continue
         current_ranks = _get_skill_ranks(session, skill_key)
