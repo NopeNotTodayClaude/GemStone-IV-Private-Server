@@ -40,6 +40,7 @@ TWC note:
 
 from typing import Tuple
 from server.core.engine.material_weight import effective_weight as _material_effective_weight
+from server.core.engine.magic_effects import get_active_buff_totals
 
 # ── Encumbrance tier definitions ──────────────────────────────────────────────
 
@@ -106,6 +107,11 @@ def carry_capacity(session) -> float:
     str_val   = float(getattr(session, 'stat_strength', 50))
     str_bonus = (str_val - 50.0) / 2.0
     cap = (str_bonus + 20.0) * 4.0
+    server = getattr(session, "server", None)
+    if server:
+        buffs = get_active_buff_totals(server, session)
+        cap += float(buffs.get("carry_bonus", 0) or 0)
+        cap += float(buffs.get("burden_relief", 0) or 0)
     return max(10.0, cap)
 
 

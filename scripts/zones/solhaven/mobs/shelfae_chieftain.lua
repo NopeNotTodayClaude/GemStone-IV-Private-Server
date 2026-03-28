@@ -39,7 +39,7 @@ Creature.loot_coins   = true
 Creature.loot_gems    = true
 Creature.loot_magic   = true
 Creature.loot_boxes   = true
-Creature.skin         = "a chieftain scale"
+Creature.skin         = "a shelfae crest"
 Creature.special_loot = {}
 
 Creature.decay_seconds = 300

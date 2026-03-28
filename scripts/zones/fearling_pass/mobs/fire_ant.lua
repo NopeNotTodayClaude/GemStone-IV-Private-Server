@@ -44,7 +44,7 @@ Creature.loot_coins      = false
 Creature.loot_gems       = false
 Creature.loot_magic      = false
 Creature.loot_boxes      = false
-Creature.skin            = "a fire ant mandible"
+Creature.skin            = "a fire ant pincer"
 Creature.special_loot = {}
 
 -- ── Decay / Death Behavior ────────────────────────────────────────────────

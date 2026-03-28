@@ -33,7 +33,7 @@ Creature.loot_coins  = false
 Creature.loot_gems   = true
 Creature.loot_magic  = false
 Creature.loot_boxes  = false
-Creature.skin        = "a gak hide"
+Creature.skin        = "a brown gak hide"
 Creature.special_loot = {}
 
 Creature.decay_seconds = 300

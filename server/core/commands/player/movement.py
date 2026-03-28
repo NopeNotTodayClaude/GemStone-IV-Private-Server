@@ -6,6 +6,7 @@ Now with ANSI colors, real-time DB saves, LOOK AT support, ground items, and NPC
 import logging
 import random
 from server.core.world.room import DIRECTION_ALIASES, normalize_exit_key, Room
+from server.core.engine.magic_effects import get_active_buff_totals, is_visible_to
 from server.core.protocol.colors import (
     room_title, room_desc, room_exits, colorize, TextPresets,
     creature_name as fmt_creature_name, player_name as fmt_player_name,
@@ -118,7 +119,7 @@ async def cmd_look(session, cmd, args, server):
 
     # Standard room look
     others = server.world.get_players_in_room(room.id)
-    others = [s for s in others if s != session and not s.hidden]
+    others = [s for s in others if s != session and is_visible_to(server, session, s)]
 
     lines = []
 
@@ -235,7 +236,7 @@ async def _look_at(session, target, server):
 
     # Look at another player
     for p in server.world.get_players_in_room(room.id):
-        if p != session and p.character_name and target in p.character_name.lower():
+        if p != session and p.character_name and target in p.character_name.lower() and is_visible_to(server, session, p):
             from server.core.commands.player.info import RACES, PROFESSIONS
             from server.core.engine.encumbrance import encumbrance_name
             from server.core.engine.combat.status_effects import EFFECT_DEFS
@@ -610,6 +611,10 @@ async def _move_player(session, from_room, to_room, direction, server, sneaking=
         # ranks * 3 means 200 ranks = +600 — near-impossible to fail without
         # creatures actively watching.  Low-skill players fail frequently.
         sh_bonus   = sh_ranks * 3
+        buffs      = get_active_buff_totals(server, session)
+        sh_bonus  += int(buffs.get("stalking_hiding_bonus", 0) or 0)
+        if buffs.get("movement_bonus"):
+            sh_bonus += 10
 
         disc_val   = getattr(session, 'stat_discipline', 50)
         disc_bonus = (disc_val - 50) // 2

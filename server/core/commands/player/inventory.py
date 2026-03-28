@@ -1,5 +1,5 @@
-"""
-GemStone IV Inventory Commands — Proper GS4 Model (v2)
+﻿"""
+GemStone IV Inventory Commands â€” Proper GS4 Model (v2)
 GET, DROP, GIVE, LOOT, SWAP, WEAR, REMOVE, PUT, STOW, OPEN, CLOSE,
 INV, INSPECT, LOOK IN, YELL
 
@@ -23,6 +23,7 @@ Worn Locations (simplified):
 import logging
 import random
 from server.core.protocol.colors import colorize, TextPresets, item_name as fmt_item_name, roundtime_msg
+from server.core.engine.skinning import can_remove_corpse
 
 log = logging.getLogger(__name__)
 
@@ -147,7 +148,7 @@ def _match_target(item, target):
     Strips ordinal prefix first (e.g. '2nd gauche' -> 'gauche').
     Uses word-set matching: every word in the search must appear as a word
     in at least one of the item's name fields, regardless of order.
-    e.g. 'midnight ora falchion' matches 'ora midnight falchion' ✓
+    e.g. 'midnight ora falchion' matches 'ora midnight falchion' âœ“
     """
     _, base = _parse_ordinal(target)
     base = base.lower().strip()
@@ -312,7 +313,7 @@ def _find_container_by_name(session, target):
 
 
 def _find_loose_item(session, target):
-    """Find a loose item (no slot, no container_id) — legacy unplaced items."""
+    """Find a loose item (no slot, no container_id) â€” legacy unplaced items."""
     target = target.lower()
     for item in session.inventory:
         if not item.get('slot') and not item.get('container_id'):
@@ -456,6 +457,7 @@ def _db_save_item_state(server, inv_id, item_dict):
         'trap_type', 'trapped', 'trap_difficulty', 'trap_checked',
         'trap_detected', 'trap_disarmed',
         'contents',
+        'value', 'base_value', 'skin_quality', 'quality_label', 'base_skin_name',
         'charges', 'spell_number', 'spell_name', 'spell_type', 'spell_level',
     )
     extra = {k: item_dict[k] for k in EXTRA_KEYS if k in item_dict}
@@ -657,7 +659,7 @@ def auto_stow_item(session, server, item_dict):
                 _db_update_container(server, inv_id, best_cont.get('inv_id'))
                 # Persist box lock/trap/contents so they survive refresh
                 _db_save_item_state(server, inv_id, item_dict)
-                # Update in-memory directly — do NOT call _refresh_inventory here.
+                # Update in-memory directly â€” do NOT call _refresh_inventory here.
                 # _refresh_inventory rebuilds hands from DB and will clobber any
                 # hand item whose slot DB write hasn't landed yet (race condition
                 # that causes items to be silently replaced by previously-looted boxes).
@@ -680,10 +682,10 @@ def auto_stow_item(session, server, item_dict):
                 log.error("auto_stow_item: DB insert returned None for item_id=%s", item_id)
         else:
             if not item_id:
-                log.warning("auto_stow_item: item has no item_id — placing in hand without DB record")
+                log.warning("auto_stow_item: item has no item_id â€” placing in hand without DB record")
         # Always place in hand in-memory regardless of DB success.
         # An item without inv_id won't survive login but won't cause phantom
-        # slot records either — it simply won't be persisted.
+        # slot records either â€” it simply won't be persisted.
         item_dict['slot'] = 'right_hand'
         item_dict.setdefault('container_id', None)
         session.right_hand = item_dict
@@ -700,7 +702,7 @@ def auto_stow_item(session, server, item_dict):
                 log.error("auto_stow_item: DB insert returned None for item_id=%s", item_id)
         else:
             if not item_id:
-                log.warning("auto_stow_item: item has no item_id — placing in hand without DB record")
+                log.warning("auto_stow_item: item has no item_id â€” placing in hand without DB record")
         item_dict['slot'] = 'left_hand'
         item_dict.setdefault('container_id', None)
         session.left_hand = item_dict
@@ -856,7 +858,7 @@ async def cmd_get(session, cmd, args, server):
         is_inline = found in cont.get('contents', [])
 
         if is_inline:
-            # Inline item (treasure drop not yet in DB) — add to DB now
+            # Inline item (treasure drop not yet in DB) â€” add to DB now
             cont['contents'].remove(found)
             if found.get("item_type") == "coins":
                 amount = found.get("coin_amount", found.get("value", 0))
@@ -882,7 +884,7 @@ async def cmd_get(session, cmd, args, server):
             found["container_id"] = None
             setattr(session, hand_slot, found)
         else:
-            # DB-backed item — just update slot
+            # DB-backed item â€” just update slot
             _db_update_slot(server, found.get('inv_id'), hand_slot)
             if found in session.inventory:
                 session.inventory.remove(found)
@@ -992,7 +994,7 @@ async def cmd_drop(session, cmd, args, server):
         if item:
             _clear_hand(session, hand, server)
         else:
-            # Not in hands — check loose/unplaced items (no slot, no container_id)
+            # Not in hands â€” check loose/unplaced items (no slot, no container_id)
             item = _find_loose_item(session, args.strip())
             if not item:
                 await session.send_line("You don't seem to be holding that.")
@@ -1000,7 +1002,7 @@ async def cmd_drop(session, cmd, args, server):
             # Remove from in-memory inventory
             if item in session.inventory:
                 session.inventory.remove(item)
-            # Remove from DB — purge all orphaned records for this item
+            # Remove from DB â€” purge all orphaned records for this item
             if server.db and item.get('inv_id'):
                 server.db.remove_item_from_inventory(item['inv_id'])
             elif server.db and session.character_id and item.get('item_id'):
@@ -1049,7 +1051,7 @@ async def cmd_drop(session, cmd, args, server):
     if server.db and item.get('inv_id'):
         server.db.remove_item_from_inventory(item['inv_id'])
     elif server.db and session.character_id and item.get('item_id'):
-        # inv_id wasn't set — sweep ALL records for this character+item_id
+        # inv_id wasn't set â€” sweep ALL records for this character+item_id
         # that have no container (slot=NULL or slot=hand) to avoid ghost "unplaced" entries.
         try:
             conn = server.db._get_conn()
@@ -1143,7 +1145,7 @@ async def cmd_put(session, cmd, args, server):
             item['inv_id'] = inv_id
             _db_update_container(server, inv_id, cont.get('inv_id'))
 
-    # Update in-memory directly — never call _refresh_inventory after a hand operation
+    # Update in-memory directly â€” never call _refresh_inventory after a hand operation
     # as it rebuilds hands from DB and can restore stale slot records for old items.
     item['slot']         = None
     item['container_id'] = cont.get('inv_id')
@@ -1312,7 +1314,7 @@ async def cmd_wear(session, cmd, args, server):
         if inv_id:
             item['inv_id'] = inv_id
 
-    # Update in-memory directly — no _refresh_inventory
+    # Update in-memory directly â€” no _refresh_inventory
     item['slot']         = slot
     item['container_id'] = None
     if item not in session.inventory:
@@ -1439,7 +1441,7 @@ async def cmd_stow(session, cmd, args, server):
             item['inv_id'] = inv_id
             _db_update_container(server, inv_id, default_cont.get('inv_id'))
 
-    # Update in-memory directly — no _refresh_inventory
+    # Update in-memory directly â€” no _refresh_inventory
     item['slot']         = None
     item['container_id'] = default_cont.get('inv_id')
     if item not in session.inventory:
@@ -1485,7 +1487,7 @@ async def cmd_open(session, cmd, args, server):
         elif cont.get('is_locked'):
             await session.send_line(
                 colorize(
-                    f"You cannot open {_item_display(cont)} — it is locked.  "
+                    f"You cannot open {_item_display(cont)} â€” it is locked.  "
                     "You will need to pick the lock first.",
                     TextPresets.WARNING
                 )
@@ -1556,7 +1558,7 @@ def _item_stat_lines(item: dict) -> list:
     """
     Return a list of colored strings describing an item's stats.
     Used by both INSPECT and the shop ORDER/CONFIRM preview.
-    All stats are shown — no hidden numbers.
+    All stats are shown â€” no hidden numbers.
     """
     from server.core.protocol.colors import colorize, TextPresets
     from math import ceil
@@ -1564,18 +1566,18 @@ def _item_stat_lines(item: dict) -> list:
     lines = []
     itype = (item.get('item_type') or '').lower()
 
-    SYS  = TextPresets.SYSTEM       # bold blue  — labels
-    VAL  = TextPresets.ITEM_NAME    # yellow     — values
-    WARN = TextPresets.WARNING      # bright yellow — penalties
-    OK   = TextPresets.HEALTH_FULL  # bright green  — bonuses
+    SYS  = TextPresets.SYSTEM       # bold blue  â€” labels
+    VAL  = TextPresets.ITEM_NAME    # yellow     â€” values
+    WARN = TextPresets.WARNING      # bright yellow â€” penalties
+    OK   = TextPresets.HEALTH_FULL  # bright green  â€” bonuses
 
     def _kv(label, value, color=VAL):
         return f"  {colorize(label + ':', SYS)} {colorize(str(value), color)}"
 
     def _section(title):
-        return colorize(f"  ── {title} {'─' * max(0, 38 - len(title))}", SYS)
+        return colorize(f"  â”€â”€ {title} {'â”€' * max(0, 38 - len(title))}", SYS)
 
-    # ── Weapon ────────────────────────────────────────────────────────────
+    # â”€â”€ Weapon â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if itype == 'weapon':
         cat  = (item.get('weapon_category') or item.get('weapon_type') or 'unknown').replace('_', ' ')
         df   = item.get('damage_factor') or 0.0
@@ -1609,7 +1611,7 @@ def _item_stat_lines(item: dict) -> list:
         val = item.get('value') or 0
         lines.append(_kv('Base value', f"~{val} silver"))
 
-    # ── Armor ─────────────────────────────────────────────────────────────
+    # â”€â”€ Armor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     elif itype == 'armor':
         asg  = item.get('armor_asg') or 1
         grp  = _ASG_GROUPS.get(int(asg), f"ASG {asg}")
@@ -1640,7 +1642,7 @@ def _item_stat_lines(item: dict) -> list:
         val = item.get('value') or 0
         lines.append(_kv('Base value', f"~{val} silver"))
 
-    # ── Shield ────────────────────────────────────────────────────────────
+    # â”€â”€ Shield â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     elif itype == 'shield':
         size = (item.get('shield_size') or 'small').title()
         ds   = item.get('shield_ds') or 0
@@ -1665,7 +1667,7 @@ def _item_stat_lines(item: dict) -> list:
         val = item.get('value') or 0
         lines.append(_kv('Base value', f"~{val} silver"))
 
-    # ── Container ─────────────────────────────────────────────────────────
+    # â”€â”€ Container â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     elif itype == 'container':
         cap  = item.get('container_capacity') or 0
         wt   = item.get('weight') or 1.0
@@ -1682,7 +1684,7 @@ def _item_stat_lines(item: dict) -> list:
         val = item.get('value') or 0
         lines.append(_kv('Base value', f"~{val} silver"))
 
-    # ── Gem ───────────────────────────────────────────────────────────────
+    # â”€â”€ Gem â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     elif itype == 'gem':
         val = item.get('value') or 0
         fam = (item.get('gem_family') or '').title()
@@ -1691,7 +1693,7 @@ def _item_stat_lines(item: dict) -> list:
             lines.append(_kv('Family', fam))
         lines.append(_kv('Appraised value', f"~{val} silver", OK))
 
-    # ── Herb / Consumable ─────────────────────────────────────────────────
+    # â”€â”€ Herb / Consumable â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     elif itype in ('herb', 'consumable'):
         ht   = (item.get('herb_heal_type') or item.get('heal_type') or '').replace('_', ' ')
         ha   = item.get('herb_heal_amount') or item.get('heal_amount') or 0
@@ -1710,7 +1712,7 @@ def _item_stat_lines(item: dict) -> list:
             lines.append(_kv('Use roundtime', f"{hr}s"))
         lines.append(_kv('Weight', f"{float(wt):.1f} lbs"))
 
-    # ── Lockpick ──────────────────────────────────────────────────────────
+    # â”€â”€ Lockpick â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     elif itype == 'misc' and (item.get('lockpick_modifier') or 0) != 0:
         lpm  = float(item.get('lockpick_modifier') or 0)
         wt   = item.get('weight') or 1.0
@@ -1720,7 +1722,7 @@ def _item_stat_lines(item: dict) -> list:
         val = item.get('value') or 0
         lines.append(_kv('Base value', f"~{val} silver"))
 
-    # ── Misc / Jewelry ────────────────────────────────────────────────────
+    # â”€â”€ Misc / Jewelry â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     else:
         wt  = item.get('weight') or 1.0
         val = item.get('value') or 0
@@ -1787,25 +1789,25 @@ async def cmd_inspect(session, cmd, args, server):
 
     desc = item.get('description') or item.get('examine_text') or ''
 
-    # Dye vial — show color, usage instructions, and price hint
+    # Dye vial â€” show color, usage instructions, and price hint
     if item.get('item_type') == 'dye':
         from server.core.protocol.colors import colorize, TextPresets
         dye_color = (item.get('color') or '').strip()
         await session.send_line(desc)
         await session.send_line('')
-        await session.send_line(colorize('  ── Dye Vial ──────────────────────────────────', TextPresets.SYSTEM))
+        await session.send_line(colorize('  â”€â”€ Dye Vial â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€', TextPresets.SYSTEM))
         if dye_color:
             await session.send_line(f"  Color  : {colorize(dye_color, TextPresets.ITEM_NAME)}")
         await session.send_line( "  Usage  : DYE <worn item> " + (dye_color or '<color>'))
         await session.send_line( "           DYE HAIR " + (dye_color or '<color>'))
         await session.send_line( "           DYE <item> REMOVE   (strips dye, no vial needed)")
         await session.send_line( "  Notes  : One vial per application.  Overwrites existing color.")
-        await session.send_line( "           Works on anything you wear — clothing, armor, accessories.")
-        await session.send_line(colorize('  ───────────────────────────────────────────────', TextPresets.SYSTEM))
+        await session.send_line( "           Works on anything you wear â€” clothing, armor, accessories.")
+        await session.send_line(colorize('  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€', TextPresets.SYSTEM))
         await session.send_line('')
         return
 
-    # Order slip — show full order details instead of generic stats
+    # Order slip â€” show full order details instead of generic stats
     if item.get("is_order_slip") or item.get("noun") == "order slip":
         from server.core.protocol.colors import colorize, TextPresets
         # Pull details from session's active/ready order lists
@@ -1823,7 +1825,7 @@ async def cmd_inspect(session, cmd, args, server):
             paid    = order.get("price_paid", 0)
             shop    = order.get("shop_name", "Unknown")
             ready   = order.get("ready", False)
-            status  = colorize("READY — return to shop and type REDEEM", TextPresets.ITEM_NAME) \
+            status  = colorize("READY â€” return to shop and type REDEEM", TextPresets.ITEM_NAME) \
                       if ready else colorize("In progress...", TextPresets.SYSTEM)
             await session.send_line(colorize("  \u2500\u2500 Custom Order Details \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500", TextPresets.SYSTEM))
             await session.send_line(f"  Item   : {colorize(oitem.get('name','unknown'), TextPresets.ITEM_NAME)}")
@@ -1937,7 +1939,10 @@ async def cmd_loot(session, cmd, args, server):
         exclude=session
     )
 
-    if generate_treasure and server.db:
+    if getattr(creature, 'searched', False):
+        await session.send_line('  You find nothing more of value.')
+    elif generate_treasure and server.db:
+        creature.searched = True
         loot = generate_treasure(server.db, creature)
 
         if loot['coins'] > 0:
@@ -1951,7 +1956,7 @@ async def cmd_loot(session, cmd, args, server):
             )
 
         for item in loot.get('items', []):
-            item_id = item.get('id')
+            item_id = item.get('item_id') or item.get('id')
             if not item_id:
                 item_id = server.db.get_or_create_item(
                     name=item.get('name', 'something'),
@@ -1967,7 +1972,6 @@ async def cmd_loot(session, cmd, args, server):
 
             success, location, fail_msg = auto_stow_item(session, server, item)
             if success:
-                # If item is a locked container (box), persist its state to DB now
                 if item.get('item_type') == 'container' and item.get('inv_id'):
                     _db_save_item_state(server, item['inv_id'], item)
                 await session.send_line('  You find ' + fmt_item_name(display) + ' and put it in your ' + location + '.')
@@ -1996,53 +2000,8 @@ async def cmd_loot(session, cmd, args, server):
                     f"  {session.character_name} finds {display} and leaves it on the ground.",
                     exclude=session
                 )
-
-        if loot.get('skin') and not creature.skinned:
-            skin_item = {
-                'name': creature.skin, 'short_name': creature.skin,
-                'noun': creature.skin.split()[-1], 'item_type': 'skin',
-                'value': creature.level * 10,
-            }
-            skin_id = server.db.get_or_create_item(
-                name=creature.skin, short_name=creature.skin,
-                noun=creature.skin.split()[-1],
-                item_type='skin', value=creature.level * 10,
-                description='A ' + creature.skin + '.'
-            )
-            skin_item['item_id'] = skin_id
-            creature.skinned = True
-            found_anything = True
-
-            success, location, fail_msg = auto_stow_item(session, server, skin_item)
-            if success:
-                await session.send_line('  You find ' + fmt_item_name(creature.skin) + ' and put it in your ' + location + '.')
-                await server.world.broadcast_to_room(
-                    room.id,
-                    f"  {session.character_name} finds {creature.skin} and puts it in their {location}.",
-                    exclude=session
-                )
-            else:
-                if hasattr(server, "world"):
-                    server.world.add_ground_item(
-                        room.id,
-                        skin_item,
-                        dropped_by_character_id=session.character_id,
-                        dropped_by_name=session.character_name,
-                        source="skin",
-                    )
-                else:
-                    if not hasattr(room, '_ground_items'):
-                        room._ground_items = []
-                    room._ground_items.append(skin_item)
-                left_on_ground.append(creature.skin)
-                await session.send_line('  You find ' + fmt_item_name(creature.skin) + '!')
-                await server.world.broadcast_to_room(
-                    room.id,
-                    f"  {session.character_name} finds {creature.skin} and leaves it on the ground.",
-                    exclude=session
-                )
-
     else:
+        creature.searched = True
         treasure = creature.treasure
         if treasure.get('coins'):
             coins = random.randint(1, creature.level * 20 + 10)
@@ -2075,11 +2034,10 @@ async def cmd_loot(session, cmd, args, server):
             session.silver
         )
 
-    server.creatures.remove_creature(creature)
+    if can_remove_corpse(creature):
+        server.creatures.remove_creature(creature)
     session.set_roundtime(3)
     await session.send_line(roundtime_msg(3))
-
-
 # =========================================================
 # YELL
 # =========================================================
@@ -2124,8 +2082,8 @@ async def cmd_yell(session, cmd, args, server):
 
 async def cmd_get_all(session, cmd, args, server):
     """
-    GET ALL              — Drain an open coffer/chest/box held in either hand.
-    GET ALL FROM <box>   — Same but specifies which box if holding two containers.
+    GET ALL              â€” Drain an open coffer/chest/box held in either hand.
+    GET ALL FROM <box>   â€” Same but specifies which box if holding two containers.
 
     Rules:
       - ONLY works on containers currently held in your hands.
@@ -2138,12 +2096,12 @@ async def cmd_get_all(session, cmd, args, server):
     """
     _ensure_hands(session)
 
-    # ── Find the target box — HANDS ONLY ─────────────────────────────────
+    # â”€â”€ Find the target box â€” HANDS ONLY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     box      = None
     box_slot = None
 
     if args:
-        # GET ALL FROM <box> — match against held containers only
+        # GET ALL FROM <box> â€” match against held containers only
         stripped = args.strip().lower()
         if stripped.startswith("from "):
             stripped = stripped[5:].strip()
@@ -2163,7 +2121,7 @@ async def cmd_get_all(session, cmd, args, server):
             )
             return
     else:
-        # No args — look for an open container in hand only
+        # No args â€” look for an open container in hand only
         for slot in ("right_hand", "left_hand"):
             item = getattr(session, slot, None)
             if item and item.get("item_type") == "container" and item.get("opened"):
@@ -2194,7 +2152,7 @@ async def cmd_get_all(session, cmd, args, server):
         await session.send_line("That has been destroyed.")
         return
 
-    # ── Find largest worn container to stow into ──────────────────────────
+    # â”€â”€ Find largest worn container to stow into â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def _largest_container(session, exclude=None):
         """Return the worn container with the most free space (backpack preferred)."""
         containers = _get_worn_containers(session)
@@ -2230,7 +2188,7 @@ async def cmd_get_all(session, cmd, args, server):
     stowed         = []
     couldnt_stow   = []
 
-    # ── 1. Coins first ─────────────────────────────────────────────────────
+    # â”€â”€ 1. Coins first â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     remaining_contents = []
     for item in contents:
         if item.get("item_type") == "coins":
@@ -2254,12 +2212,12 @@ async def cmd_get_all(session, cmd, args, server):
                 session.silver
             )
 
-    # ── 2. Stow everything else ────────────────────────────────────────────
+    # â”€â”€ 2. Stow everything else â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     for item in remaining_contents:
         iname = colorize(item.get("name") or "something", TextPresets.ITEM_NAME)
 
         if dest and dest_free > 0:
-            # Resolve item_id — dynamic treasure items (scrolls, wands, etc.)
+            # Resolve item_id â€” dynamic treasure items (scrolls, wands, etc.)
             # are stored inline without a real item_id.  Mint one now so they
             # survive as proper DB-backed inventory rows.
             item_id = item.get("item_id") or item.get("id")
@@ -2293,7 +2251,7 @@ async def cmd_get_all(session, cmd, args, server):
                     )
                     continue
 
-            # No DB record possible — still track in session.inventory so
+            # No DB record possible â€” still track in session.inventory so
             # inv full can display it (container_id links it to dest).
             item["container_id"] = dest.get("inv_id")
             item["slot"]         = None
@@ -2304,16 +2262,16 @@ async def cmd_get_all(session, cmd, args, server):
             stowed.append((item.get("name", "something"), dest_name))
             await session.send_line(f"  You put {iname} in your {dest_name}.")
         else:
-            # Can't stow — stays in box
+            # Can't stow â€” stays in box
             couldnt_stow.append(item)
             await session.send_line(
-                colorize(f"  No room — {item.get('name', 'something')} stays in the box.", TextPresets.WARNING)
+                colorize(f"  No room â€” {item.get('name', 'something')} stays in the box.", TextPresets.WARNING)
             )
 
     # Update the box's inline contents to only what couldn't be stowed
     box["contents"] = couldnt_stow
 
-    # ── 3. Handle the now-empty (or partially empty) box ──────────────────
+    # â”€â”€ 3. Handle the now-empty (or partially empty) box â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if not couldnt_stow:
         box["opened"] = False
 
@@ -2346,7 +2304,7 @@ async def cmd_get_all(session, cmd, args, server):
                     f"  {disp_box} is empty and closed."
                 )
         else:
-            # Pack is full — keep box where it was, just close it
+            # Pack is full â€” keep box where it was, just close it
             await session.send_line(
                 f"  {disp_box} is empty.  You close it."
             )
@@ -2354,7 +2312,7 @@ async def cmd_get_all(session, cmd, args, server):
         items_left = len(couldnt_stow)
         await session.send_line(
             colorize(
-                f"  {items_left} item{'s' if items_left > 1 else ''} could not be stowed — {disp_box} remains open.",
+                f"  {items_left} item{'s' if items_left > 1 else ''} could not be stowed â€” {disp_box} remains open.",
                 TextPresets.WARNING
             )
         )
@@ -2367,3 +2325,4 @@ async def cmd_get_all(session, cmd, args, server):
             f"{session.character_name} empties {src} into their pack.",
             exclude=session
         )
+

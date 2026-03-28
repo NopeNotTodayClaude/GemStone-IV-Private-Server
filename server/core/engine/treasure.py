@@ -782,8 +782,4 @@ def generate_treasure(db, creature):
         if herb:
             result["items"].append(herb)
 
-    # Skin
-    if creature.skin and not creature.skinned:
-        result["skin"] = creature.skin
-
     return result

@@ -7,10 +7,20 @@ effect logic in Lua.
 
 import logging
 import re
+import time
 
 from server.core.protocol.colors import colorize, roundtime_msg, TextPresets
+from server.core.engine.magic_effects import get_active_buff_totals, is_visible_to
 
 log = logging.getLogger(__name__)
+
+
+def _is_silenced(session, server) -> bool:
+    status = getattr(server, "status", None)
+    if status and status.has(session, "silenced"):
+        return True
+    buffs = _active_buff_totals(session, server)
+    return bool(buffs.get("silenced"))
 
 
 def _get_spell_engine(server):
@@ -30,7 +40,13 @@ def _lua_returns(raw):
     return (raw,)
 
 
-def _equipped_armor_asg(session):
+def _active_buff_totals(session, server=None):
+    if not server:
+        return {}
+    return get_active_buff_totals(server, session)
+
+
+def _equipped_armor_asg(session, server=None):
     asg = 1
     for item in getattr(session, "inventory", []) or []:
         if item.get("item_type") == "armor" and item.get("slot"):
@@ -38,10 +54,14 @@ def _equipped_armor_asg(session):
                 asg = max(asg, int(item.get("armor_asg") or 1))
             except (TypeError, ValueError):
                 pass
+    buffs = _active_buff_totals(session, server)
+    override = int(buffs.get("armor_asg_override", 0) or 0)
+    if override > asg:
+        asg = override
     return asg
 
 
-def _session_to_spell_entity(session):
+def _session_to_spell_entity(session, server=None):
     room_id = session.current_room.id if getattr(session, "current_room", None) else 0
     return {
         "id": int(getattr(session, "character_id", 0) or 0),
@@ -54,7 +74,7 @@ def _session_to_spell_entity(session):
         "position": getattr(session, "stance", "neutral") or "neutral",
         "stance": getattr(session, "stance", "neutral") or "neutral",
         "current_room_id": int(room_id or 0),
-        "torso_armor_asg": _equipped_armor_asg(session),
+        "torso_armor_asg": _equipped_armor_asg(session, server),
         "in_sanctuary": bool(getattr(getattr(session, "current_room", None), "is_sanctuary", False)),
         "stat_strength": int(getattr(session, "stat_strength", 50) or 50),
         "stat_constitution": int(getattr(session, "stat_constitution", 50) or 50),
@@ -69,8 +89,8 @@ def _session_to_spell_entity(session):
     }
 
 
-def _player_target_entity(target_session):
-    entity = _session_to_spell_entity(target_session)
+def _player_target_entity(target_session, server=None):
+    entity = _session_to_spell_entity(target_session, server)
     entity["ranged_ds"] = 0
     entity["ds_bolt"] = 0
     entity["td"] = 0
@@ -113,7 +133,7 @@ def _resolve_room_target(session, server, target_name):
         if player is session:
             continue
         pname = (getattr(player, "character_name", "") or "").lower()
-        if pname.startswith(target_name):
+        if pname.startswith(target_name) and is_visible_to(server, session, player):
             return player
 
     if hasattr(server, "creatures"):
@@ -138,11 +158,11 @@ def _resolve_default_target(session):
     return None
 
 
-def _target_to_entity(target):
+def _target_to_entity(target, server=None):
     if target is None:
         return None
     if hasattr(target, "character_id"):
-        return _player_target_entity(target)
+        return _player_target_entity(target, server)
     return _creature_to_spell_entity(target)
 
 
@@ -174,6 +194,140 @@ def _clear_prepared_scroll_state(session):
     session.prepared_spell = None
     if hasattr(session, "_prepared_spell"):
         session._prepared_spell = None
+    if hasattr(session, "_prepared_lua_spell_number"):
+        session._prepared_lua_spell_number = None
+
+
+def _lookup_spell_number(server, spell_arg):
+    text = (spell_arg or "").strip()
+    if not text:
+        return None
+    numeric = int(text) if text.isdigit() else None
+    if numeric is not None:
+        return numeric
+    db = getattr(server, "db", None)
+    if not db:
+        return None
+    try:
+        rows = db.execute_query(
+            "SELECT spell_number FROM spells WHERE UPPER(mnemonic)=UPPER(%s) OR UPPER(name)=UPPER(%s) LIMIT 1",
+            (text, text),
+        )
+    except Exception:
+        return None
+    if not rows:
+        return None
+    row = rows[0]
+    if isinstance(row, dict):
+        return int(row.get("spell_number") or 0) or None
+    if isinstance(row, (tuple, list)) and row:
+        return int(row[0] or 0) or None
+    return None
+
+
+_WOUND_GROUPS = {
+    1102: ("right_arm", "left_arm", "right_hand", "left_hand", "right_leg", "left_leg"),
+    1103: ("chest", "abdomen", "back", "nervous_system"),
+    1104: ("head", "neck", "right_eye", "left_eye"),
+    1105: ("chest", "abdomen", "back", "nervous_system"),
+    1111: ("right_arm", "left_arm", "right_hand", "left_hand", "right_leg", "left_leg"),
+    1112: ("chest", "abdomen", "back", "nervous_system"),
+    1113: ("head", "neck", "right_eye", "left_eye"),
+    1114: ("chest", "abdomen", "back", "nervous_system"),
+}
+
+
+def _pick_spell_heal_location(target_session, spell_number):
+    wounds = getattr(target_session, "wounds", {}) or {}
+    groups = _WOUND_GROUPS.get(spell_number, ())
+    if not groups:
+        return None
+    scars_only = spell_number in (1111, 1112, 1113, 1114)
+    candidates = []
+    for loc in groups:
+        entry = wounds.get(loc)
+        if not isinstance(entry, dict):
+            continue
+        wound_rank = int(entry.get("wound_rank", 0) or 0)
+        scar_rank = int(entry.get("scar_rank", 0) or 0)
+        if scars_only:
+            score = scar_rank
+            if score > 0:
+                candidates.append((score, loc))
+        else:
+            score = wound_rank
+            if score > 0:
+                candidates.append((score, loc))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
+async def _apply_post_cast_side_effects(session, server, spell_number, target_obj, verb="cast"):
+    bridge = getattr(server, "wound_bridge", None)
+    if not bridge:
+        return ""
+
+    target_session = target_obj if hasattr(target_obj, "character_id") else session
+    extra_lines = []
+
+    if spell_number in _WOUND_GROUPS:
+        loc = _pick_spell_heal_location(target_session, spell_number)
+        if loc:
+            result = bridge.empath_heal(session, target_session, loc)
+            if result.get("ok"):
+                try:
+                    await bridge.save_wounds(target_session)
+                except Exception:
+                    pass
+                msg = (result.get("message") or "").strip()
+                if msg:
+                    extra_lines.append(msg)
+
+    if spell_number == 1140:
+        loc = None
+        wounds = getattr(target_session, "wounds", {}) or {}
+        ranked = []
+        for loc_key, entry in wounds.items():
+            if isinstance(entry, dict):
+                ranked.append((max(int(entry.get("wound_rank", 0) or 0), int(entry.get("scar_rank", 0) or 0)), loc_key))
+        ranked = [item for item in ranked if item[0] > 0]
+        if ranked:
+            ranked.sort(reverse=True)
+            loc = ranked[0][1]
+        if loc:
+            result = bridge.empath_heal(session, target_session, loc)
+            if result.get("ok"):
+                try:
+                    await bridge.save_wounds(target_session)
+                except Exception:
+                    pass
+                msg = (result.get("message") or "").strip()
+                if msg:
+                    extra_lines.append(msg)
+
+    if spell_number == 1150:
+        wounds = getattr(target_session, "wounds", {}) or {}
+        ranked = []
+        for loc_key, entry in wounds.items():
+            if isinstance(entry, dict):
+                ranked.append((max(int(entry.get("wound_rank", 0) or 0), int(entry.get("scar_rank", 0) or 0)), loc_key))
+        ranked = [item for item in ranked if item[0] > 0]
+        if ranked:
+            ranked.sort(reverse=True)
+            for _, loc in ranked[:2]:
+                result = bridge.empath_heal(session, target_session, loc)
+                if result.get("ok"):
+                    msg = (result.get("message") or "").strip()
+                    if msg:
+                        extra_lines.append(msg)
+            try:
+                await bridge.save_wounds(target_session)
+            except Exception:
+                pass
+
+    return ("\n" + "\n".join(extra_lines)) if extra_lines else ""
 
 
 def _apply_lua_char_updates(engine, lua_char, session):
@@ -309,6 +463,9 @@ async def cmd_send(session, cmd, args, server):
 
 
 async def cmd_prepare(session, cmd, args, server):
+    if _is_silenced(session, server):
+        await session.send_line(colorize("  You are silenced and cannot shape the words of a spell.", TextPresets.WARNING))
+        return
     spell_arg = (args or "").strip()
     if not spell_arg:
         await session.send_line("Prepare which spell?")
@@ -319,11 +476,12 @@ async def cmd_prepare(session, cmd, args, server):
         await session.send_line("The magic system is unavailable right now.")
         return
 
-    raw_char = engine.python_to_lua(_session_to_spell_entity(session))
+    raw_char = engine.python_to_lua(_session_to_spell_entity(session, server))
     raw = engine.call_hook(spell_engine, "prepare", raw_char, spell_arg)
     ok, message = _lua_returns(raw)[:2]
     if ok:
         _clear_prepared_scroll_state(session)
+        session._prepared_lua_spell_number = _lookup_spell_number(server, spell_arg)
         await session.send_line(colorize(f"  {message}", TextPresets.SYSTEM))
         session.set_roundtime(3)
         await session.send_line(roundtime_msg(3))
@@ -344,14 +502,19 @@ async def cmd_release(session, cmd, args, server):
         await session.send_line("The magic system is unavailable right now.")
         return
 
-    raw_char = engine.python_to_lua(_session_to_spell_entity(session))
+    raw_char = engine.python_to_lua(_session_to_spell_entity(session, server))
     raw = engine.call_hook(spell_engine, "release", raw_char)
     ok, message = _lua_returns(raw)[:2]
+    if ok:
+        session._prepared_lua_spell_number = None
     preset = TextPresets.SYSTEM if ok else TextPresets.WARNING
     await session.send_line(colorize(f"  {message}", preset))
 
 
 async def cmd_cast(session, cmd, args, server):
+    if _is_silenced(session, server):
+        await session.send_line(colorize("  You are silenced and cannot cast.", TextPresets.WARNING))
+        return
     target = None
     if (args or "").strip():
         target = _resolve_room_target(session, server, args.strip())
@@ -367,8 +530,8 @@ async def cmd_cast(session, cmd, args, server):
         await session.send_line("The magic system is unavailable right now.")
         return
 
-    raw_char = engine.python_to_lua(_session_to_spell_entity(session))
-    raw_target = engine.python_to_lua(_target_to_entity(target)) if target else None
+    raw_char = engine.python_to_lua(_session_to_spell_entity(session, server))
+    raw_target = engine.python_to_lua(_target_to_entity(target, server)) if target else None
     verb = (cmd or "cast").strip().lower()
 
     if prepared:
@@ -388,6 +551,7 @@ async def cmd_cast(session, cmd, args, server):
         message = values[1] if len(values) > 1 else "The spell fizzles."
         if ok:
             _clear_prepared_scroll_state(session)
+            message = f"{message}{await _apply_post_cast_side_effects(session, server, spell_number, target, verb)}"
             await session.send_line(colorize(f"  {message}", TextPresets.SYSTEM))
             if getattr(server, "guild", None):
                 try:
@@ -401,6 +565,7 @@ async def cmd_cast(session, cmd, args, server):
             await session.send_line(colorize(f"  {message}", TextPresets.WARNING))
         return
 
+    spell_number = int(getattr(session, "_prepared_lua_spell_number", 0) or 0)
     raw = engine.call_hook(spell_engine, "cast", raw_char, raw_target, verb)
     values = _lua_returns(raw)
     ok = bool(values[0]) if values else False
@@ -408,6 +573,8 @@ async def cmd_cast(session, cmd, args, server):
     _apply_lua_char_updates(engine, raw_char, session)
     _refresh_post_spell_state(session, server)
     if ok:
+        message = f"{message}{await _apply_post_cast_side_effects(session, server, spell_number, target, verb)}"
+        session._prepared_lua_spell_number = None
         await session.send_line(colorize(f"  {message}", TextPresets.SYSTEM))
         if getattr(server, "guild", None):
             try:
@@ -417,10 +584,14 @@ async def cmd_cast(session, cmd, args, server):
         session.set_roundtime(3)
         await session.send_line(roundtime_msg(3))
     else:
+        session._prepared_lua_spell_number = None
         await session.send_line(colorize(f"  {message}", TextPresets.WARNING))
 
 
 async def cmd_incant(session, cmd, args, server):
+    if _is_silenced(session, server):
+        await session.send_line(colorize("  You are silenced and cannot incant a spell.", TextPresets.WARNING))
+        return
     spell_arg, target_obj = _split_spell_and_target(session, server, args)
     if not spell_arg:
         await session.send_line("Incant which spell?")
@@ -434,8 +605,9 @@ async def cmd_incant(session, cmd, args, server):
         await session.send_line("The magic system is unavailable right now.")
         return
 
-    raw_char = engine.python_to_lua(_session_to_spell_entity(session))
-    raw_target = engine.python_to_lua(_target_to_entity(target_obj)) if target_obj else None
+    raw_char = engine.python_to_lua(_session_to_spell_entity(session, server))
+    raw_target = engine.python_to_lua(_target_to_entity(target_obj, server)) if target_obj else None
+    spell_number = _lookup_spell_number(server, spell_arg) or 0
     raw = engine.call_hook(spell_engine, "incant", raw_char, spell_arg, raw_target, "cast")
     values = _lua_returns(raw)
     ok = bool(values[0]) if values else False
@@ -444,6 +616,7 @@ async def cmd_incant(session, cmd, args, server):
     _refresh_post_spell_state(session, server)
     if ok:
         _clear_prepared_scroll_state(session)
+        message = f"{message}{await _apply_post_cast_side_effects(session, server, spell_number, target_obj, 'cast')}"
         await session.send_line(colorize(f"  {message}", TextPresets.SYSTEM))
         if getattr(server, "guild", None):
             try:

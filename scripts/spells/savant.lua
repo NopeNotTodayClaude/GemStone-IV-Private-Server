@@ -65,10 +65,33 @@ end
 
 local handlers = {}
 
+handlers[1408] = function(ctx)
+    if not ctx.result.hit or not ctx.target then
+        return "The astral spear misses its mark."
+    end
+    local dmg = math.max(9, math.floor(((ctx.result.total or 101) - 100) * 1.25))
+    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
+    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, ctx.target.id })
+    return string.format("An astral spear punches through %s for %d damage!", ctx.target.name or "your target", dmg)
+end
+
 handlers[1409] = function(ctx)
     local target_id = ctx.target and ctx.target.id or ctx.caster.id
     ActiveBuffs.apply(target_id, 1409, CIRCLE_ID, ctx.caster.id, 180, { ds=20, displace=true })
     return "Space ripples and your outline slips slightly out of alignment."
+end
+
+handlers[1414] = function(ctx)
+    if not ctx.result.hit or not ctx.target then
+        return "The mana burst dissipates harmlessly."
+    end
+    local pulses = 2 + math.floor((ctx.circle_ranks or 1) / 20)
+    local per_pulse = math.max(4, math.floor(((ctx.result.total or 101) - 100) / 3))
+    local total = pulses * per_pulse
+    local new_hp = math.max(0, (ctx.target.health_current or 0) - total)
+    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, ctx.target.id })
+    DB.execute("UPDATE characters SET mana_current=GREATEST(0, mana_current-?) WHERE id=?", { pulses, ctx.target.id })
+    return string.format("A mana burst hammers %s with %d astral pulses for %d damage!", ctx.target.name or "your target", pulses, total)
 end
 
 handlers[1417] = function(ctx)

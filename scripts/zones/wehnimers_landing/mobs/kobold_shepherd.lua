@@ -47,7 +47,7 @@ Creature.loot_coins   = true
 Creature.loot_gems    = true
 Creature.loot_magic   = true
 Creature.loot_boxes   = true
-Creature.skin         = "a kobold shepherd crook"
+Creature.skin         = "a kobold ear"
 Creature.special_loot = {}
 
 -- ── Decay / Death Behavior ────────────────────────────────────────────────

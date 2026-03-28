@@ -92,6 +92,7 @@ function Bolt.calculate_as(caster, spell_aiming_ranks, as_override)
     local total_buff = 0
     for _, b in ipairs(buff_as) do
         total_buff = total_buff + (b.effects.as_bonus or 0)
+        total_buff = total_buff + (b.effects.bolt_as_bonus or 0)
     end
     return base_as + stance + total_buff + (as_override or 0)
 end
@@ -159,6 +160,11 @@ function Bolt.resolve(caster, target, spell_number, spell_aiming_ranks,
 
     -- ── DS is passed in (computed by combat system) ───────────────────
     local ds_val = target_ds or 0
+    if target and target.id then
+        for _, b in ipairs(ActiveBuffs.get_active(target.id) or {}) do
+            ds_val = ds_val + (b.effects.bolt_resist or 0)
+        end
+    end
 
     -- ── Roll ──────────────────────────────────────────────────────────
     local d100  = math.random(1, 100)

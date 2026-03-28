@@ -63,6 +63,7 @@ class Creature:
         })
         self.skin = template.get("skin", None)
         self.skinned = False
+        self.searched = False
 
         # State
         self.current_room_id = 0
@@ -94,6 +95,9 @@ class Creature:
         # GS4 crit ranks 1-2=minor(1), 3-4=moderate(2), 5-6=major(3), 7-8=severe(4), 9=crippling(5)
         self.wounds: dict = {}
         self.status_effects: dict = {}
+        self.disarmed = False
+        self.severed_locations: set[str] = set()
+        self._stance_tick_counter = 0
 
     @property
     def full_name(self):
@@ -149,7 +153,75 @@ class Creature:
         """Pick a random attack from available attacks."""
         if not self.attacks:
             return None
-        return random.choice(self.attacks)
+        usable = [atk for atk in self.attacks if self._attack_is_usable(atk)]
+        if usable:
+            return random.choice(usable)
+        if self.attacks:
+            return self._fallback_unarmed_attack()
+        return None
+
+    def _fallback_unarmed_attack(self):
+        """Fallback when a creature loses effective weapon use."""
+        body_type = (getattr(self, "body_type", "biped") or "biped").lower()
+        if body_type in ("quadruped", "avian", "arachnid", "insectoid"):
+            return {
+                "name": "claw",
+                "as": max(5, int(self.as_melee * 0.55)),
+                "damage_type": "slash",
+                "verb_first": "lashes at you desperately",
+                "verb_third": "lashes at {target} desperately",
+                "roundtime": 5,
+            }
+        if body_type == "ophidian":
+            return {
+                "name": "bite",
+                "as": max(5, int(self.as_melee * 0.60)),
+                "damage_type": "puncture",
+                "verb_first": "snaps at you wildly",
+                "verb_third": "snaps at {target} wildly",
+                "roundtime": 5,
+            }
+        return {
+            "name": "kick",
+            "as": max(5, int(self.as_melee * 0.45)),
+            "damage_type": "crush",
+            "verb_first": "kicks at you awkwardly",
+            "verb_third": "kicks at {target} awkwardly",
+            "roundtime": 5,
+        }
+
+    def _attack_is_armed(self, attack: dict) -> bool:
+        """Best-effort classification for attacks that rely on a hand/weapon limb."""
+        name = str((attack or {}).get("name", "") or "").lower().strip()
+        armed = {
+            "broadsword", "dagger", "scimitar", "longsword", "two_handed_sword",
+            "morning_star", "mace", "military_pick", "spear", "handaxe", "staff",
+            "short_sword", "rapier", "falchion", "battle_axe", "war_hammer",
+            "club", "quarterstaff", "katana", "halberd", "trident", "naginata",
+            "jeddart_axe", "awl_pike", "lance", "pick", "hammer", "blackjack",
+        }
+        return name in armed
+
+    def _attack_is_usable(self, attack: dict) -> bool:
+        """Filter attacks that are no longer viable due to limb loss."""
+        if not attack:
+            return False
+        name = str(attack.get("name", "") or "").lower()
+        if self._attack_is_armed(attack):
+            if self.disarmed or self.location_disabled("right hand") or self.location_disabled("right arm"):
+                return False
+        if name in {"kick", "stomp", "trample", "charge"}:
+            if self.location_disabled("right leg") and self.location_disabled("left leg"):
+                return False
+        return True
+
+    def location_disabled(self, location: str) -> bool:
+        sev = int((self.wounds or {}).get(location, 0) or 0)
+        return sev >= 4
+
+    def location_severed(self, location: str) -> bool:
+        sev = int((self.wounds or {}).get(location, 0) or 0)
+        return sev >= 5
 
     def get_melee_as(self, attack=None):
         """Get attack strength, degraded by wounds and HP percentage."""
@@ -185,6 +257,16 @@ class Creature:
             if torso_loc in locs:
                 penalty += self.wounds.get(torso_loc, 0) * 3
                 break
+
+        if attack and self._attack_is_armed(attack):
+            if self.location_disabled("right hand") or self.location_disabled("right arm"):
+                penalty += 55
+            if self.location_severed("right hand") or self.location_severed("right arm"):
+                penalty += 35
+        if self.location_disabled("left hand") or self.location_disabled("left arm"):
+            penalty += 10
+        if self.location_disabled("right leg") or self.location_disabled("left leg"):
+            penalty += 8
 
         # ── HP-based degradation (GS4 wiki: creatures fight worse when hurt) ─
         if self.health_max > 0:
@@ -249,6 +331,11 @@ class Creature:
         for loc, mult in DS_DEFEND.get(bt, DS_DEFEND["biped"]):
             penalty += self.wounds.get(loc, 0) * mult
 
+        if self.location_disabled("right leg") or self.location_disabled("left leg"):
+            penalty += 15
+        if self.location_disabled("right hand") or self.location_disabled("left hand"):
+            penalty += 8
+
         # ── HP-based degradation ──────────────────────────────────────────────
         if self.health_max > 0:
             hp_pct = self.health_current / self.health_max
@@ -275,7 +362,59 @@ class Creature:
         current = self.wounds.get(location, 0)
         if new_sev > current:
             self.wounds[location] = new_sev
+            if new_sev >= 4:
+                if location in {"right hand", "right arm", "left hand", "left arm", "right leg", "left leg"}:
+                    self.severed_locations.discard(location)
+            if new_sev >= 5:
+                self.severed_locations.add(location)
+            if location in {"right hand", "right arm"} and new_sev >= 4:
+                self.disarmed = True
         return self.wounds.get(location, new_sev)
+
+    def evaluate_combat_impairment(self, location: str, old_sev: int, new_sev: int) -> dict:
+        """
+        Return combat consequences caused by a worsening wound.
+        Used by the combat engine to message drop/sever/stance fallout cleanly.
+        """
+        result = {
+            "dropped_weapon": False,
+            "severed": False,
+            "location": location,
+            "stance_shift": None,
+        }
+        if new_sev <= old_sev:
+            return result
+        if location in {"right hand", "right arm"} and new_sev >= 4 and old_sev < 4:
+            self.disarmed = True
+            result["dropped_weapon"] = True
+        if new_sev >= 5 and old_sev < 5:
+            result["severed"] = True
+            self.severed_locations.add(location)
+        if location in {"right leg", "left leg"} and new_sev >= 4:
+            result["stance_shift"] = "guarded"
+        elif location in {"head", "chest", "abdomen", "right hand", "right arm"} and new_sev >= 4:
+            result["stance_shift"] = "defensive"
+        return result
+
+    def choose_stance(self):
+        """Simple creature stance AI driven by HP, wounds, and gear profile."""
+        armed = any(self._attack_is_armed(atk) for atk in (self.attacks or []))
+        hp_pct = (self.health_current / self.health_max) if self.health_max else 1.0
+        severe_wounds = sum(1 for sev in (self.wounds or {}).values() if int(sev or 0) >= 4)
+        leg_disabled = self.location_disabled("right leg") or self.location_disabled("left leg")
+        attack_limb_disabled = self.location_disabled("right hand") or self.location_disabled("right arm")
+
+        if leg_disabled or severe_wounds >= 2 or hp_pct <= 0.18:
+            self.stance = "defensive"
+        elif attack_limb_disabled or hp_pct <= 0.35:
+            self.stance = "guarded"
+        elif armed and hp_pct >= 0.75 and severe_wounds == 0:
+            self.stance = "forward"
+        elif hp_pct >= 0.90 and not self.wounds:
+            self.stance = "advance"
+        else:
+            self.stance = "neutral"
+        return self.stance
 
     def wound_summary(self) -> str:
         """Return a short text summary of active wounds for display."""

@@ -109,10 +109,12 @@ function Hindrance.calculate(circle_id, asg, armor_use_ranks, character_id)
 
     -- Active buff reductions (e.g. Faith's Clarity 1612)
     local redux = 0
+    local penalty = 0
     if character_id then
         redux = ActiveBuffs.total_hindrance_redux(character_id)
+        penalty = ActiveBuffs.total_hindrance_penalty(character_id)
     end
-    local effective_base = math.max(0, base - redux)
+    local effective_base = math.max(0, base - redux + penalty)
     if effective_base == 0 then return 0 end
 
     -- Required Armor Use bonus to reach minimum hindrance

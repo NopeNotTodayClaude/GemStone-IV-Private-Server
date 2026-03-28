@@ -52,7 +52,7 @@ Creature.loot_coins      = true
 Creature.loot_gems       = true
 Creature.loot_magic      = true
 Creature.loot_boxes      = true
-Creature.skin            = "a ghoul finger"
+Creature.skin            = "a ghoul master claw"
 Creature.special_loot = {
 
 }

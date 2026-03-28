@@ -42,7 +42,7 @@ Creature.loot_coins   = true
 Creature.loot_gems    = true
 Creature.loot_magic   = true
 Creature.loot_boxes   = true
-Creature.skin         = "a pale crab claw"
+Creature.skin         = "a pale crab pincer"
 Creature.special_loot = {}
 
 -- ── Decay / Death Behavior ────────────────────────────────────────────────

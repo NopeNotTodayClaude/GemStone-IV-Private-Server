@@ -315,6 +315,23 @@ LOOT_SFX_RE = re.compile(
     r"(?:\bYou find\b|\bfinds\b).*(?:silver coins|and puts it in their|and leaves it on the ground)",
     re.I,
 )
+ENEMY_DEATH_SFX_RE = re.compile(
+    r"(?:falls to the ground dead|falls dead from the off-hand blow|rolls over and dies|"
+    r"crumples to the ground|stops moving|ceases to move|collapses in a heap|is no more)",
+    re.I,
+)
+SEVER_SFX_RE = re.compile(
+    r"(?:The strike severs .+?'s .+!|The off-hand strike severs .+?'s .+!|The shot severs .+?'s .+!)",
+    re.I,
+)
+PLAYER_DEATH_SFX_RE = re.compile(
+    r"(?:You have been slain\.|You have bled to death!)",
+    re.I,
+)
+ORDER_READY_SFX_RE = re.compile(
+    r"(?:your order is ready!|Your order of .+ is ready!\s+Return and type REDEEM while holding your slip\.)",
+    re.I,
+)
 
 # Enemy detection — "You also see X" and "X just arrived" patterns
 # Matches: "You also see a fanged rodent [Level 1]." and similar
@@ -353,6 +370,10 @@ SFX_LOOT = "yodguard-drop-or-pickup-item-1-387916.mp3"
 SFX_HIDE = "gargamel10-rustling-leaves-378798.mp3"
 SFX_AMBUSH = "dragon-studio-sword-slice-2-393845.mp3"
 SFX_SLEEP = "scottishperson-sound-effect-cat-snoring-262650.mp3"
+SFX_ENEMY_DEATH = "universfield-fast-body-fall-impact-352725.mp3"
+SFX_SEVER = "Chopping Off Limb-SoundBible.com-884800545.mp3"
+SFX_PLAYER_DEATH = "ribhavagrawal-female-character-screamgaming-style-230506.mp3"
+SFX_ORDER_READY = "freesound_community-bing1-91919.mp3"
 
 
 def _load_room_id_set(path: str) -> set[int]:
@@ -2753,6 +2774,8 @@ class HUDApp:
         if wounds_snap is not None:
             self._wounds = wounds_snap
             self._update_wounds_panel()
+        self._current_aim = str(snap.get("aimed_location", None) or "").strip().lower()
+        self._update_bodypart_btn()
 
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -6907,6 +6930,18 @@ class HUDApp:
             return
         if LEVEL_UP_SFX_RE.search(clean):
             self._play_sfx(SFX_LEVEL_UP)
+            return
+        if PLAYER_DEATH_SFX_RE.search(clean):
+            self._play_sfx(SFX_PLAYER_DEATH)
+            return
+        if SEVER_SFX_RE.search(clean):
+            self._play_sfx(SFX_SEVER)
+            return
+        if ENEMY_DEATH_SFX_RE.search(clean):
+            self._play_sfx(SFX_ENEMY_DEATH)
+            return
+        if ORDER_READY_SFX_RE.search(clean):
+            self._play_sfx(SFX_ORDER_READY)
             return
         if HIDE_SFX_RE.search(clean):
             self._play_sfx(SFX_HIDE)

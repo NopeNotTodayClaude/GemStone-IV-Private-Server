@@ -58,6 +58,16 @@ def _mgr():
     return None
 
 
+def _buffed(entity, key: str) -> bool:
+    if _SERVER is None:
+        return False
+    try:
+        from server.core.engine.magic_effects import has_effect
+        return has_effect(_SERVER, entity, key)
+    except Exception:
+        return False
+
+
 # ── Legacy EFFECT_DEFS (kept for anything that imports the dict directly) ─────
 
 EFFECT_DEFS = {
@@ -191,11 +201,15 @@ def apply_major_bleed(entity, severity: int, attacker=None):
 
 def apply_poison(entity, magnitude: float = 60.0, duration: float = 120.0):
     """Standard poison: magnitude = initial damage/tick, dissipates -5/tick."""
+    if _buffed(entity, "poison_resist") or _buffed(entity, "gas_immune"):
+        return
     apply_effect(entity, "poisoned", duration, stacks=1, magnitude=magnitude)
 
 
 def apply_major_poison(entity, magnitude: float = 1.0, duration: float = 180.0):
     """Major poison: magnitude = stack count for % health damage."""
+    if _buffed(entity, "poison_resist") or _buffed(entity, "gas_immune"):
+        return
     apply_effect(entity, "major_poison", duration, stacks=int(magnitude), magnitude=1)
 
 
@@ -209,6 +223,8 @@ def apply_stun(entity, duration: float):
 
 
 def apply_fear(entity, duration: float = 30.0):
+    if _buffed(entity, "fear_immune"):
+        return
     apply_effect(entity, "fear", duration, stacks=1)
 
 

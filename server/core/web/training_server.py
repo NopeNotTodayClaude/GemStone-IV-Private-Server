@@ -879,7 +879,17 @@ function render(){
   document.getElementById('char-badge').textContent=char.name+' \u00b7 Level '+char.level;
   refreshTP();
   const main=document.getElementById('main');main.innerHTML='';
-  for(const[cat,ids]of Object.entries(char.categories)){
+  const preferredOrder = ['Combat', 'Magic', 'Survival', 'General', 'Lore'];
+  const orderedCats = [];
+  for(const cat of preferredOrder){
+    if(char.categories && Object.prototype.hasOwnProperty.call(char.categories, cat)){
+      orderedCats.push([cat, char.categories[cat]]);
+    }
+  }
+  for(const [cat, ids] of Object.entries(char.categories || {})){
+    if(!preferredOrder.includes(cat)) orderedCats.push([cat, ids]);
+  }
+  for(const[cat,ids]of orderedCats){
     const sec=document.createElement('div');sec.className='cat';
     sec.innerHTML='<div class="cat-title">'+cat+'</div><div class="sk-head"><span>Skill</span><span style="text-align:center">Ranks</span><span style="text-align:center">Bonus</span><span style="text-align:center">PTP</span><span style="text-align:center">MTP</span><span style="text-align:center">Rnk/Cap</span><span></span></div>';
     for(const id of ids){const sk=char.skills[id];if(sk)sec.appendChild(mkRow(id,sk));}

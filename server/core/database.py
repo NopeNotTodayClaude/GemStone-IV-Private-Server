@@ -334,6 +334,7 @@ class Database:
                 "session_time": int(time.time() - session.connect_time),
                 "character_id": session.character_id,
             })
+            conn.commit()
             return True
         except Exception as e:
             log.error("Failed to save character %s: %s", session.character_name, e)
@@ -1374,9 +1375,10 @@ class Database:
         conn = self._get_conn()
         try:
             cur = conn.cursor()
+            payload = _json_safe_snapshot(extra_data or {})
             cur.execute(
                 "UPDATE character_inventory SET extra_data = %s WHERE id = %s",
-                (_json.dumps(extra_data), inv_id)
+                (_json.dumps(payload), inv_id)
             )
             conn.commit()
             return True
@@ -1836,6 +1838,45 @@ class Database:
         except Exception as e:
             log.error("Failed to execute query: %s", e)
             return []
+        finally:
+            conn.close()
+
+    def get_active_buff_effect_totals(self, character_id):
+        """Aggregate active spell/item buff effects for one character."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute("""
+                SELECT effects_json
+                FROM character_active_buffs
+                WHERE character_id = %s
+                  AND (expires_at IS NULL OR expires_at > NOW())
+            """, (character_id,))
+            totals = {}
+            for row in cur.fetchall() or []:
+                raw = row.get("effects_json")
+                if not raw:
+                    continue
+                try:
+                    effects = json.loads(raw)
+                except Exception:
+                    continue
+                if not isinstance(effects, dict):
+                    continue
+                for key, value in effects.items():
+                    if isinstance(value, bool):
+                        totals[key] = bool(totals.get(key, False) or value)
+                    elif isinstance(value, (int, float)):
+                        if key == "armor_asg_override":
+                            totals[key] = max(int(totals.get(key, 0) or 0), int(value))
+                        else:
+                            totals[key] = totals.get(key, 0) + value
+                    elif value is not None and key not in totals:
+                        totals[key] = value
+            return totals
+        except Exception as e:
+            log.error("Failed to load active buff totals for char %s: %s", character_id, e)
+            return {}
         finally:
             conn.close()
 

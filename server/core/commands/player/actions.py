@@ -269,8 +269,8 @@ async def _use_magic_item(session, use_item, hand, target_name, server):
         await session.send_line(roundtime_msg(3))
         return
 
-    raw_char = engine.python_to_lua(_session_to_spell_entity(session))
-    raw_target = engine.python_to_lua(_target_to_entity(target)) if target else None
+    raw_char = engine.python_to_lua(_session_to_spell_entity(session, server))
+    raw_target = engine.python_to_lua(_target_to_entity(target, server)) if target else None
     raw = engine.call_hook(
         spell_engine,
         "cast_direct",
@@ -292,6 +292,12 @@ async def _use_magic_item(session, use_item, hand, target_name, server):
         session.set_roundtime(3)
         await session.send_line(roundtime_msg(3))
         return
+
+    try:
+        from server.core.commands.player.spellcasting import _apply_post_cast_side_effects
+        message = f"{message}{await _apply_post_cast_side_effects(session, server, spell_number, target, 'cast')}"
+    except Exception:
+        pass
 
     charges -= 1
     use_item["charges"] = max(0, charges)

@@ -42,6 +42,8 @@ Usage
 import logging
 from typing import Optional
 
+from server.core.engine.magic_effects import get_active_buff_totals
+
 log = logging.getLogger(__name__)
 
 
@@ -69,16 +71,23 @@ class WoundBridge:
                 return
 
             self._lua_engine = lua_mgr.engine
-            rt = self._lua_engine._lua
-
-            self._wound_sys  = rt.eval("require('globals/wound_system')")
-            self._treatment  = rt.eval("require('globals/treatment')")
-            self._bleed_sys  = rt.eval("require('globals/bleed_system')")
-            self._herbs      = rt.eval("require('globals/herbs')")
+            self._wound_sys  = self._lua_require("globals/wound_system")
+            self._treatment  = self._lua_require("globals/treatment")
+            self._bleed_sys  = self._lua_require("globals/bleed_system")
+            self._herbs      = self._lua_require("globals/herbs")
             log.info("WoundBridge: Lua wound modules loaded")
 
         except Exception as e:
             log.error("WoundBridge: initialization failed: %s", e, exc_info=True)
+
+    def _lua_require(self, module_name: str):
+        """Require a Lua module and unwrap lupa's multi-return tuples."""
+        if not self._lua_engine:
+            return None
+        loaded = self._lua_engine._lua.eval(f"require('{module_name}')")
+        if isinstance(loaded, tuple):
+            return loaded[0] if loaded else None
+        return loaded
 
     @property
     def available(self) -> bool:
@@ -276,7 +285,7 @@ class WoundBridge:
         Returns dict: { ok, message }
         """
         wounds  = self.get_wounds(session)
-        fa_bonus = self._get_fa_bonus(session)
+        fa_bonus = self._get_fa_bonus(session, self._server)
 
         if not self.available:
             return {'ok': False,
@@ -306,7 +315,7 @@ class WoundBridge:
         Returns dict: { ok, message, hp_restore, mana_restore, cure_poison }
         """
         wounds   = self.get_wounds(session)
-        fa_bonus = self._get_fa_bonus(session)
+        fa_bonus = self._get_fa_bonus(session, self._server)
 
         if not self.available:
             return {'ok': False, 'message': "The herb has no effect. (Lua unavailable)",
@@ -815,15 +824,19 @@ class WoundBridge:
     # ──────────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _get_fa_bonus(session) -> int:
+    def _get_fa_bonus(session, server=None) -> int:
         """Get First Aid skill bonus (ranks * 3). Skill ID 30."""
         SKILL_FIRST_AID = 30
         skills = getattr(session, 'skills', {}) or {}
         fa = skills.get(SKILL_FIRST_AID, {})
+        buff_bonus = 0
+        if server is not None:
+            buffs = get_active_buff_totals(server, session)
+            buff_bonus = int(buffs.get('first_aid_bonus', 0) or 0)
         if isinstance(fa, dict):
             bonus = int(fa.get('bonus', 0))
-            return bonus if bonus else int(fa.get('ranks', 0)) * 3
-        return 0
+            return (bonus if bonus else int(fa.get('ranks', 0)) * 3) + buff_bonus
+        return buff_bonus
 
     def is_bleeding(self, session) -> bool:
         """Quick check: is the player bleeding from any location?"""

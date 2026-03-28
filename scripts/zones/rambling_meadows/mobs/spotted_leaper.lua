@@ -36,7 +36,7 @@ Creature.loot_coins  = false
 Creature.loot_gems   = true
 Creature.loot_magic  = false
 Creature.loot_boxes  = false
-Creature.skin        = "a leaper hide"
+Creature.skin        = "a spotted leaper pelt"
 Creature.special_loot = {}
 
 Creature.decay_seconds = 300

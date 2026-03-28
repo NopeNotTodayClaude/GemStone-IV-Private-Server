@@ -1,4 +1,4 @@
-"""
+﻿"""
 Combat commands - ATTACK, AMBUSH, HIDE, STANCE, KILL, SEARCH, SKIN, LOOT, AIM
 Full GS4-style HIDE system with skill checks, perception, shadows, creature detection.
 LOOT and SKIN auto-stow items into containers with space checks.
@@ -13,7 +13,9 @@ from server.core.protocol.colors import (
     roundtime_msg, item_name as fmt_item_name, combat_damage, combat_crit, combat_death
 )
 from server.core.commands.player.inventory import auto_stow_item
+from server.core.engine.magic_effects import apply_roundtime_effects, get_active_buff_totals
 from server.core.engine.treasure import generate_coins, generate_gem, generate_box, generate_scroll
+from server.core.engine.skinning import can_remove_corpse, resolve_skinning
 from server.core.scripting.loaders.body_types_loader import get_aimable, resolve_aim
 
 log = logging.getLogger(__name__)
@@ -242,20 +244,24 @@ async def _perform_missile_attack(session, creature, weapon, server, *, verb, sk
     player_as = int(raw_as * stance_mult)
     creature_ds = int(getattr(creature, ds_attr, getattr(creature, "ds_ranged", 20)) or 20)
 
-    damage_type = str(weapon.get("damage_type", "puncture") or "puncture").split(",")[0].strip().lower()
-    avd = getattr(server.combat, "AVD_TABLE", {}).get(damage_type, None)
-    if avd is None:
-        from server.core.engine.combat.combat_engine import AVD_TABLE, CRIT_DIVISORS, CRIT_MESSAGES, LETHAL_THRESHOLDS
-    else:
-        from server.core.engine.combat.combat_engine import CRIT_DIVISORS, CRIT_MESSAGES, LETHAL_THRESHOLDS
-    if avd is None:
-        avd = AVD_TABLE.get(damage_type, 30)
-
     d100 = random.randint(1, 100)
-    endroll = d100 + player_as - creature_ds + avd
     location, aim_succeeded = combat._resolve_hit_location(
         session, creature, aimed_location_override=aimed_location, hidden_ambush=False
     )
+    from server.core.engine.combat.combat_engine import (
+        CRIT_DIVISORS, CRIT_MESSAGES, LETHAL_THRESHOLDS,
+        _resolve_damage_profile, LOCATION_DAMAGE_MULT, LOCATION_CRIT_DIV_MULT,
+        SEVERABLE_LOCATIONS,
+    )
+    profile = _resolve_damage_profile(
+        weapon.get("damage_type", "puncture"),
+        getattr(creature, "armor_asg", 5),
+        weapon.get("damage_factor", 0) or None,
+    )
+    damage_type = profile["damage_type"]
+    avd = profile["avd"]
+    weapon_df = profile["df"]
+    endroll = d100 + player_as - creature_ds + avd
 
     weapon_name = weapon.get("short_name") or weapon.get("name") or "weapon"
     creature_display = fmt_creature_name(creature.full_name_with_level)
@@ -276,16 +282,19 @@ async def _perform_missile_attack(session, creature, weapon, server, *, verb, sk
             f"{session.character_name} {verb}s at {creature.full_name} but misses!\n  {roll_line}",
             exclude=session,
         )
-        rt = max(3, min(12, int(weapon.get("weapon_speed", 5) or 5) + 1))
+        rt = int(weapon.get("weapon_speed", 5) or 5) + 1
+        rt = apply_roundtime_effects(rt, server, session, is_bolt=(skill_id == SKILL_RANGED))
+        rt = max(3, min(12, rt))
         session.set_roundtime(rt)
         await session.send_line(roundtime_msg(rt))
         return False
 
-    raw_damage = max(1, int((endroll - 100) * float(weapon.get("damage_factor", 0.30) or 0.30)))
-    crit_divisor = CRIT_DIVISORS.get(getattr(creature, "armor_asg", 5), 5)
+    loc_df_mult = LOCATION_DAMAGE_MULT.get(location, 1.0)
+    raw_damage = max(1, int((endroll - 100) * weapon_df * loc_df_mult))
+    crit_divisor = max(1, int(CRIT_DIVISORS.get(getattr(creature, "armor_asg", 5), 5) * LOCATION_CRIT_DIV_MULT.get(location, 1.0)))
     crit_rank_max = min(9, raw_damage // crit_divisor)
     crit_rank = random.randint(max(1, (crit_rank_max + 1) // 2), crit_rank_max) if crit_rank_max > 0 else 0
-    hp_damage = max(1, int((endroll - 100) * 0.5) + crit_rank * 3)
+    hp_damage = max(1, int((endroll - 100) * (0.42 + (weapon_df * 0.25)) * loc_df_mult) + crit_rank * 3)
     actual_damage = creature.take_damage(hp_damage)
 
     await session.send_line(swing_line)
@@ -296,13 +305,30 @@ async def _perform_missile_attack(session, creature, weapon, server, *, verb, sk
     ))
     if aimed_location and not aim_succeeded:
         await session.send_line(colorize(
-            f"  Your aim drifts — striking the {location} instead!",
+            f"  Your aim drifts â€” striking the {location} instead!",
             TextPresets.SYSTEM,
         ))
     await session.send_line(combat_damage(actual_damage, location))
     if crit_rank > 0:
         crit_msgs = CRIT_MESSAGES.get(damage_type, CRIT_MESSAGES["puncture"])
         await session.send_line(combat_crit(crit_rank, crit_msgs.get(crit_rank, "Critical hit!")))
+    if crit_rank >= 1:
+        old_sev = creature.wounds.get(location, 0)
+        new_sev = creature.apply_wound(location, crit_rank)
+        if new_sev > old_sev:
+            impairment = creature.evaluate_combat_impairment(location, old_sev, new_sev)
+            if impairment.get("dropped_weapon"):
+                await session.send_line(colorize(
+                    f"  {creature.full_name.capitalize()} drops its weapon!",
+                    TextPresets.COMBAT_HIT,
+                ))
+            if impairment.get("severed") and location in SEVERABLE_LOCATIONS:
+                await session.send_line(colorize(
+                    f"  The shot severs {creature.full_name}'s {location}!",
+                    TextPresets.COMBAT_HIT,
+                ))
+            if impairment.get("stance_shift"):
+                creature.stance = impairment["stance_shift"]
     await server.world.broadcast_to_room(
         session.current_room.id,
         f"{session.character_name} {verb}s at {creature.full_name} and connects!\n"
@@ -339,7 +365,9 @@ async def _perform_missile_attack(session, creature, weapon, server, *, verb, sk
         _enter_combat(server, session, creature)
         _refresh_combat(server, session, creature)
 
-    rt = max(3, min(12, int(weapon.get("weapon_speed", 5) or 5) + (1 if skill_id == SKILL_RANGED else 0)))
+    rt = int(weapon.get("weapon_speed", 5) or 5) + (1 if skill_id == SKILL_RANGED else 0)
+    rt = apply_roundtime_effects(rt, server, session, is_bolt=(skill_id == SKILL_RANGED))
+    rt = max(3, min(12, rt))
     session.set_roundtime(rt)
     await session.send_line(roundtime_msg(rt))
     return killed
@@ -838,6 +866,8 @@ def _perception_roll(session, server) -> int:
 
     stat_val  = getattr(session, stat, 50)
     stat_bonus = (stat_val - 50) // sdiv
+    buffs = get_active_buff_totals(server, session)
+    buff_bonus = int(buffs.get("perception_bonus", 0) or 0)
 
     base = random.randint(1, 100)
     if base >= 96:
@@ -845,7 +875,7 @@ def _perception_roll(session, server) -> int:
     elif base <= 5:
         base -= random.randint(1, 10)
 
-    return base + sk_bonus + stat_bonus
+    return base + sk_bonus + stat_bonus + buff_bonus
 
 
 def _room_perception_mod(room, cfg: dict) -> int:
@@ -863,7 +893,7 @@ async def _run_hide_perception_checks(session, room, hide_total: int, server):
     gets a Perception counter-roll.  If their roll beats the hider's total
     (accounting for the hider's built-in bonus), they see through the hide.
 
-    Called only on success — failed hides are already visible.
+    Called only on success â€” failed hides are already visible.
     """
     cfg         = getattr(server, "perception_cfg", {})
     hider_bonus = cfg.get("hide_hider_bonus", 20)
@@ -883,10 +913,10 @@ async def _run_hide_perception_checks(session, room, hide_total: int, server):
         obs_roll = _perception_roll(obs, server) + obs_mod + room_mod
 
         if obs_roll >= hider_side:
-            # Spotted — the observer can still see them
+            # Spotted â€” the observer can still see them
             await obs.send_line(
                 colorize(
-                    f"  You notice {hider_name} attempting to hide — and they don't quite manage it from your perspective.",
+                    f"  You notice {hider_name} attempting to hide â€” and they don't quite manage it from your perspective.",
                     TextPresets.SYSTEM
                 )
             )
@@ -991,7 +1021,7 @@ async def cmd_ambush(session, cmd, args, server):
     stalking_ranks = int(sh_data.get('ranks', 0)) if isinstance(sh_data, dict) else 0
     stalking_bonus = stalking_ranks * 3
 
-    # Ambush skill doesn't exist as separate skill in GS4 — stalking drives it
+    # Ambush skill doesn't exist as separate skill in GS4 â€” stalking drives it
     # Bonus scales with stalking ranks + level for rogues
     prof_id = getattr(session, 'profession_id', 0)
     level   = getattr(session, 'level', 1)
@@ -1058,12 +1088,16 @@ async def cmd_hide(session, cmd, args, server):
     if not room:
         return
 
-    # ── Skill lookup by integer ID ────────────────────────────────────────────
+    # â”€â”€ Skill lookup by integer ID â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     SKILL_STALKING = 26
     skills = getattr(session, 'skills', {}) or {}
     sh_data = skills.get(SKILL_STALKING, {})
     sh_ranks = sh_data.get('ranks', 0) if isinstance(sh_data, dict) else 0
     sh_bonus = sh_ranks * 3   # GS4: each rank = +3 bonus
+    buffs = get_active_buff_totals(server, session)
+    sh_bonus += int(buffs.get("stalking_hiding_bonus", 0) or 0)
+    if buffs.get("movement_bonus"):
+        sh_bonus += 10
 
     # Discipline is 1:1 bonus to hiding (per wiki)
     disc_val = getattr(session, 'stat_discipline', 50)
@@ -1100,7 +1134,7 @@ async def cmd_hide(session, cmd, args, server):
         if item.get('item_type') == 'armor' and item.get('slot') == 'torso':
             armor_pen += abs(item.get('action_penalty', 0) or 0)
 
-    # Creature detection modifier — each hostile creature raises the difficulty
+    # Creature detection modifier â€” each hostile creature raises the difficulty
     # Empty room = no added difficulty at all (should be near auto-success)
     creature_difficulty = 0
     if hasattr(server, 'creatures'):
@@ -1109,7 +1143,7 @@ async def cmd_hide(session, cmd, args, server):
             # Each creature raises difficulty based on their level vs yours
             creature_difficulty += max(10, (c.level - level) * 5 + 15)
 
-    # ── Open d100 roll ────────────────────────────────────────────────────────
+    # â”€â”€ Open d100 roll â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     base_roll = random.randint(1, 100)
     # 5% explode high, 5% go negative (open d100)
     if base_roll >= 96:
@@ -1119,7 +1153,7 @@ async def cmd_hide(session, cmd, args, server):
 
     total = base_roll + sh_bonus + disc_bonus + prof_bonus + room_mod - armor_pen
 
-    # Base difficulty is LOW for an empty room — hiding with no one watching is easy.
+    # Base difficulty is LOW for an empty room â€” hiding with no one watching is easy.
     # Creature presence raises it substantially.  This matches GS4: HIDE in empty
     # room with any skill should succeed the vast majority of the time; hiding in
     # front of hostile creatures is what gets hard.
@@ -1146,7 +1180,7 @@ async def cmd_hide(session, cmd, args, server):
             f"{session.character_name} fades into the shadows.",
             exclude=session
         )
-        # Perception counter-roll — other players may see through the hide
+        # Perception counter-roll â€” other players may see through the hide
         await _run_hide_perception_checks(session, room, total, server)
         if getattr(server, "guild", None):
             await server.guild.record_event(session, "hide_success")
@@ -1242,15 +1276,7 @@ async def cmd_stance(session, cmd, args, server):
 # =========================================================
 
 async def cmd_search(session, cmd, args, server):
-    """SEARCH - Search a dead creature for loot AND scan the room for hidden exits.
-
-    Two phases run every time:
-      1. Room scan — Perception roll vs each hidden exit's search_dc.
-         Reveals exits permanently for this session on success.
-      2. Creature loot — unchanged GS4 loot behaviour on any dead creature.
-
-    If no dead creature is present, only the room scan runs.
-    """
+    """SEARCH - Search a dead creature for loot and scan the room for hidden exits."""
     room = session.current_room
     if not room:
         return
@@ -1262,48 +1288,43 @@ async def cmd_search(session, cmd, args, server):
         normalized_target = "_".join(normalized_target.split())
         search_key = f"search_{normalized_target}"
 
-    cfg   = getattr(server, "perception_cfg", {})
+    cfg = getattr(server, "perception_cfg", {})
     level = getattr(session, "level", 1)
 
-    # ── Phase 1: Room hidden exit scan ────────────────────────────────────
     hidden = getattr(room, "hidden_exits", {})
-    found_exits   = []
-    sensed_exits  = []   # player rolled close but not enough (tease msg)
+    found_exits = []
+    sensed_exits = []
 
     if hidden:
-        room_mod       = _room_perception_mod(room, cfg)
-        level_bonus    = int(level * cfg.get("search_level_mult", 0.5))
-        sense_thresh   = cfg.get("sense_threshold", 15)
+        room_mod = _room_perception_mod(room, cfg)
+        level_bonus = int(level * cfg.get("search_level_mult", 0.5))
+        sense_thresh = cfg.get("sense_threshold", 15)
 
         for key, he in hidden.items():
             trigger = str(he.get("search_trigger") or "search").strip().lower()
             if trigger != search_key:
                 continue
 
-            # Skip already-revealed exits for this session
-            char_id  = getattr(session, "character_id", None)
+            char_id = getattr(session, "character_id", None)
             revealed = getattr(room, "_revealed_hidden_exits", {})
             if char_id and char_id in revealed.get(key, set()):
                 continue
 
-            search_dc  = he.get("search_dc", 20)
-            perc_roll  = _perception_roll(session, server) + room_mod + level_bonus
+            search_dc = he.get("search_dc", 20)
+            perc_roll = _perception_roll(session, server) + room_mod + level_bonus
 
             if perc_roll >= search_dc:
-                # Reveal it
                 room.reveal_hidden_exit(key, session)
                 custom_msg = he.get("message")
-                display    = key[3:] if key.startswith("go_") else key
+                display = key[3:] if key.startswith("go_") else key
                 if custom_msg:
                     found_exits.append(custom_msg)
                 else:
                     found_exits.append(
-                        cfg.get("search_found_exit_msg",
-                                "Your careful search reveals a hidden path: ")
+                        cfg.get("search_found_exit_msg", "Your careful search reveals a hidden path: ")
                         + display
                     )
             elif perc_roll >= (search_dc - sense_thresh):
-                # Close enough to feel something, not enough to see it
                 sensed_exits.append(key)
 
     if getattr(server, "guild", None):
@@ -1312,164 +1333,158 @@ async def cmd_search(session, cmd, args, server):
         except Exception:
             pass
 
-    # ── Phase 2: Creature loot ────────────────────────────────────────────
-    room_id = room.id
-    dead    = server.creatures.get_dead_creatures_in_room(room_id)
-
+    dead = server.creatures.get_dead_creatures_in_room(room.id)
     creature_searched = False
-    found_items    = []
+    found_items = []
     left_on_ground = []
-    db             = getattr(server, "db", None)
+    db = getattr(server, "db", None)
+    loot_creature = None
 
     if dead:
-        creature_searched = True
-        creature = dead[0]
-        await session.send_line(f"You search {creature.full_name}...")
+        loot_creature = dead[0]
+        await session.send_line(f"You search {loot_creature.full_name}...")
 
-        treasure = creature.treasure
-        c_level  = creature.level
+        if getattr(loot_creature, "searched", False):
+            await session.send_line("  You find nothing more of value.")
+        else:
+            loot_creature.searched = True
+            creature_searched = True
 
-        # ── Coins ─────────────────────────────────────────────────────────
-        if treasure.get("coins"):
-            coins = generate_coins(c_level)
-            session.silver += coins
-            found_items.append(
-                f"  You find {colorize(str(coins) + ' silver coins', TextPresets.ITEM_NAME)}!"
-            )
-
-        # ── Gems (40% chance) ─────────────────────────────────────────────
-        if treasure.get("gems") and random.random() < 0.4:
-            gem = generate_gem(db, c_level) if db else _fallback_gem(c_level)
-            if gem:
-                if db:
-                    item_id = db.get_or_create_item(
-                        name=gem["name"], short_name=gem.get("short_name", gem["name"]),
-                        noun=gem.get("noun", "gem"), item_type="gem",
-                        value=gem.get("value", 50),
-                        description=gem.get("description", f"A {gem.get('short_name', gem['name'])}."),
-                    )
-                    gem["item_id"] = item_id
-
-                success, location, _ = auto_stow_item(session, server, gem)
-                if success:
+            loot = generate_treasure(db, loot_creature) if (generate_treasure and db) else None
+            if loot:
+                if loot.get("coins", 0) > 0:
+                    session.silver += loot["coins"]
                     found_items.append(
-                        f"  You find {fmt_item_name(gem['name'])} and put it in your {location}."
+                        f"  You find {colorize(str(loot['coins']) + ' silver coins', TextPresets.ITEM_NAME)}!"
                     )
-                else:
-                    if hasattr(server, "world"):
-                        server.world.add_ground_item(room.id, gem, source="loot")
-                    else:
-                        room._ground_items = getattr(room, "_ground_items", [])
-                        room._ground_items.append(gem)
-                    left_on_ground.append(gem["name"])
-                    found_items.append(f"  You find {fmt_item_name(gem['name'])}!")
 
-            # Second gem at higher levels (20% chance)
-            if c_level >= 10 and random.random() < 0.2:
-                gem2 = generate_gem(db, c_level) if db else _fallback_gem(c_level)
-                if gem2:
-                    if db:
-                        item_id2 = db.get_or_create_item(
-                            name=gem2["name"], short_name=gem2.get("short_name", gem2["name"]),
-                            noun=gem2.get("noun", "gem"), item_type="gem",
-                            value=gem2.get("value", 50),
-                            description=gem2.get("description", f"A {gem2.get('short_name', gem2['name'])}."),
+                for item in loot.get("items", []):
+                    item_id = item.get("item_id") or item.get("id")
+                    if not item_id and db:
+                        item_id = db.get_or_create_item(
+                            name=item.get("name", "something"),
+                            short_name=item.get("short_name", item.get("name", "something")),
+                            noun=item.get("noun", "item"),
+                            item_type=item.get("item_type", "misc"),
+                            value=item.get("value", 0),
+                            description=item.get("description", ""),
                         )
-                        gem2["item_id"] = item_id2
-                    success2, location2, _ = auto_stow_item(session, server, gem2)
-                    if success2:
+                    if item_id:
+                        item["item_id"] = item_id
+
+                    display = item.get("name") or item.get("short_name") or "something"
+                    success, location, _ = auto_stow_item(session, server, item)
+                    if success:
+                        if item.get("item_type") == "container" and item.get("inv_id"):
+                            _db_save_item_state(server, item["inv_id"], item)
                         found_items.append(
-                            f"  You also find {fmt_item_name(gem2['name'])} and put it in your {location2}."
+                            f"  You find {fmt_item_name(display)} and put it in your {location}."
                         )
                     else:
                         if hasattr(server, "world"):
-                            server.world.add_ground_item(room.id, gem2, source="loot")
+                            server.world.add_ground_item(
+                                room.id,
+                                item,
+                                dropped_by_character_id=session.character_id,
+                                dropped_by_name=session.character_name,
+                                source="loot",
+                            )
                         else:
                             room._ground_items = getattr(room, "_ground_items", [])
-                            room._ground_items.append(gem2)
-                        left_on_ground.append(gem2["name"])
-                        found_items.append(f"  You also find {fmt_item_name(gem2['name'])}!")
+                            room._ground_items.append(item)
+                        left_on_ground.append(display)
+                        found_items.append(f"  You find {fmt_item_name(display)}!")
+            else:
+                treasure = getattr(loot_creature, "treasure", {}) or {}
+                c_level = int(getattr(loot_creature, "level", 1) or 1)
 
-        # ── Boxes (30% chance) ────────────────────────────────────────────
-        if treasure.get("boxes") and random.random() < 0.3:
-            box = generate_box(db, c_level) if db else _fallback_box(c_level)
-            if box:
-                if db:
-                    item_id = db.get_or_create_item(
-                        name=box["name"], short_name=box.get("short_name", box["name"]),
-                        noun=box.get("noun", "box"), item_type="container",
-                        value=box.get("value", 30),
-                        description=box.get("description", f"A {box.get('short_name', box['name'])}."),
-                    )
-                    box["item_id"] = item_id
-
-                placed = False
-                for slot in ("right_hand", "left_hand"):
-                    if not getattr(session, slot):
-                        if db and session.character_id and box.get("item_id"):
-                            inv_id = db.add_item_to_inventory(
-                                session.character_id, box["item_id"], slot=slot
-                            )
-                            box["inv_id"] = inv_id
-                            box["slot"]   = slot
-                            db.save_item_extra_data(inv_id, {
-                                "is_locked":       box.get("is_locked", True),
-                                "opened":          box.get("opened", False),
-                                "lock_difficulty": box.get("lock_difficulty", 20),
-                                "trap_type":       box.get("trap_type"),
-                                "trapped":         box.get("trapped", False),
-                                "trap_difficulty": box.get("trap_difficulty", 0),
-                                "trap_checked":    box.get("trap_checked", False),
-                                "trap_detected":   box.get("trap_detected", False),
-                                "trap_disarmed":   box.get("trap_disarmed", False),
-                                "pick_mod_down":   box.get("pick_mod_down", 0),
-                                "contents":        box.get("contents", []),
-                            })
-                        setattr(session, slot, box)
-                        found_items.append(
-                            f"  You find {fmt_item_name(box['name'])} and grab it in your "
-                            f"{'right' if slot == 'right_hand' else 'left'} hand."
-                        )
-                        placed = True
-                        break
-
-                if not placed:
-                    if hasattr(server, "world"):
-                        server.world.add_ground_item(room.id, box, source="loot")
-                    else:
-                        room._ground_items = getattr(room, "_ground_items", [])
-                        room._ground_items.append(box)
-                    left_on_ground.append(box["name"])
-                    found_items.append(f"  You find {fmt_item_name(box['name'])}!")
-
-        # ── Magic items / scrolls (15% chance) ───────────────────────────
-        if treasure.get("magic") and random.random() < 0.15:
-            scroll = generate_scroll(db, c_level) if db else None
-            if scroll:
-                if db:
-                    item_id = db.get_or_create_item(
-                        name=scroll["name"], short_name=scroll.get("short_name", scroll["name"]),
-                        noun=scroll.get("noun", "scroll"), item_type="scroll",
-                        value=scroll.get("value", 0),
-                        description=scroll.get("description", ""),
-                    )
-                    scroll["item_id"] = item_id
-                success, location, _ = auto_stow_item(session, server, scroll)
-                if success:
+                if treasure.get("coins"):
+                    coins = generate_coins(c_level)
+                    session.silver += coins
                     found_items.append(
-                        f"  You find {fmt_item_name(scroll['name'])} and put it in your {location}."
+                        f"  You find {colorize(str(coins) + ' silver coins', TextPresets.ITEM_NAME)}!"
                     )
-                else:
-                    if hasattr(server, "world"):
-                        server.world.add_ground_item(room.id, scroll, source="loot")
-                    else:
-                        room._ground_items = getattr(room, "_ground_items", [])
-                        room._ground_items.append(scroll)
-                    left_on_ground.append(scroll["name"])
-                    found_items.append(f"  You find {fmt_item_name(scroll['name'])}!")
 
-    # ── Output ─────────────────────────────────────────────────────────────
-    # Hidden exit results first
+                if treasure.get("gems") and random.random() < 0.4:
+                    gem = generate_gem(db, c_level) if db else _fallback_gem(c_level)
+                    if gem:
+                        if db and not gem.get("item_id"):
+                            gem["item_id"] = db.get_or_create_item(
+                                name=gem["name"],
+                                short_name=gem.get("short_name", gem["name"]),
+                                noun=gem.get("noun", "gem"),
+                                item_type="gem",
+                                value=gem.get("value", 50),
+                                description=gem.get("description", f"A {gem.get('short_name', gem['name'])}."),
+                            )
+                        success, location, _ = auto_stow_item(session, server, gem)
+                        if success:
+                            found_items.append(
+                                f"  You find {fmt_item_name(gem['name'])} and put it in your {location}."
+                            )
+                        else:
+                            if hasattr(server, "world"):
+                                server.world.add_ground_item(room.id, gem, source="loot")
+                            else:
+                                room._ground_items = getattr(room, "_ground_items", [])
+                                room._ground_items.append(gem)
+                            left_on_ground.append(gem["name"])
+                            found_items.append(f"  You find {fmt_item_name(gem['name'])}!")
+
+                if treasure.get("boxes") and random.random() < 0.3:
+                    box = generate_box(db, c_level) if db else _fallback_box(c_level)
+                    if box:
+                        if db and not box.get("item_id"):
+                            box["item_id"] = db.get_or_create_item(
+                                name=box["name"],
+                                short_name=box.get("short_name", box["name"]),
+                                noun=box.get("noun", "box"),
+                                item_type="container",
+                                value=box.get("value", 30),
+                                description=box.get("description", f"A {box.get('short_name', box['name'])}."),
+                            )
+                        success, location, _ = auto_stow_item(session, server, box)
+                        if success:
+                            if box.get("item_type") == "container" and box.get("inv_id"):
+                                _db_save_item_state(server, box["inv_id"], box)
+                            found_items.append(
+                                f"  You find {fmt_item_name(box['name'])} and put it in your {location}."
+                            )
+                        else:
+                            if hasattr(server, "world"):
+                                server.world.add_ground_item(room.id, box, source="loot")
+                            else:
+                                room._ground_items = getattr(room, "_ground_items", [])
+                                room._ground_items.append(box)
+                            left_on_ground.append(box["name"])
+                            found_items.append(f"  You find {fmt_item_name(box['name'])}!")
+
+                if treasure.get("magic") and random.random() < 0.15:
+                    scroll = generate_scroll(db, c_level) if db else None
+                    if scroll:
+                        if db and not scroll.get("item_id"):
+                            scroll["item_id"] = db.get_or_create_item(
+                                name=scroll["name"],
+                                short_name=scroll.get("short_name", scroll["name"]),
+                                noun=scroll.get("noun", "scroll"),
+                                item_type="scroll",
+                                value=scroll.get("value", 0),
+                                description=scroll.get("description", ""),
+                            )
+                        success, location, _ = auto_stow_item(session, server, scroll)
+                        if success:
+                            found_items.append(
+                                f"  You find {fmt_item_name(scroll['name'])} and put it in your {location}."
+                            )
+                        else:
+                            if hasattr(server, "world"):
+                                server.world.add_ground_item(room.id, scroll, source="loot")
+                            else:
+                                room._ground_items = getattr(room, "_ground_items", [])
+                                room._ground_items.append(scroll)
+                            left_on_ground.append(scroll["name"])
+                            found_items.append(f"  You find {fmt_item_name(scroll['name'])}!")
+
     for msg in found_exits:
         await session.send_line(colorize(f"  {msg}", TextPresets.SYSTEM))
 
@@ -1479,25 +1494,25 @@ async def cmd_search(session, cmd, args, server):
             TextPresets.SYSTEM
         ))
 
-    # Creature loot results
-    if creature_searched:
+    if loot_creature:
         if found_items:
             for line in found_items:
                 await session.send_line(line)
-        else:
+        elif creature_searched:
             await session.send_line("  You find nothing of value.")
 
         if left_on_ground:
             for item_name in left_on_ground:
                 await session.send_line(colorize(
-                    f"  No space remaining — {item_name} was left on the ground.",
+                    f"  No space remaining - {item_name} was left on the ground.",
                     TextPresets.WARNING
                 ))
 
-        if hasattr(server, "experience"):
-            await server.experience.collect_loot_xp(session, dead[0])
+        if creature_searched and hasattr(server, "experience"):
+            await server.experience.collect_loot_xp(session, loot_creature)
 
-        server.creatures.remove_creature(dead[0])
+        if can_remove_corpse(loot_creature):
+            server.creatures.remove_creature(loot_creature)
 
         if db and session.character_id:
             db.save_character_resources(
@@ -1506,8 +1521,6 @@ async def cmd_search(session, cmd, args, server):
                 session.spirit_current, session.stamina_current,
                 session.silver
             )
-
-    # Nothing found at all
     elif not found_exits and not sensed_exits:
         await session.send_line(
             cfg.get("search_nothing_msg", "You search around carefully but find nothing hidden.")
@@ -1515,9 +1528,7 @@ async def cmd_search(session, cmd, args, server):
 
     session.set_roundtime(3)
     await session.send_line(roundtime_msg(3))
-
-
-# ── Fallbacks when DB is unavailable ─────────────────────────────────────────
+# â”€â”€ Fallbacks when DB is unavailable â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # These mirror the tier tables in treasure.py so no-DB servers still get
 # level-appropriate loot.
 
@@ -1580,15 +1591,13 @@ async def cmd_skin(session, cmd, args, server):
     room = session.current_room
     if not room:
         return
-    room_id = room.id
-    dead = server.creatures.get_dead_creatures_in_room(room_id)
 
+    dead = server.creatures.get_dead_creatures_in_room(room.id)
     if not dead:
         await session.send_line("You don't see anything to skin.")
         return
 
     creature = dead[0]
-
     if creature.skinned:
         await session.send_line(f"The {creature.name} has already been skinned.")
         return
@@ -1597,74 +1606,95 @@ async def cmd_skin(session, cmd, args, server):
         await session.send_line(f"You can't skin {creature.full_name}.")
         return
 
-    # Skill check - Survival skill (int ID 23) or level-based
-    SKILL_SURVIVAL = 23
-    _skills = getattr(session, 'skills', {}) or {}
-    _surv = _skills.get(SKILL_SURVIVAL, {})
-    survival_ranks = int(_surv.get('ranks', 0)) if isinstance(_surv, dict) else 0
-    survival_bonus = survival_ranks * 3 if survival_ranks else 50 + session.level * 5
-
-    roll = random.randint(1, 100)
+    outcome = resolve_skinning(session, creature, server)
     creature.skinned = True
 
-    if roll <= survival_bonus:
-        # Success - create skin item and auto-stow
-        skin_data = {
-            'name': creature.skin,
-            'short_name': creature.skin,
-            'noun': creature.skin.split()[-1] if creature.skin else 'skin',
-            'item_type': 'skin',
-            'value': creature.level * 10 + random.randint(1, 20),
-            'article': 'a',
-        }
+    tool = outcome.get("tool")
+    tool_text = ""
+    if tool:
+        tool_name = tool.get("short_name") or tool.get("name") or tool.get("noun")
+        if tool_name:
+            tool_text = f" with your {tool_name}"
 
-        # Get or create the skin item in DB
+    if outcome.get("success"):
+        skin_data = dict(outcome.get("item") or {})
+        spec = outcome.get("spec") or {}
+
         if server.db:
             item_id = server.db.get_or_create_item(
-                name=creature.skin, short_name=creature.skin,
-                noun=skin_data['noun'],
-                item_type='skin', value=skin_data['value'],
-                description=f"The skin of {creature.full_name}."
+                name=skin_data.get("name", creature.skin),
+                short_name=skin_data.get("short_name", skin_data.get("name", creature.skin)),
+                noun=skin_data.get("noun", (creature.skin or "skin").split()[-1]),
+                item_type="skin",
+                value=skin_data.get("base_value", skin_data.get("value", 1)),
+                description=skin_data.get("description", f"The skin of {creature.full_name}."),
             )
-            skin_data['item_id'] = item_id
+            skin_data["item_id"] = item_id
 
-        success, location, fail_msg = auto_stow_item(session, server, skin_data)
+        success, location, _ = auto_stow_item(session, server, skin_data)
+        display_name = skin_data.get("name") or creature.skin
 
         if success:
+            if server.db and skin_data.get("inv_id"):
+                server.db.save_item_extra_data(skin_data["inv_id"], {
+                    "value": skin_data.get("value", 0),
+                    "base_value": skin_data.get("base_value", 0),
+                    "skin_quality": skin_data.get("skin_quality"),
+                    "quality_label": skin_data.get("quality_label"),
+                    "base_skin_name": skin_data.get("base_skin_name", spec.get("name")),
+                })
             await session.send_line(
-                f"You skillfully skin {creature.full_name} and obtain "
-                f"{fmt_item_name(creature.skin)}, placing it in your {location}."
+                f"You skin {creature.full_name}{tool_text} and obtain "
+                f"{fmt_item_name(display_name)}, placing it in your {location}."
             )
         else:
-            # Put on ground
             if hasattr(server, "world"):
-                server.world.add_ground_item(room.id, skin_data, source="skin")
+                server.world.add_ground_item(
+                    room.id,
+                    skin_data,
+                    dropped_by_character_id=session.character_id,
+                    dropped_by_name=session.character_name,
+                    source="skin",
+                )
             else:
-                if not hasattr(room, '_ground_items'):
+                if not hasattr(room, "_ground_items"):
                     room._ground_items = []
                 room._ground_items.append(skin_data)
             await session.send_line(
-                f"You skillfully skin {creature.full_name} and obtain "
-                f"{fmt_item_name(creature.skin)}."
+                f"You skin {creature.full_name}{tool_text} and obtain {fmt_item_name(display_name)}."
             )
             await session.send_line(colorize(
-                f"No space remaining! {creature.skin} was left on the ground.",
+                f"No space remaining! {display_name} was left on the ground.",
                 TextPresets.WARNING
             ))
+
         if getattr(server, "guild", None):
             try:
                 await server.guild.record_bounty_skin(session, skin_data)
             except Exception:
                 pass
     else:
-        await session.send_line(
-            f"You attempt to skin {creature.full_name} but make a mess of it."
-        )
+        if outcome.get("destroyed"):
+            await session.send_line(
+                f"You make a ruinous mess of {creature.full_name}{tool_text}, destroying anything of value."
+            )
+        else:
+            await session.send_line(
+                f"You fail to skin {creature.full_name}{tool_text} cleanly."
+            )
 
-    session.set_roundtime(4)
-    await session.send_line(roundtime_msg(4))
+    if can_remove_corpse(creature):
+        server.creatures.remove_creature(creature)
 
+    roundtime = 4
+    try:
+        skin_cfg = getattr(server, "lua", None).get_skinning() if getattr(server, "lua", None) else {}
+        roundtime = int(((skin_cfg or {}).get("settings") or {}).get("roundtime_seconds", 4) or 4)
+    except Exception:
+        roundtime = 4
 
+    session.set_roundtime(roundtime)
+    await session.send_line(roundtime_msg(roundtime))
 # =========================================================
 # AIM - Persistent body location targeting preference
 # =========================================================
@@ -1688,7 +1718,7 @@ _AIM_ALIASES = {
 
 
 async def cmd_aim(session, cmd, args, server):
-    """AIM [location|clear|random|list] — Set a persistent aimed location preference.
+    """AIM [location|clear|random|list] â€” Set a persistent aimed location preference.
 
     GS4 wiki (AIM verb):
       AIM HEAD           -- Every attack goes for the head
@@ -1700,13 +1730,13 @@ async def cmd_aim(session, cmd, args, server):
     aim_penalty + creature level * 2). On failure the shot drifts to a random
     location adjacent to the aimed spot (not necessarily the aimed one).
 
-    There is no roundtime on AIM — it is a preference command, not an action.
+    There is no roundtime on AIM â€” it is a preference command, not an action.
     """
     arg = (args or "").strip().lower()
 
-    # ── AIM LIST ──────────────────────────────────────────────────────────────
+    # â”€â”€ AIM LIST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if arg in ("list", ""):
-        # Show the universal list (biped) — we can't know target body type here
+        # Show the universal list (biped) â€” we can't know target body type here
         biped_aimable = get_aimable("biped")
         lines = ["Areas at which you may AIM:"]
         # Format in two columns like GS4
@@ -1739,7 +1769,7 @@ async def cmd_aim(session, cmd, args, server):
             await session.send_line(line)
         return
 
-    # ── AIM CLEAR / RANDOM ────────────────────────────────────────────────────
+    # â”€â”€ AIM CLEAR / RANDOM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if arg in ("clear", "random", "none", "off"):
         session.aimed_location = None
         # Persist immediately
@@ -1751,7 +1781,7 @@ async def cmd_aim(session, cmd, args, server):
         ))
         return
 
-    # ── AIM <location> ────────────────────────────────────────────────────────
+    # â”€â”€ AIM <location> â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Resolve aliases first
     canonical = _AIM_ALIASES.get(arg, arg)
 
@@ -1759,7 +1789,7 @@ async def cmd_aim(session, cmd, args, server):
     # (body-type-specific validation happens at attack time)
     resolved = resolve_aim("biped", canonical)
 
-    # If it's not on biped, try other body types — player might be pre-setting
+    # If it's not on biped, try other body types â€” player might be pre-setting
     # for an ophidian or quadruped fight
     if not resolved:
         for bt in ("quadruped", "ophidian", "hybrid", "avian", "arachnid", "insectoid"):
@@ -1776,7 +1806,7 @@ async def cmd_aim(session, cmd, args, server):
 
     session.aimed_location = resolved
 
-    # Persist immediately — AIM preference must survive login
+    # Persist immediately â€” AIM preference must survive login
     if server.db and session.character_id:
         server.db.save_character(session)
 
@@ -1791,7 +1821,7 @@ async def cmd_aim(session, cmd, args, server):
 # =========================================================
 
 async def cmd_feint(session, cmd, args, server):
-    """FEINT <target> — Temporarily halves a creature's DS on your next attack.
+    """FEINT <target> â€” Temporarily halves a creature's DS on your next attack.
     GS4: Uses Combat Maneuvers skill. Costs 3s RT. Debuff lasts 15 seconds.
     """
     if not args:
@@ -1809,13 +1839,13 @@ async def cmd_feint(session, cmd, args, server):
             await session.send_line(f"You don't see any '{args.strip()}' here.")
             return
 
-    # CM skill check — needs at least some training
+    # CM skill check â€” needs at least some training
     cm_ranks = session.skills.get(4, {}).get("ranks", 0)  # SKILL_COMBAT_MANEUVERS = 4
     if cm_ranks < 1:
         await session.send_line("You lack the Combat Maneuvers training to execute a feint.")
         return
 
-    # Success roll — d100 + CM bonus vs creature level * 5
+    # Success roll â€” d100 + CM bonus vs creature level * 5
     import random, time
     cm_bonus  = session.skills.get(4, {}).get("bonus", cm_ranks * 3)
     threshold = creature.level * 5
@@ -1823,7 +1853,7 @@ async def cmd_feint(session, cmd, args, server):
     creature_display = creature.full_name
 
     if roll > threshold:
-        # Success — debuff creature DS for 15 seconds
+        # Success â€” debuff creature DS for 15 seconds
         creature._feint_until = time.time() + 15.0
         await session.send_line(
             colorize(
@@ -1833,7 +1863,7 @@ async def cmd_feint(session, cmd, args, server):
         )
         await session.send_line(
             colorize(
-                f"  {creature_display.capitalize()} is momentarily confused — its defenses are lowered!",
+                f"  {creature_display.capitalize()} is momentarily confused â€” its defenses are lowered!",
                 TextPresets.SYSTEM
             )
         )
@@ -2063,3 +2093,4 @@ async def cmd_mstrike(session, cmd, args, server):
         if creature.is_dead:
             continue
         await server.combat.player_attacks_creature(session, creature)
+

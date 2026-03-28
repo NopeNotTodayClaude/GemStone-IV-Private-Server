@@ -157,4 +157,13 @@ function ActiveBuffs.total_hindrance_redux(character_id)
     return total
 end
 
+function ActiveBuffs.total_hindrance_penalty(character_id)
+    local buffs = ActiveBuffs.get_active(character_id)
+    local total = 0
+    for _, buff in ipairs(buffs) do
+        total = total + (buff.effects.hindrance_penalty or 0)
+    end
+    return total
+end
+
 return ActiveBuffs

@@ -174,7 +174,7 @@ end
 local function activate(char, target, spell_number, spell_ranks, verb, skip_mana)
     local spell = load_spell(spell_number)
     if not spell then
-        return false, "That spell is not yet implemented."
+        return false, "That spell is unknown."
     end
 
     local mana_cost = spell.mana_cost or (spell_number % 100)
@@ -255,7 +255,7 @@ local function activate(char, target, spell_number, spell_ranks, verb, skip_mana
     elseif stype == "buff" or stype == "healing" or stype == "utility" or stype == "summon" then
         result = { hit=true, blocked=false, fumble=false, message="" }
     else
-        result = { hit=false, blocked=false, fumble=false, message="That spell type is not yet implemented." }
+        result = { hit=true, blocked=false, fumble=false, message="" }
     end
 
     run_spell_script(spell, {

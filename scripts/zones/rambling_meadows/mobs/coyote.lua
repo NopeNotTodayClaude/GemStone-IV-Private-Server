@@ -35,7 +35,7 @@ Creature.loot_coins  = false
 Creature.loot_gems   = false
 Creature.loot_magic  = false
 Creature.loot_boxes  = false
-Creature.skin        = "a coyote pelt"
+Creature.skin        = "a coyote tail"
 Creature.special_loot = {}
 
 Creature.decay_seconds = 300

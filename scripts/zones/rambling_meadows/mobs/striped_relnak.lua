@@ -40,7 +40,7 @@ Creature.loot_coins   = false
 Creature.loot_gems    = false
 Creature.loot_magic   = false
 Creature.loot_boxes   = false
-Creature.skin         = "a relnak hide"
+Creature.skin         = "a striped relnak sail"
 Creature.special_loot = {}
 
 -- ── Decay / Death Behavior ────────────────────────────────────────────────

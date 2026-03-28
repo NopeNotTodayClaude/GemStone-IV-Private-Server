@@ -148,6 +148,13 @@ class GameLoop:
                 continue
 
             room = session.current_room
+            buffs = {}
+            try:
+                db = getattr(self.server, "db", None)
+                if db and getattr(session, "character_id", None):
+                    buffs = db.get_active_buff_effect_totals(session.character_id) or {}
+            except Exception:
+                buffs = {}
             supernode = getattr(room, 'supernode', False) if room else False
             is_node   = supernode or (getattr(room, 'safe', False) if room else False)
             position  = getattr(session, 'position', 'standing')
@@ -198,6 +205,7 @@ class GameLoop:
                     node_mult = 1.5 if supernode else 1.0
 
                     hp_regen = max(1, int(base_hp_regen * pos_mult * node_mult))
+                    hp_regen += int(buffs.get("regen_bonus", 0) or 0)
 
                     # Minor bleed (1-2 stacks) halves regen; 3+ already suppresses above
                     if is_bleeding and bleed_stacks > 0:
@@ -207,7 +215,8 @@ class GameLoop:
                                                  session.health_current + hp_regen)
 
             # ── Mana regen ───────────────────────────────────────────────────
-            if session.mana_max > 0 and session.mana_current < session.mana_max:
+            effective_mana_max = int(session.mana_max or 0) + int(buffs.get("max_mana_bonus", 0) or 0)
+            if effective_mana_max > 0 and session.mana_current < effective_mana_max:
                 int_bonus = (getattr(session, 'stat_intuition', 50) - 50) // 4
                 spi_bonus = (getattr(session, 'stat_wisdom',    50) - 50) // 4
                 base_mana_regen = max(1, 1 + int_bonus + spi_bonus)
@@ -215,7 +224,7 @@ class GameLoop:
                 node_mult = 2.0 if is_node else 1.0
                 mana_regen = max(1, int(base_mana_regen * node_mult))
 
-                session.mana_current = min(session.mana_max,
+                session.mana_current = min(effective_mana_max,
                                            session.mana_current + mana_regen)
 
             # ── Stamina regen ─────────────────────────────────────────────────
@@ -248,3 +257,22 @@ class GameLoop:
                 for loc in list(injuries.keys()):
                     if injuries[loc] <= 1:
                         del injuries[loc]
+
+            if buffs.get("wound_regen"):
+                wb = getattr(self.server, "wound_bridge", None)
+                wounds = getattr(session, "wounds", {}) or {}
+                if wb and wounds:
+                    ranked = [
+                        (loc, max(int((entry or {}).get("wound_rank", 0) or 0),
+                                  int((entry or {}).get("scar_rank", 0) or 0)))
+                        for loc, entry in wounds.items()
+                        if isinstance(entry, dict)
+                    ]
+                    ranked = [item for item in ranked if item[1] > 0]
+                    if ranked:
+                        ranked.sort(key=lambda item: item[1], reverse=True)
+                        try:
+                            wb.empath_heal(session, session, ranked[0][0])
+                            await wb.save_wounds(session)
+                        except Exception as e:
+                            log.error("Wound regeneration pulse failed for %s: %s", getattr(session, "character_name", "?"), e)

@@ -167,6 +167,10 @@ class LuaManager:
         from server.core.scripting.loaders.adventurers_guild_loader import load_adventurers_guild
         return self._load_once("adventurers_guild", lambda: load_adventurers_guild(self._engine))
 
+    def get_skinning(self) -> Optional[dict]:
+        from server.core.scripting.loaders.skinning_loader import load_skinning
+        return self._load_once("skinning", lambda: load_skinning(self._engine))
+
     # ── Spell seeding ─────────────────────────────────────────────────────────
 
     async def seed_spells(self) -> dict:

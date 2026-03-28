@@ -31,6 +31,7 @@ from server.core.protocol.colors import colorize, TextPresets
 from server.core.commands.player.movement import _move_player
 from server.core.world.room import normalize_exit_key
 from server.core.engine.encumbrance import encumbrance_pct, carry_capacity, carried_weight
+from server.core.engine.magic_effects import apply_roundtime_effects, get_active_buff_totals
 
 log = logging.getLogger(__name__)
 
@@ -254,7 +255,10 @@ async def cmd_climb(session, cmd, args, server):
     encumb_pen = _get_encumbrance_penalty(session)
     armor_pen  = _get_armor_penalty(session)
 
+    buffs = get_active_buff_totals(server, session)
     total_bonus = climbing_bonus + pf_bonus + dex_bonus + agi_bonus - encumb_pen - armor_pen
+    if buffs.get("movement_bonus"):
+        total_bonus += 10
 
     roll = _open_d100()
     result = roll + total_bonus
@@ -290,6 +294,7 @@ async def cmd_climb(session, cmd, args, server):
             await session.send_line(f"You manage to climb the {display_target}, though it takes some effort.")
             rt = 3
 
+        rt = apply_roundtime_effects(rt, server, session)
         session.set_roundtime(rt)
         await _move_player(session, room, target_room, f"up the {display_target}", server,
                            sneaking=session.hidden or getattr(session, "sneaking", False))
@@ -307,7 +312,8 @@ async def cmd_climb(session, cmd, args, server):
                 colorize(f"  You scrape yourself for {damage} points of damage.", TextPresets.COMBAT_DAMAGE_TAKEN)
             )
 
-        session.set_roundtime(3)
+        rt = apply_roundtime_effects(3, server, session)
+        session.set_roundtime(rt)
 
         if climbing_ranks == 0:
             await session.send_line(
@@ -331,7 +337,8 @@ async def cmd_climb(session, cmd, args, server):
             colorize("  You are lying on the ground.", TextPresets.WARNING)
         )
 
-        session.set_roundtime(5)
+        rt = apply_roundtime_effects(5, server, session)
+        session.set_roundtime(rt)
 
         if session.health_current <= 0:
             await session.send_line(colorize("You have been knocked unconscious!", TextPresets.COMBAT_DEATH))
@@ -389,7 +396,10 @@ async def cmd_swim(session, cmd, args, server):
     difficulty = _get_swim_difficulty(target)
 
     roll = _open_d100()
+    buffs = get_active_buff_totals(server, session)
     total_bonus = swim_bonus + pf_bonus + str_bonus + con_bonus + dex_bonus - encumb_pen - armor_pen
+    if buffs.get("movement_bonus"):
+        total_bonus += 10
     result = roll + total_bonus
     margin = result - difficulty
 
@@ -422,6 +432,7 @@ async def cmd_swim(session, cmd, args, server):
             ))
             rt = 4
 
+        rt = apply_roundtime_effects(rt, server, session)
         session.set_roundtime(rt)
         await _move_player(session, room, target_room, f"swimming toward {display_target}", server, sneaking=False)
         return
@@ -445,7 +456,9 @@ async def cmd_swim(session, cmd, args, server):
                 session.spirit_current, session.stamina_current,
                 session.silver
             )
-        session.set_roundtime(5)
+        rt = apply_roundtime_effects(5, server, session)
+        session.set_roundtime(rt)
         return
 
-    session.set_roundtime(3)
+    rt = apply_roundtime_effects(3, server, session)
+    session.set_roundtime(rt)

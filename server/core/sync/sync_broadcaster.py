@@ -334,6 +334,7 @@ def build_snapshot(session, server) -> dict:
         "room_enemies":   _build_room_enemies(session, server),
         "room_npcs":      _build_room_npcs(session, server),
         "wounds":         _build_wounds(session),
+        "aimed_location": getattr(session, "aimed_location", None),
         "right_hand":     _item_noun(getattr(session, "right_hand", None)),
         "left_hand":      _item_noun(getattr(session, "left_hand",  None)),
     }

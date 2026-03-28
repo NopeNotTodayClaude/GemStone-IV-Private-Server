@@ -48,10 +48,33 @@ end
 
 local handlers = {}
 
+handlers[1700] = function(ctx)
+    if not ctx.result.hit or not ctx.target then
+        return "Arcane power gathers, but fails to find purchase."
+    end
+    local base = math.max(6, math.floor(((ctx.result.total or 101) - 100) * 1.2))
+    local dmg = base + math.floor((ctx.circle_ranks or 1) / 4)
+    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
+    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, ctx.target.id })
+    return string.format("A focused blast of raw arcana slams into %s for %d damage!", ctx.target.name or "your target", dmg)
+end
+
 handlers[1701] = function(ctx)
     local target_id = ctx.target and ctx.target.id or ctx.caster.id
     ActiveBuffs.apply(target_id, 1701, CIRCLE_ID, ctx.caster.id, 180, { ds=15, arcane_decoy=true })
     return "A wavering arcane duplicate shimmers into place."
+end
+
+handlers[1704] = function(ctx)
+    local room_id = ctx.caster.current_room_id
+    if not room_id then
+        return "A haze of stunning vapor curls outward, then dissipates."
+    end
+    local targets = DB.query("SELECT id FROM characters WHERE current_room_id=? AND id!=?", { room_id, ctx.caster.id })
+    for _, row in ipairs(targets) do
+        ActiveBuffs.apply(row.id, 1704, CIRCLE_ID, ctx.caster.id, 8, { stunned=true, ds=-10, as_bonus=-10 })
+    end
+    return string.format("A roiling stun cloud erupts, overwhelming %d nearby target(s).", #targets)
 end
 
 handlers[1705] = function(ctx)
@@ -66,10 +89,42 @@ handlers[1706] = function(ctx)
     return "A halo of living flame wreathes the target."
 end
 
+handlers[1707] = function(ctx)
+    if not ctx.result.hit or not ctx.target then
+        return "Scalding steam billows out, but fails to catch your target."
+    end
+    local dmg = math.max(7, math.floor(((ctx.result.total or 101) - 100) * 1.1))
+    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
+    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, ctx.target.id })
+    return string.format("A hiss of superheated steam scalds %s for %d damage!", ctx.target.name or "your target", dmg)
+end
+
 handlers[1708] = function(ctx)
     local target_id = ctx.target and ctx.target.id or ctx.caster.id
     ActiveBuffs.apply(target_id, 1708, CIRCLE_ID, ctx.caster.id, 180, { td_elemental=10, td_spiritual=10, mystic_impedance=true })
     return "A dense shell of arcane drag settles into place."
+end
+
+handlers[1709] = function(ctx)
+    if not ctx.result.hit or not ctx.target then
+        return "A lash of cold fizzles into harmless frost."
+    end
+    local dmg = math.max(10, math.floor(((ctx.result.total or 101) - 100) * 1.2))
+    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
+    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, ctx.target.id })
+    ActiveBuffs.apply(ctx.target.id, 1709, CIRCLE_ID, ctx.caster.id, 6, { slowed=true, ds=-5 })
+    return string.format("An arc of bitter cold freezes through %s for %d damage!", ctx.target.name or "your target", dmg)
+end
+
+handlers[1710] = function(ctx)
+    if not ctx.result.hit or not ctx.target then
+        return "The arcane acid dissipates before it can bite."
+    end
+    local dmg = math.max(12, math.floor(((ctx.result.total or 101) - 100) * 1.35))
+    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
+    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, ctx.target.id })
+    ActiveBuffs.apply(ctx.target.id, 1710, CIRCLE_ID, ctx.caster.id, 10, { ds=-10, acid_corroded=true })
+    return string.format("A wash of major acid tears into %s for %d damage!", ctx.target.name or "your target", dmg)
 end
 
 handlers[1711] = function(ctx)
@@ -82,6 +137,48 @@ handlers[1712] = function(ctx)
     local target_id = ctx.target and ctx.target.id or ctx.caster.id
     ActiveBuffs.apply(target_id, 1712, CIRCLE_ID, ctx.caster.id, 240, { td_spiritual=20, spirit_guard=true })
     return "A protective arcane ward settles over the spirit."
+end
+
+handlers[1713] = function(ctx)
+    local room_id = ctx.caster.current_room_id
+    if not room_id then
+        return "A deathly cloud gathers, then thins away."
+    end
+    local targets = DB.query("SELECT id, name, health_current FROM characters WHERE current_room_id=? AND id!=?", { room_id, ctx.caster.id })
+    local count = 0
+    for _, row in ipairs(targets) do
+        local hp = math.max(0, tonumber(row.health_current or 0) - (14 + math.floor((ctx.circle_ranks or 1) / 3)))
+        DB.execute("UPDATE characters SET health_current=? WHERE id=?", { hp, row.id })
+        ActiveBuffs.apply(row.id, 1713, CIRCLE_ID, ctx.caster.id, 12, { ds=-10, as_bonus=-10, death_cloud=true })
+        count = count + 1
+    end
+    return string.format("A choking death cloud engulfs %d nearby target(s).", count)
+end
+
+handlers[1714] = function(ctx)
+    if not ctx.result.hit or not ctx.target then
+        return "The ground heaves, but your target keeps its footing."
+    end
+    DB.execute("UPDATE characters SET position='prone' WHERE id=?", { ctx.target.id })
+    ActiveBuffs.apply(ctx.target.id, 1714, CIRCLE_ID, ctx.caster.id, 8, { prone=true, ds=-10 })
+    return string.format("A brutal quake pitches %s to the ground!", ctx.target.name or "your target")
+end
+
+handlers[1715] = function(ctx)
+    local room_id = ctx.caster.current_room_id
+    if not room_id then
+        return "Arcane fire gathers overhead, then gutters out."
+    end
+    local targets = DB.query("SELECT id, health_current FROM characters WHERE current_room_id=? AND id!=?", { room_id, ctx.caster.id })
+    local count = 0
+    for _, row in ipairs(targets) do
+        local dmg = 16 + math.floor((ctx.circle_ranks or 1) / 2)
+        local hp = math.max(0, tonumber(row.health_current or 0) - dmg)
+        DB.execute("UPDATE characters SET health_current=? WHERE id=?", { hp, row.id })
+        ActiveBuffs.apply(row.id, 1715, CIRCLE_ID, ctx.caster.id, 10, { burning=true, burn_dmg=4, ds=-5 })
+        count = count + 1
+    end
+    return string.format("Firestorm rains devastation across %d nearby target(s).", count)
 end
 
 handlers[1716] = function(ctx)

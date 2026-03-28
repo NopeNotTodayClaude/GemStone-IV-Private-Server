@@ -25,6 +25,7 @@ from typing import Dict, List, Optional
 from server.core.entity.creature.creature import Creature
 from server.core.entity.creature.creature_data import get_template, get_all_templates, register_templates
 from server.core.entity.creature.lua_mob_loader import load_all_mob_luas
+from server.core.engine.magic_effects import has_effect
 from server.core.protocol.colors import creature_name, creature_arrival, creature_departure, colorize, TextPresets
 
 log = logging.getLogger(__name__)
@@ -433,6 +434,7 @@ class CreatureManager:
             if not creature.can_act():
                 continue
             if creature.in_combat and creature.target:
+                creature.choose_stance()
                 target = creature.target
                 if getattr(target, "is_dead", False):
                     creature.in_combat = False; creature.target = None; continue
@@ -451,8 +453,12 @@ class CreatureManager:
                     creature.in_combat = False; creature.target = None
                 continue
             if creature.aggressive:
+                creature.choose_stance()
                 players = [p for p in self.server.world.get_players_in_room(creature.current_room_id)
-                           if p.state == "playing" and not p.hidden and not getattr(p, "is_dead", False)]
+                           if p.state == "playing"
+                           and not p.hidden
+                           and not has_effect(self.server, p, "invisible")
+                           and not getattr(p, "is_dead", False)]
                 if players:
                     target = random.choice(players)
                     creature.in_combat = True; creature.target = target
@@ -473,7 +479,7 @@ class CreatureManager:
             if not creature.alive or not creature.aggressive:
                 continue
             hidden = [p for p in self.server.world.get_players_in_room(creature.current_room_id)
-                      if p.state == "playing" and p.hidden]
+                      if p.state == "playing" and p.hidden and not has_effect(self.server, p, "invisible")]
             if not hidden:
                 continue
             perception = creature.level * 3 + random.randint(1, 50)

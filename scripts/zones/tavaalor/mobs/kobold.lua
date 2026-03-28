@@ -37,7 +37,7 @@ Creature.loot_coins  = true
 Creature.loot_gems   = true
 Creature.loot_magic  = false
 Creature.loot_boxes  = true
-Creature.skin        = "a tattered kobold skin"
+Creature.skin        = "a kobold skin"
 Creature.special_loot = { "a kobold ear" }
 
 -- Decay

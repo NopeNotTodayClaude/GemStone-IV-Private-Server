@@ -36,6 +36,7 @@ import time as _time
 from server.core.protocol.colors import (
     colorize, TextPresets, item_name as fmt_item_name, roundtime_msg
 )
+from server.core.engine.magic_effects import get_active_buff_totals
 from server.core.engine.treasure import TRAP_DEFS
 from server.data.items.lockpicks.lockpicks import (
     get_material_data, get_condition, effective_modifier,
@@ -63,6 +64,11 @@ def _skill_ranks(session, skill_id: int) -> int:
 def _skill_bonus(session, skill_id: int) -> int:
     ranks = _skill_ranks(session, skill_id)
     return ranks * 3 if ranks else session.level * 2
+
+
+def _buff_bonus(session, server, key: str) -> int:
+    buffs = get_active_buff_totals(server, session)
+    return int(buffs.get(key, 0) or 0)
 
 
 def _rogue_lockmastery_ranks(session) -> int:
@@ -515,7 +521,11 @@ async def cmd_detect(session, cmd, args, server):
             await session.send_line(colorize("  Use DISARM to neutralize it.", TextPresets.SYSTEM))
         else:
             # Detection roll
-            dis_skill = _skill_bonus(session, SKILL_DISARMING_TRAPS) + focus_bonus
+            dis_skill = (
+                _skill_bonus(session, SKILL_DISARMING_TRAPS)
+                + _buff_bonus(session, server, "disarming_traps_bonus")
+                + focus_bonus
+            )
             int_bonus = _stat_bonus(getattr(session, "stat_intuition", 50))
             trap_diff = box.get("trap_difficulty", session.level * 12)
             d100, _   = _open_roll(0)
@@ -672,7 +682,13 @@ async def cmd_disarm(session, cmd, args, server):
         ))
 
     # ── Compute endroll ──────────────────────────────────────────────────
-    dis_skill  = _skill_bonus(session, SKILL_DISARMING_TRAPS) + tool_bonus - no_tool_penalty + focus_bonus
+    dis_skill  = (
+        _skill_bonus(session, SKILL_DISARMING_TRAPS)
+        + _buff_bonus(session, server, "disarming_traps_bonus")
+        + tool_bonus
+        - no_tool_penalty
+        + focus_bonus
+    )
     dex_bonus  = _stat_bonus(getattr(session, "stat_dexterity", 50))
     trap_diff  = box.get("trap_difficulty", session.level * 12) + trap["diff_bonus"]
 
@@ -757,6 +773,15 @@ async def cmd_disarm(session, cmd, args, server):
 async def _trigger_trap(session, server, box: dict, trap: dict):
     """Fire a trap — deal damage, apply effect, broadcast."""
     dmg = random.randint(trap["dmg_min"], trap["dmg_max"])
+    try:
+        from server.core.engine.magic_effects import has_effect
+        if trap.get("damage_type") == "poison":
+            if has_effect(server, session, "gas_immune"):
+                dmg = 0
+            elif has_effect(server, session, "poison_resist"):
+                dmg = max(0, dmg // 2)
+    except Exception:
+        pass
     session.health_current = max(0, session.health_current - dmg)
 
     await session.send_line(colorize(f"  {trap['fail_msg']}", TextPresets.COMBAT_MISS))
@@ -866,7 +891,7 @@ async def cmd_pick(session, cmd, args, server):
 
     # ── Compute endroll ───────────────────────────────────────────────────
     pick_ranks = _skill_ranks(session, SKILL_PICKING_LOCKS)
-    pick_skill = pick_ranks * 3 if pick_ranks else session.level * 2
+    pick_skill = (pick_ranks * 3 if pick_ranks else session.level * 2) + _buff_bonus(session, server, "picking_locks_bonus")
     dex_bonus  = _stat_bonus(getattr(session, "stat_dexterity", 50))
     lock_diff  = box.get("lock_difficulty", session.level * 15 + 20)
 

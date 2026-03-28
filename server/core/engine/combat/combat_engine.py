@@ -32,6 +32,7 @@ from server.core.protocol.colors import (
 from server.core.engine.encumbrance import (
     encumbrance_as_ds_penalty, encumbrance_rt_penalty
 )
+from server.core.engine.magic_effects import apply_roundtime_effects, get_active_buff_totals
 from server.core.scripting.loaders.body_types_loader import (
     get_locations, get_aimable, random_location, resolve_aim
 )
@@ -40,6 +41,72 @@ from server.core.engine.combat.material_combat import (
 )
 
 log = logging.getLogger(__name__)
+
+
+def _holy_flare_damage(session, server) -> int:
+    buffs = _buff_totals(session, server)
+    if not buffs.get("holy_flares"):
+        return 0
+    if random.random() > 0.25:
+        return 0
+    level = int(getattr(session, "level", 1) or 1)
+    return random.randint(6, 14) + max(0, level // 3)
+
+
+def _apply_player_wards(server, session, hp_damage: int) -> tuple[int, list[str]]:
+    damage = max(0, int(hp_damage or 0))
+    notes = []
+    buffs = _buff_totals(session, server)
+
+    life_ward = int(buffs.get("life_ward", 0) or 0)
+    if life_ward > 0 and damage > 0:
+        absorbed = min(damage, life_ward)
+        damage -= absorbed
+        notes.append(f"Your life ward absorbs {absorbed} damage.")
+        if getattr(server, "db", None) and getattr(session, "character_id", None):
+            try:
+                import json
+                rows = server.db.execute_query(
+                    """
+                    SELECT id, effects_json
+                    FROM character_active_buffs
+                    WHERE character_id=%s
+                      AND (expires_at IS NULL OR expires_at > NOW())
+                    """,
+                    (session.character_id,),
+                ) or []
+                remaining = max(0, life_ward - absorbed)
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    try:
+                        effects = json.loads(row.get("effects_json") or "{}")
+                    except Exception:
+                        continue
+                    if "life_ward" not in effects:
+                        continue
+                    if remaining > 0:
+                        effects["life_ward"] = remaining
+                        server.db.execute_update(
+                            "UPDATE character_active_buffs SET effects_json=%s WHERE id=%s",
+                            (json.dumps(effects), row.get("id")),
+                        )
+                    else:
+                        server.db.execute_update(
+                            "DELETE FROM character_active_buffs WHERE id=%s",
+                            (row.get("id"),),
+                        )
+                    break
+            except Exception:
+                pass
+
+    redirect = int(buffs.get("damage_redirect", 0) or 0)
+    if redirect > 0 and damage > 0:
+        redirected = min(damage, redirect)
+        damage -= redirected
+        notes.append(f"An empathic link diverts {redirected} damage away from you.")
+
+    return damage, notes
 
 
 # ── Skill IDs (match skills seed auto-increment) ─────────────────────────────
@@ -74,6 +141,17 @@ def _sb(session, skill_id):
     return 0
 
 
+def _buff_totals(session, server):
+    db = getattr(server, "db", None)
+    char_id = getattr(session, "character_id", None)
+    if not db or not char_id:
+        return {}
+    try:
+        return db.get_active_buff_effect_totals(char_id) or {}
+    except Exception:
+        return {}
+
+
 def _weapon_skill_id(weapon):
     """Map weapon_category string to its skill ID."""
     cat = (weapon.get('weapon_category', 'edged') or 'edged').lower() if weapon else 'edged'
@@ -88,7 +166,7 @@ def _weapon_skill_id(weapon):
     }.get(cat, SKILL_EDGED_WEAPONS)
 
 
-# Weapon Damage Factor by weapon category
+# Base Damage Factor for natural attacks when no weapon template DF exists.
 DAMAGE_FACTORS = {
     "slash": 0.30,
     "crush": 0.25,
@@ -98,15 +176,32 @@ DAMAGE_FACTORS = {
     "electrical": 0.28,
 }
 
-# AvD (Attack vs Defense) base values by damage type vs armor group
-# Simplified: just damage_type -> base bonus. In real GS4 this is a full matrix.
+ARMOR_GROUP_BY_ASG = {
+    1: "cloth", 2: "cloth",
+    3: "leather", 4: "leather", 5: "leather", 6: "leather", 7: "leather", 8: "leather",
+    9: "scale", 10: "scale", 11: "scale", 12: "scale",
+    13: "chain", 14: "chain", 15: "chain", 16: "chain",
+    17: "plate", 18: "plate", 19: "plate", 20: "plate",
+}
+
+# Armor-aware AvD values. Still hand-curated, but no longer a single flat number
+# for every armor type wearing the same hit.
 AVD_TABLE = {
-    "slash":    35,
-    "crush":    30,
-    "puncture": 40,
-    "fire":     25,
-    "cold":     25,
-    "electrical": 25,
+    "slash":      {"cloth": 38, "leather": 34, "scale": 28, "chain": 24, "plate": 20},
+    "crush":      {"cloth": 28, "leather": 30, "scale": 32, "chain": 35, "plate": 38},
+    "puncture":   {"cloth": 34, "leather": 35, "scale": 31, "chain": 37, "plate": 33},
+    "fire":       {"cloth": 25, "leather": 24, "scale": 22, "chain": 20, "plate": 18},
+    "cold":       {"cloth": 25, "leather": 24, "scale": 22, "chain": 20, "plate": 18},
+    "electrical": {"cloth": 25, "leather": 24, "scale": 22, "chain": 20, "plate": 18},
+}
+
+DF_ARMOR_MULT = {
+    "slash":      {"cloth": 1.12, "leather": 1.05, "scale": 0.92, "chain": 0.85, "plate": 0.78},
+    "crush":      {"cloth": 0.95, "leather": 1.00, "scale": 1.06, "chain": 1.12, "plate": 1.18},
+    "puncture":   {"cloth": 1.08, "leather": 1.02, "scale": 0.98, "chain": 1.08, "plate": 0.96},
+    "fire":       {"cloth": 1.00, "leather": 1.00, "scale": 1.00, "chain": 1.00, "plate": 1.00},
+    "cold":       {"cloth": 1.00, "leather": 1.00, "scale": 1.00, "chain": 1.00, "plate": 1.00},
+    "electrical": {"cloth": 1.00, "leather": 1.00, "scale": 1.00, "chain": 1.00, "plate": 1.00},
 }
 
 # Critical divisors by Armor Skin Group
@@ -192,6 +287,56 @@ LETHAL_THRESHOLDS = {
     "right eye": 3,
     "left eye": 3,
 }
+
+LOCATION_DAMAGE_MULT = {
+    "head": 1.18, "neck": 1.35, "chest": 1.08, "abdomen": 1.02, "back": 1.00,
+    "right eye": 1.45, "left eye": 1.45,
+    "right arm": 0.92, "left arm": 0.92,
+    "right hand": 0.82, "left hand": 0.82,
+    "right leg": 0.95, "left leg": 0.95,
+}
+
+LOCATION_CRIT_DIV_MULT = {
+    "head": 0.85, "neck": 0.72, "chest": 0.92, "abdomen": 0.96, "back": 1.00,
+    "right eye": 0.55, "left eye": 0.55,
+    "right arm": 0.88, "left arm": 0.88,
+    "right hand": 0.62, "left hand": 0.62,
+    "right leg": 0.84, "left leg": 0.84,
+}
+
+SEVERABLE_LOCATIONS = {"right arm", "left arm", "right hand", "left hand", "right leg", "left leg"}
+
+
+def _armor_group_from_asg(armor_asg: int) -> str:
+    return ARMOR_GROUP_BY_ASG.get(int(armor_asg or 1), "leather")
+
+
+def _split_damage_types(raw_damage_type: str | None) -> list[str]:
+    raw = str(raw_damage_type or "").strip().lower()
+    if not raw:
+        return ["crush"]
+    types = [part.strip() for part in raw.split(",") if part.strip()]
+    return types or ["crush"]
+
+
+def _resolve_damage_profile(raw_damage_type: str | None, armor_asg: int, base_df: float | None = None) -> dict:
+    armor_group = _armor_group_from_asg(armor_asg)
+    best = None
+    for damage_type in _split_damage_types(raw_damage_type):
+        avd = AVD_TABLE.get(damage_type, AVD_TABLE["crush"]).get(armor_group, 30)
+        df_base = float(base_df if base_df is not None else DAMAGE_FACTORS.get(damage_type, 0.25))
+        df = df_base * DF_ARMOR_MULT.get(damage_type, DF_ARMOR_MULT["crush"]).get(armor_group, 1.0)
+        score = avd + (df * 100.0)
+        candidate = {
+            "damage_type": damage_type,
+            "armor_group": armor_group,
+            "avd": avd,
+            "df": df,
+            "score": score,
+        }
+        if best is None or candidate["score"] > best["score"]:
+            best = candidate
+    return best or {"damage_type": "crush", "armor_group": armor_group, "avd": 30, "df": 0.25, "score": 55.0}
 
 
 def _get_player_weapon(session):
@@ -515,17 +660,6 @@ class CombatEngine:
 
         weapon_name = _get_weapon_name(weapon)
 
-        # Determine damage type and factor from weapon
-        if weapon:
-            damage_type = weapon.get('damage_type', 'slash')
-            weapon_df = weapon.get('damage_factor', 0) or DAMAGE_FACTORS.get(damage_type, 0.30)
-        else:
-            damage_type = "crush"  # Unarmed
-            weapon_df = DAMAGE_FACTORS.get("crush", 0.25)
-
-        # AvD for this damage type
-        avd = AVD_TABLE.get(damage_type, 30)
-
         # Calculate player AS
         player_as = self._calc_player_as(session)
 
@@ -550,6 +684,15 @@ class CombatEngine:
         location, aim_succeeded = self._resolve_hit_location(
             session, creature, aimed_location_override=aimed_location, hidden_ambush=is_ambush
         )
+
+        profile = _resolve_damage_profile(
+            weapon.get('damage_type', 'slash') if weapon else "crush",
+            getattr(creature, "armor_asg", 5),
+            weapon.get('damage_factor', 0) or None if weapon else None,
+        )
+        damage_type = profile["damage_type"]
+        weapon_df = profile["df"]
+        avd = profile["avd"]
 
         # Build the attack line (GS4 format)
         creature_display = fmt_creature_name(creature.full_name_with_level)
@@ -589,20 +732,28 @@ class CombatEngine:
             if is_ambush:
                 rt = max(3, rt - (ambush_profile["rt_reduction"] if ambush_profile else 1))
             rt += encumbrance_rt_penalty(session)
+            rt = apply_roundtime_effects(rt, self.server, session)
             rt = max(3, min(rt, 12))
             session.set_roundtime(rt)
             await session.send_line(roundtime_msg(rt))
 
             _enter_combat(self.server, session, creature)
             if off_weapon:
-                offhand_killed = await self._twc_offhand_swing(session, creature, off_weapon, is_ambush)
+                offhand_killed = await self._twc_offhand_swing(
+                    session,
+                    creature,
+                    off_weapon,
+                    is_ambush,
+                    aimed_location=aimed_location,
+                )
                 if offhand_killed:
                     return True
             _refresh_combat(self.server, session, creature)
             return False
 
         # Hit! Calculate damage
-        raw_damage = max(1, int((endroll - 100) * weapon_df))
+        loc_df_mult = LOCATION_DAMAGE_MULT.get(location, 1.0)
+        raw_damage = max(1, int((endroll - 100) * weapon_df * loc_df_mult))
 
         # Critical calculation — material crit_weight adds CEP phantom points to
         # raw_damage before the divisor (razern = +2).  HP damage uses original
@@ -611,7 +762,7 @@ class CombatEngine:
         if ambush_profile:
             crit_phantom += ambush_profile["crit_phantom"]
         adj_raw       = raw_damage + crit_phantom
-        crit_divisor  = CRIT_DIVISORS.get(creature.armor_asg, 5)
+        crit_divisor  = max(1, int(CRIT_DIVISORS.get(creature.armor_asg, 5) * LOCATION_CRIT_DIV_MULT.get(location, 1.0)))
         crit_rank_max = min(9, adj_raw // crit_divisor)
 
         if crit_rank_max > 0:
@@ -621,7 +772,7 @@ class CombatEngine:
             crit_rank = 0
 
         # Scale HP damage (original raw_damage — phantom does not inflate HP)
-        hp_damage = max(1, int((endroll - 100) * 0.5) + crit_rank * 3)
+        hp_damage = max(1, int((endroll - 100) * (0.42 + (weapon_df * 0.25)) * loc_df_mult) + crit_rank * 3)
         actual_damage = creature.take_damage(hp_damage)
 
         # ── Weapon elemental flare proc ────────────────────────────────────────
@@ -632,6 +783,9 @@ class CombatEngine:
             flare_dmg = flare_result.get("damage", 0)
             if flare_dmg > 0:
                 creature.take_damage(flare_dmg)
+        holy_flare_dmg = _holy_flare_damage(session, self.server)
+        if holy_flare_dmg > 0:
+            creature.take_damage(holy_flare_dmg)
 
         # Build output lines
         await session.send_line(swing_line)
@@ -657,6 +811,16 @@ class CombatEngine:
                     colorize(f"  {room_msg}", TextPresets.COMBAT_HIT),
                     exclude=[session],
                 )
+        if holy_flare_dmg > 0:
+            await session.send_line(colorize(
+                f"  Holy fire lashes out for {holy_flare_dmg} additional points of damage!",
+                TextPresets.COMBAT_HIT
+            ))
+            await self.server.world.broadcast_to_room(
+                session.current_room.id,
+                colorize(f"  A burst of holy fire erupts from {session.character_name}'s strike!", TextPresets.COMBAT_HIT),
+                exclude=[session],
+            )
 
         # Aim drift notification — show only if player was aiming somewhere specific
         _requested_aim = aimed_location or getattr(session, "aimed_location", None)
@@ -704,6 +868,19 @@ class CombatEngine:
                     f"  {creature.full_name.capitalize()} suffers a {sev_name} wound to its {location}!",
                     TextPresets.COMBAT_HIT
                 ))
+                impairment = creature.evaluate_combat_impairment(location, old_sev, new_sev)
+                if impairment.get("dropped_weapon"):
+                    await session.send_line(colorize(
+                        f"  {creature.full_name.capitalize()} drops its weapon as the limb goes slack!",
+                        TextPresets.COMBAT_HIT
+                    ))
+                if impairment.get("severed") and location in SEVERABLE_LOCATIONS:
+                    await session.send_line(colorize(
+                        f"  The strike severs {creature.full_name}'s {location}!",
+                        TextPresets.COMBAT_HIT
+                    ))
+                if impairment.get("stance_shift"):
+                    creature.stance = impairment["stance_shift"]
 
                 # Show a combat-stat-degradation message at key severity thresholds
                 if new_sev in DEGRADE_MSGS and old_sev < new_sev:
@@ -814,6 +991,7 @@ class CombatEngine:
             rt = max(3, rt - (ambush_profile["rt_reduction"] if ambush_profile else 1))
         # Encumbrance adds to RT (stacks on top of weapon speed)
         rt += encumbrance_rt_penalty(session)
+        rt = apply_roundtime_effects(rt, self.server, session)
         rt = max(3, min(rt, 12))   # floor 3, cap 12
         session.set_roundtime(rt)
         await session.send_line(roundtime_msg(rt))
@@ -824,7 +1002,13 @@ class CombatEngine:
 
         # ── TWC off-hand swing — always fires, no strike chance check ─────────
         if not killed and off_weapon:
-            offhand_killed = await self._twc_offhand_swing(session, creature, off_weapon, is_ambush)
+            offhand_killed = await self._twc_offhand_swing(
+                session,
+                creature,
+                off_weapon,
+                is_ambush,
+                aimed_location=aimed_location,
+            )
             if offhand_killed:
                 killed = True   # offhand finished the kill — don't re-enter combat
         if not killed:
@@ -993,7 +1177,7 @@ class CombatEngine:
     # ================================================================
     # Creature attacks player
     # ================================================================
-    async def _twc_offhand_swing(self, session, creature, off_weapon, is_ambush):
+    async def _twc_offhand_swing(self, session, creature, off_weapon, is_ambush, aimed_location=None):
         """
         Resolve the TWC off-hand swing. Separate roll with its own AS,
         reduced by TWC training level. No roundtime added (already accounted for).
@@ -1011,14 +1195,22 @@ class CombatEngine:
         else:
             ambush_profile = None
 
-        damage_type = off_weapon.get('damage_type', 'slash')
-        weapon_df   = off_weapon.get('damage_factor', 0) or DAMAGE_FACTORS.get(damage_type, 0.25)
-        avd         = AVD_TABLE.get(damage_type, 30)
-
         d100     = random.randint(1, 100)
+        location, aim_succeeded = self._resolve_hit_location(
+            session,
+            creature,
+            aimed_location_override=aimed_location,
+            hidden_ambush=is_ambush,
+        )
+        profile = _resolve_damage_profile(
+            off_weapon.get('damage_type', 'slash'),
+            getattr(creature, "armor_asg", 5),
+            off_weapon.get('damage_factor', 0) or None,
+        )
+        damage_type = profile["damage_type"]
+        weapon_df   = profile["df"]
+        avd         = profile["avd"]
         endroll  = d100 + off_as - creature_ds + avd
-        _bt_off  = getattr(creature, 'body_type', 'biped') or 'biped'
-        location = self._random_body_location(_bt_off)
 
         off_name = _get_weapon_name(off_weapon)
         swing_line = f"  You also swing {off_name} at {fmt_creature_name(creature.full_name_with_level)}!"
@@ -1037,15 +1229,16 @@ class CombatEngine:
             return
 
         # Hit — off-hand also gets material crit_weight and flare proc
-        raw_damage    = max(1, int((endroll - 100) * weapon_df))
+        loc_df_mult   = LOCATION_DAMAGE_MULT.get(location, 1.0)
+        raw_damage    = max(1, int((endroll - 100) * weapon_df * loc_df_mult))
         crit_phantom  = get_crit_phantom(off_weapon, self.server.lua)
         if ambush_profile:
             crit_phantom += ambush_profile["crit_phantom"]
         adj_raw       = raw_damage + crit_phantom
-        crit_divisor  = CRIT_DIVISORS.get(creature.armor_asg, 5)
+        crit_divisor  = max(1, int(CRIT_DIVISORS.get(creature.armor_asg, 5) * LOCATION_CRIT_DIV_MULT.get(location, 1.0)))
         crit_rank_max = min(9, adj_raw // crit_divisor)
         crit_rank     = random.randint(max(1, (crit_rank_max + 1) // 2), crit_rank_max) if crit_rank_max > 0 else 0
-        hp_damage     = max(1, int((endroll - 100) * 0.5) + crit_rank * 3)
+        hp_damage     = max(1, int((endroll - 100) * (0.42 + (weapon_df * 0.25)) * loc_df_mult) + crit_rank * 3)
         actual_damage = creature.take_damage(hp_damage)
 
         # Off-hand flare proc — tracked separately from main-hand counter
@@ -1054,13 +1247,47 @@ class CombatEngine:
             flare_dmg = off_flare.get("damage", 0)
             if flare_dmg > 0:
                 creature.take_damage(flare_dmg)
+        holy_flare_dmg = _holy_flare_damage(session, self.server)
+        if holy_flare_dmg > 0:
+            creature.take_damage(holy_flare_dmg)
 
         await session.send_line(colorize(roll_line, TextPresets.COMBAT_HIT))
         await session.send_line(colorize(
             f"    ... and hit for {actual_damage} points of damage!",
             TextPresets.COMBAT_HIT
         ))
+        _requested_aim = aimed_location or getattr(session, "aimed_location", None)
+        if _requested_aim:
+            _body_type = getattr(creature, "body_type", "biped") or "biped"
+            _valid_aim = resolve_aim(_body_type, _requested_aim)
+            if not _valid_aim:
+                await session.send_line(colorize(
+                    f"    The {creature.name} has no {_requested_aim} to target - off-hand strikes at random!",
+                    TextPresets.SYSTEM
+                ))
+            elif not aim_succeeded:
+                await session.send_line(colorize(
+                    f"    Your off-hand aim drifts - striking the {location} instead!",
+                    TextPresets.SYSTEM
+                ))
         await session.send_line(combat_damage(actual_damage, location))
+        if crit_rank >= 1:
+            old_sev = creature.wounds.get(location, 0)
+            new_sev = creature.apply_wound(location, crit_rank)
+            if new_sev > old_sev:
+                impairment = creature.evaluate_combat_impairment(location, old_sev, new_sev)
+                if impairment.get("dropped_weapon"):
+                    await session.send_line(colorize(
+                        f"    {creature.full_name.capitalize()} drops its weapon!",
+                        TextPresets.COMBAT_HIT
+                    ))
+                if impairment.get("severed") and location in SEVERABLE_LOCATIONS:
+                    await session.send_line(colorize(
+                        f"    The off-hand strike severs {creature.full_name}'s {location}!",
+                        TextPresets.COMBAT_HIT
+                    ))
+                if impairment.get("stance_shift"):
+                    creature.stance = impairment["stance_shift"]
         if off_flare:
             await session.send_line(colorize(
                 f"  {off_flare.get('attacker_msg', '')}",
@@ -1078,6 +1305,11 @@ class CombatEngine:
                     colorize(f"  {off_room_msg}", TextPresets.COMBAT_HIT),
                     exclude=[session],
                 )
+        if holy_flare_dmg > 0:
+            await session.send_line(colorize(
+                f"  Holy fire lashes out for {holy_flare_dmg} additional points of damage!",
+                TextPresets.COMBAT_HIT
+            ))
 
         if crit_rank > 0:
             crit_msgs = CRIT_MESSAGES.get(damage_type, CRIT_MESSAGES["slash"])
@@ -1127,20 +1359,12 @@ class CombatEngine:
             return
 
         # Calculate creature AS
-        creature_as = attack.get("as", creature.as_melee)
+        creature_as = creature.get_melee_as(attack)
         stance_as_mod, _ = STANCE_MODS.get(creature.stance, (0, 0))
         creature_as += stance_as_mod
 
         # Calculate player DS with breakdown for miss flavor text
         player_ds, evade_ds, parry_ds, block_ds = self._calc_player_ds_breakdown(session)
-
-        # Damage type and AvD
-        damage_type = attack.get("damage_type", creature.damage_type)
-        avd = AVD_TABLE.get(damage_type, 30)
-
-        # Roll
-        d100 = random.randint(1, 100)
-        endroll = d100 + creature_as - player_ds + avd
 
         # Get attack verb and creature weapon name
         verb_first = attack.get("verb_first", "attacks you")
@@ -1153,6 +1377,15 @@ class CombatEngine:
 
         # Players are always biped — use biped locations for incoming attacks
         location = self._random_body_location('biped')
+        player_armor = _get_player_armor(session)
+        player_asg = player_armor.get('armor_asg', 5) if player_armor else 5
+        profile = _resolve_damage_profile(attack.get("damage_type", creature.damage_type), player_asg, None)
+        damage_type = profile["damage_type"]
+        avd = profile["avd"]
+
+        # Roll
+        d100 = random.randint(1, 100)
+        endroll = d100 + creature_as - player_ds + avd
 
         # Creature display name with level
         creature_display = fmt_creature_name(creature.full_name_with_level.capitalize())
@@ -1236,16 +1469,13 @@ class CombatEngine:
             return
 
         # Hit!
-        weapon_df = DAMAGE_FACTORS.get(damage_type, 0.30)
-        raw_damage = int((endroll - 100) * weapon_df)
+        weapon_df = profile["df"]
+        loc_df_mult = LOCATION_DAMAGE_MULT.get(location, 1.0)
+        raw_damage = int((endroll - 100) * weapon_df * loc_df_mult)
         raw_damage = max(1, raw_damage)
 
         # Use player's actual worn armor ASG
-        player_asg = 5  # Default: light leather
-        player_armor = _get_player_armor(session)
-        if player_armor:
-            player_asg = player_armor.get('armor_asg', 5)
-        crit_divisor = CRIT_DIVISORS.get(player_asg, 6)
+        crit_divisor = max(1, int(CRIT_DIVISORS.get(player_asg, 6) * LOCATION_CRIT_DIV_MULT.get(location, 1.0)))
         crit_rank_max = min(9, raw_damage // crit_divisor)
 
         if crit_rank_max > 0:
@@ -1254,7 +1484,8 @@ class CombatEngine:
         else:
             crit_rank = 0
 
-        hp_damage = max(1, int((endroll - 100) * 0.4) + crit_rank * 2)
+        hp_damage = max(1, int((endroll - 100) * (0.34 + (weapon_df * 0.20)) * loc_df_mult) + crit_rank * 2)
+        hp_damage, ward_notes = _apply_player_wards(self.server, session, hp_damage)
 
         # Apply damage
         session.health_current = max(0, session.health_current - hp_damage)
@@ -1276,6 +1507,8 @@ class CombatEngine:
             f"  ... {hp_damage} hit points of damage to your {location}!",
             TextPresets.COMBAT_DAMAGE_TAKEN
         ))
+        for note in ward_notes:
+            await session.send_line(colorize(f"  {note}", TextPresets.COMBAT_HIT))
         if armor_flare:
             await session.send_line(colorize(
                 f"  {armor_flare.get('attacker_msg', '')}",
@@ -1457,7 +1690,8 @@ class CombatEngine:
         """
         weapon, _ = _get_player_weapon(session)
 
-        str_bonus = (session.stat_strength - 50) // 2
+        buffs = _buff_totals(session, self.server)
+        str_bonus = ((session.stat_strength + int(buffs.get("strength_bonus", 0) or 0) - int(buffs.get("strength_penalty", 0) or 0)) - 50) // 2
         cm_bonus  = _sr(session, SKILL_COMBAT_MANEUVERS) // 2
 
         if weapon:
@@ -1472,6 +1706,8 @@ class CombatEngine:
 
         # Raw AS — all components, before stance
         raw_as = str_bonus + skill_bonus + cm_bonus + enchant + attack_bonus
+        raw_as += int(buffs.get("as_bonus", 0) or 0)
+        raw_as -= int(buffs.get("as_penalty", 0) or 0)
 
         # Action penalty from armor — Armor Use ranks reduce it
         # GS4: full penalty at 0 Armor Use ranks, 0 penalty at sufficient ranks
@@ -1555,7 +1791,8 @@ class CombatEngine:
 
     def _calc_player_ds_breakdown(self, session):
         """GS4 canonical DS breakdown → (total, evade_ds, parry_ds, block_ds)."""
-        str_bonus = (session.stat_strength - 50) // 2
+        buffs = _buff_totals(session, self.server)
+        str_bonus = ((session.stat_strength + int(buffs.get("strength_bonus", 0) or 0) - int(buffs.get("strength_penalty", 0) or 0)) - 50) // 2
         dex_bonus = (session.stat_dexterity - 50) // 2
         agi_bonus = (session.stat_agility   - 50) // 2
         int_bonus = (session.stat_intuition - 50) // 2
@@ -1568,9 +1805,13 @@ class CombatEngine:
 
         # ── Evade DS ──────────────────────────────────────────────────────
         evade_base = _sr(session, SKILL_DODGING) + agi_bonus + int(int_bonus / 4)
+        evade_base += int(buffs.get("dodge_bonus", 0) or 0)
 
         armor = _get_player_armor(session)
         asg   = armor.get("armor_asg", 1) if armor else 1
+        armor_override = int(buffs.get("armor_asg_override", 0) or 0)
+        if armor_override > asg:
+            asg = armor_override
 
         BASE_HINDRANCE = {
             1: 1.00, 2: 1.00, 3: 1.00, 4: 1.00,
@@ -1670,6 +1911,8 @@ class CombatEngine:
         # feint is stored on creature, not session; handled in player_attacks_creature)
 
         total = evade_ds + parry_ds + block_ds + generic_ds
+        total += int(buffs.get("ds", 0) or 0)
+        total -= int(buffs.get("ds_penalty", 0) or 0)
         total = int(total * getattr(session, "death_stat_mult", 1.0))
 
         # Encumbrance DS penalty (applies after death_stat_mult)

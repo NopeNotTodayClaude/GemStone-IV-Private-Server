@@ -44,7 +44,7 @@ Creature.loot_coins      = false
 Creature.loot_gems       = false
 Creature.loot_magic      = false
 Creature.loot_boxes      = false
-Creature.skin            = "an Agresh bear pelt"
+Creature.skin            = "an agresh bear claw"
 Creature.special_loot = {}
 
 -- ── Decay / Death Behavior ────────────────────────────────────────────────

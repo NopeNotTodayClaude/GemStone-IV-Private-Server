@@ -130,14 +130,14 @@ local function make_healer(ranks, wtype)
     end
 end
 
-handlers[1102] = make_healer(2,  "limb")
-handlers[1103] = make_healer(3,  "system")
-handlers[1104] = make_healer(4,  "head")
-handlers[1105] = make_healer(5,  "organ")
-handlers[1111] = make_healer(11, "limb scar")
-handlers[1112] = make_healer(12, "system scar")
-handlers[1113] = make_healer(13, "head scar")
-handlers[1114] = make_healer(14, "organ scar")
+handlers[1102] = function(ctx) return make_healer(2,  "limb")(ctx) end
+handlers[1103] = function(ctx) return make_healer(3,  "system")(ctx) end
+handlers[1104] = function(ctx) return make_healer(4,  "head")(ctx) end
+handlers[1105] = function(ctx) return make_healer(5,  "organ")(ctx) end
+handlers[1111] = function(ctx) return make_healer(11, "limb scar")(ctx) end
+handlers[1112] = function(ctx) return make_healer(12, "system scar")(ctx) end
+handlers[1113] = function(ctx) return make_healer(13, "head scar")(ctx) end
+handlers[1114] = function(ctx) return make_healer(14, "organ scar")(ctx) end
 
 handlers[1106] = function(ctx) -- Bone Shatter
     if not ctx.result.hit then return end

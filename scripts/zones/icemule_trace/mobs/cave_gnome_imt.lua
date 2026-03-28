@@ -37,7 +37,7 @@ Creature.loot_coins  = true
 Creature.loot_gems   = true
 Creature.loot_magic  = false
 Creature.loot_boxes  = true
-Creature.skin        = "a gnome ear"
+Creature.skin        = "a gnome scalp"
 Creature.special_loot = {}
 
 Creature.decay_seconds = 300

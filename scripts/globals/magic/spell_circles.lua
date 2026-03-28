@@ -70,11 +70,11 @@ SpellCircles.circles = {
     [13] = { id=13, name="Major Mental",    abbrev="MjM",
              sphere="mental",     prefix=13,
              cs_stat="avg_inf_log",  td_stat="discipline",
-             is_trainable=false },  -- Savant only; not yet implemented
+             is_trainable=false },  -- Savant-only / non-research circle in this ruleset
     [14] = { id=14, name="Savant Base",     abbrev="Sav",
              sphere="mental",     prefix=14,
              cs_stat="avg_dis_log",  td_stat="discipline",
-             is_trainable=false },  -- Not yet implemented
+             is_trainable=false },  -- Reserved for the Savant profession path
     [15] = { id=15, name="Arcane",          abbrev="Arc",
              sphere="arcane",     prefix=17,
              cs_stat="aura",         td_stat="avg_aura_wis",

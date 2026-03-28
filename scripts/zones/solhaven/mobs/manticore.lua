@@ -32,7 +32,7 @@ Creature.loot_coins      = false
 Creature.loot_gems       = true
 Creature.loot_magic      = true
 Creature.loot_boxes      = false
-Creature.skin            = "a manticore spine"
+Creature.skin            = "a manticore tail"
 Creature.special_loot    = {
     "a manticore tail spike",
 }

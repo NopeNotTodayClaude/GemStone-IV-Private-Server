@@ -40,7 +40,7 @@ Creature.loot_coins   = true
 Creature.loot_gems    = true
 Creature.loot_magic   = true
 Creature.loot_boxes   = true
-Creature.skin         = "a hobgoblin ear"
+Creature.skin         = "a hobgoblin scalp"
 Creature.special_loot = {}
 
 -- ── Decay / Death Behavior ────────────────────────────────────────────────
