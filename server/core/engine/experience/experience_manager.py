@@ -15,6 +15,7 @@ from server.core.protocol.colors import (
     colorize, TextPresets, experience_msg, level_up_msg
 )
 from server.core.commands.player.info import award_fame
+from server.core.scripting.lua_bindings.weapon_api import available_technique_summaries
 
 log = logging.getLogger(__name__)
 
@@ -185,6 +186,72 @@ class ExperienceManager:
 
     def xp_for_level(self, level):
         return self._level_table.get(level, level * 5000)
+
+    def _level_milestone_config(self):
+        lua = getattr(self.server, "lua", None)
+        if not lua:
+            return {"general": {}, "profession": {}}
+        return lua.get_level_milestones() or {"general": {}, "profession": {}}
+
+    def _profession_name(self, session) -> str:
+        explicit = getattr(session, "profession_name", None) or getattr(session, "profession", None)
+        if explicit:
+            return str(explicit).strip()
+        lua = getattr(self.server, "lua", None)
+        prof_rows = (lua.get_professions() or {}).get("professions", []) if lua else []
+        prof_id = int(getattr(session, "profession_id", 0) or 0)
+        for row in prof_rows:
+            try:
+                if int(row.get("id", 0) or 0) == prof_id:
+                    return str(row.get("name") or "").strip()
+            except Exception:
+                continue
+        return ""
+
+    def _format_technique_notice(self, session) -> str:
+        available = available_technique_summaries(session, self.server)
+        if not available:
+            return "Based on your current training, no weapon techniques qualify yet."
+
+        display = []
+        for row in available[:4]:
+            display.append(f"{row['name']} ({row['category']})")
+        if len(available) > 4:
+            display.append(f"+{len(available) - 4} more")
+        return "Based on your current training, available weapon techniques now include: " + ", ".join(display) + "."
+
+    def _level_up_guidance_lines(self, session, new_level: int):
+        config = self._level_milestone_config()
+        general = list((config.get("general") or {}).get(int(new_level), []) or [])
+        profession_name = self._profession_name(session)
+        profession_levels = ((config.get("profession") or {}).get(profession_name, {}) or {})
+        entries = general + list(profession_levels.get(int(new_level), []) or [])
+
+        lines = []
+        for entry in entries:
+            title = str(entry.get("title") or "").strip()
+            text = str(entry.get("text") or "").strip()
+            kind = str(entry.get("kind") or "").strip().lower()
+            command_hint = str(entry.get("command_hint") or "").strip()
+
+            if kind == "weapon_techniques":
+                if title and text:
+                    lines.append(f"{title}: {text}")
+                elif text:
+                    lines.append(text)
+                lines.append(self._format_technique_notice(session))
+                if command_hint:
+                    lines.append(command_hint)
+                continue
+
+            if title and text:
+                lines.append(f"{title}: {text}")
+            elif text:
+                lines.append(text)
+            if command_hint:
+                lines.append(command_hint)
+
+        return lines
 
     # ── Core: award XP to pool — all sources use this ─────────────────────────
 
@@ -558,6 +625,14 @@ class ExperienceManager:
                 f"  Next level requires {xp_delta:,} more experience.",
                 TextPresets.SYSTEM
             ))
+        guidance_lines = self._level_up_guidance_lines(session, new_level)
+        if guidance_lines:
+            await session.send_line(colorize(
+                "  GS4 progression at this level:",
+                TextPresets.SYSTEM
+            ))
+            for line in guidance_lines:
+                await session.send_line(colorize(f"    {line}", TextPresets.SYSTEM))
         await session.send_line("")
 
         if session.current_room:
@@ -584,6 +659,13 @@ class ExperienceManager:
                 session.physical_tp,
                 session.mental_tp
             )
+
+        guild = getattr(self.server, "guild", None)
+        if guild:
+            try:
+                await guild.maybe_issue_rogue_auto_invite(session, source="level_up")
+            except Exception as e:
+                log.error("Rogue auto-invite failed for %s: %s", getattr(session, "character_name", "unknown"), e)
 
     # ── Convenience ───────────────────────────────────────────────────────────
 

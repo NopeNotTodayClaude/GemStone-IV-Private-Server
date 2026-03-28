@@ -1899,6 +1899,11 @@ async def _perform_skin_attempt(session, creature, server, *, allow_result_hands
                 f"You skin {creature.full_name}{tool_text} and obtain "
                 f"{fmt_item_name(display_name)}, placing it in your {location}."
             )
+            await server.world.broadcast_to_room(
+                room.id,
+                f"{session.character_name} skins {creature.full_name}{tool_text} and obtains {display_name}, placing it in their {location}.",
+                exclude=session,
+            )
         else:
             if hasattr(server, "world"):
                 server.world.add_ground_item(
@@ -1919,6 +1924,11 @@ async def _perform_skin_attempt(session, creature, server, *, allow_result_hands
                 f"No space remaining! {display_name} was left on the ground.",
                 TextPresets.WARNING
             ))
+            await server.world.broadcast_to_room(
+                room.id,
+                f"{session.character_name} skins {creature.full_name}{tool_text} and obtains {display_name}, leaving it on the ground.",
+                exclude=session,
+            )
 
         if getattr(server, "guild", None):
             try:
@@ -1930,9 +1940,19 @@ async def _perform_skin_attempt(session, creature, server, *, allow_result_hands
             await session.send_line(
                 f"You make a ruinous mess of {creature.full_name}{tool_text}, destroying anything of value."
             )
+            await server.world.broadcast_to_room(
+                room.id,
+                f"{session.character_name} makes a ruinous mess of {creature.full_name}{tool_text}, destroying anything of value.",
+                exclude=session,
+            )
         else:
             await session.send_line(
                 f"You fail to skin {creature.full_name}{tool_text} cleanly."
+            )
+            await server.world.broadcast_to_room(
+                room.id,
+                f"{session.character_name} fails to skin {creature.full_name}{tool_text} cleanly.",
+                exclude=session,
             )
 
     if can_remove_corpse(creature):

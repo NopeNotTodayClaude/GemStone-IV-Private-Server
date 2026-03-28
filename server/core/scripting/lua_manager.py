@@ -171,6 +171,10 @@ class LuaManager:
         from server.core.scripting.loaders.skinning_loader import load_skinning
         return self._load_once("skinning", lambda: load_skinning(self._engine))
 
+    def get_level_milestones(self) -> Optional[dict]:
+        from server.core.scripting.loaders.level_milestones_loader import load_level_milestones
+        return self._load_once("level_milestones", lambda: load_level_milestones(self._engine))
+
     # ── Spell seeding ─────────────────────────────────────────────────────────
 
     async def seed_spells(self) -> dict:

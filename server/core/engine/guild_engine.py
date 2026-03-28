@@ -1322,6 +1322,26 @@ class GuildEngine:
         finally:
             conn.close()
 
+    def get_access_point_for_city(self, guild_id: str, city_name: str):
+        conn = self._get_conn()
+        if not conn:
+            return None
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                """
+                SELECT *
+                FROM guild_access_points
+                WHERE guild_id = %s AND city_name = %s AND is_active = 1
+                ORDER BY id
+                LIMIT 1
+                """,
+                (guild_id, city_name),
+            )
+            return cur.fetchone()
+        finally:
+            conn.close()
+
     def get_access_point_for_entry_room(self, guild_id: str, room_id: int):
         conn = self._get_conn()
         if not conn:
@@ -1548,6 +1568,82 @@ class GuildEngine:
         if not seq:
             return primer
         return f"{primer}, then " + ", ".join(seq)
+
+    def _get_rogue_profession_guild(self, session):
+        db = getattr(self.server, "db", None)
+        profession_id = int(getattr(session, "profession_id", 0) or 0)
+        if not db or not profession_id:
+            return None
+        guild_def = db.get_guild_definition_for_profession(profession_id) or {}
+        if str(guild_def.get("guild_id") or "").lower() != self._ROGUE_GUILD_ID:
+            return None
+        return guild_def
+
+    def _get_localized_rogue_access_point(self, session):
+        room = getattr(session, "current_room", None)
+        zone = getattr(room, "zone", None)
+        city_name = str(getattr(zone, "name", "") or "").strip()
+        if city_name:
+            point = self.get_access_point_for_city(self._ROGUE_GUILD_ID, city_name)
+            if point:
+                return point
+        return self.get_primary_access_point(self._ROGUE_GUILD_ID)
+
+    async def _send_rogue_invite_notice(self, session, access_point=None):
+        access_point = access_point or self._get_localized_rogue_access_point(session) or {}
+        city_name = str(access_point.get("city_name") or "").strip()
+        password_text = self.get_password_text(self._ROGUE_GUILD_ID) or "LEAN, then PULL, PULL, SLAP, RUB, RUB, PUSH, TURN"
+        city_hint = f" in {city_name}" if city_name else ""
+
+        await session.send_line("")
+        await session.send_line(
+            colorize(
+                "A quick-moving courier slips through the crowd long enough to press a folded note into your hand before disappearing again.",
+                TextPresets.SYSTEM,
+            )
+        )
+        await session.send_line(colorize("Unfolding it, you read:", TextPresets.SYSTEM))
+        await session.send_line(
+            colorize(
+                f'  "Your work has drawn the attention of the Rogue Guild.  When you are ready, seek the hidden entry{city_hint}, LEAN close, and use the sequence {password_text}."',
+                TextPresets.ITEM_NAME,
+            )
+        )
+        await session.send_line(colorize("The note bears no signature.", TextPresets.SYSTEM))
+        await session.send_line("")
+
+    async def maybe_issue_rogue_auto_invite(self, session, *, source: str = "system"):
+        if not getattr(session, "character_id", None):
+            return False
+
+        guild_def = self._get_rogue_profession_guild(session)
+        if not guild_def:
+            return False
+
+        join_level = int(guild_def.get("join_level") or 15)
+        if int(getattr(session, "level", 0) or 0) < join_level:
+            return False
+
+        membership = self.server.db.get_character_guild_membership(session.character_id) if getattr(self.server, "db", None) else None
+        if membership and str(membership.get("guild_id") or "").lower() == self._ROGUE_GUILD_ID:
+            return False
+
+        access = self.get_access_row(session.character_id, self._ROGUE_GUILD_ID) or {}
+        if access.get("is_invited"):
+            return False
+
+        access_point = self._get_localized_rogue_access_point(session)
+        notes = f"Automated rogue invitation issued at level {getattr(session, 'level', 0)} ({source})."
+        if not self.issue_remote_invite(
+            session.character_id,
+            self._ROGUE_GUILD_ID,
+            actor_template_id=(access_point or {}).get("npc_template_id"),
+            notes=notes,
+        ):
+            return False
+
+        await self._send_rogue_invite_notice(session, access_point)
+        return True
 
     def normalize_skill_name(self, guild_id: str, raw_skill: str):
         query = (raw_skill or "").strip().lower()
@@ -3051,7 +3147,7 @@ class GuildEngine:
 
         if not invited and not is_member:
             await session.send_line(
-                "You lean casually in the alley, but nothing answers.  If you are eligible for the guild, use GLD JOIN here first."
+                "You lean casually in the alley, but nothing answers.  Without a rogue invitation, the hidden catch stays still."
             )
             return True
         if not password_known and not is_member:

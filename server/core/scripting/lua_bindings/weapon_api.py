@@ -617,3 +617,72 @@ def load_techniques_for_session(session, db):
     except Exception as e:
         log.error("load_techniques_for_session error: %s", e)
         session.weapon_techniques = {}
+
+
+def available_technique_summaries(session, server) -> List[dict]:
+    """
+    Return technique summaries currently available from the player's training.
+    Each row: {name, mnemonic, category, weapon_skill, min_ranks}
+    """
+    lua = getattr(server, 'lua', None)
+    if not lua or not lua.engine:
+        return []
+
+    try:
+        defs_lua = lua.engine.require("weapon_techniques/definitions")
+        defs = lua.engine.lua_to_python(defs_lua) if defs_lua else {}
+    except Exception as e:
+        log.error("available_technique_summaries Lua error: %s", e)
+        return []
+
+    professions = (lua.get_professions() or {}).get("professions", [])
+    profession_name = (
+        getattr(session, "profession_name", None)
+        or getattr(session, "profession", None)
+        or next((row.get("name") for row in professions if int(row.get("id", 0) or 0) == int(getattr(session, "profession_id", 0) or 0)), "")
+        or ""
+    )
+    profession_key = str(profession_name).strip().lower()
+    if not profession_key:
+        return []
+
+    category_labels = {
+        "brawling": "Brawling",
+        "blunt": "Blunt Weapons",
+        "edged": "Edged Weapons",
+        "polearm": "Polearm Weapons",
+        "ranged": "Ranged Weapons",
+        "twohanded": "Two-Handed Weapons",
+    }
+
+    summaries = []
+    for mnemonic, tech in (defs or {}).items():
+        if not isinstance(tech, dict):
+            continue
+        if str(tech.get("mnemonic") or "").strip().lower() != str(mnemonic).strip().lower():
+            continue
+
+        available_to = [str(v).strip().lower() for v in (tech.get("available_to") or [])]
+        if profession_key not in available_to:
+            continue
+
+        skill_key = str(tech.get("weapon_skill") or "").strip().lower()
+        if not skill_key:
+            continue
+        current_ranks = _get_skill_ranks(session, skill_key)
+        thresholds = tech.get("rank_thresholds") or []
+        min_ranks = int((thresholds[0] if thresholds else tech.get("min_ranks", 0)) or 0)
+        if current_ranks < min_ranks:
+            continue
+
+        category_key = str(tech.get("category") or "").strip().lower()
+        summaries.append({
+            "name": str(tech.get("name") or mnemonic).strip(),
+            "mnemonic": str(tech.get("mnemonic") or mnemonic).strip(),
+            "category": category_labels.get(category_key, category_key.title()),
+            "weapon_skill": skill_key.replace("_", " ").title(),
+            "min_ranks": min_ranks,
+        })
+
+    summaries.sort(key=lambda row: (int(row["min_ranks"]), row["category"], row["name"]))
+    return summaries

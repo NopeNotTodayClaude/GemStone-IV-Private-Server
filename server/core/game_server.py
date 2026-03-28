@@ -479,6 +479,11 @@ class GameServer:
                 await self.wound_bridge.load_wounds(session)
 
         await self.commands.handle(session, "look")
+        if getattr(self, "guild", None):
+            try:
+                await self.guild.maybe_issue_rogue_auto_invite(session, source="login")
+            except Exception as _guild_err:
+                log.debug("Rogue auto-invite login check failed for %s: %s", session.character_name, _guild_err)
 
         # ── Event announcements on login ──────────────────────────────────────
         # Show after LOOK so the banner doesn't scroll away immediately

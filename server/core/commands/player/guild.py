@@ -179,7 +179,7 @@ async def _show_menu(session):
     await session.send_line(colorize("Guild commands:", TextPresets.SYSTEM))
     await session.send_line("  GLD              - View your guild status")
     await session.send_line("  GLD MENU         - Show this command list")
-    await session.send_line("  GLD JOIN         - Join your profession guild or request rogue entry access")
+    await session.send_line("  GLD JOIN         - Join your profession guild once invited and eligible")
     await session.send_line("  GLD PAY [months] - Pay 1-3 months of guild dues")
     await session.send_line("  GLD CHECKIN      - Check in with your guild once dues are current")
     await session.send_line("  GLD RANK         - View your current guild rank")
@@ -210,12 +210,15 @@ async def _show_status(session, server):
             await session.send_line(f"You are not currently a member of the {prof_guild['name']}.")
             if prof_guild.get("guild_id") == "rogue" and getattr(server, "guild", None):
                 access = server.guild.get_access_row(session.character_id, "rogue") or {}
+                join_level = int(prof_guild.get("join_level") or 15)
                 if access.get("is_invited"):
                     await session.send_line(
-                        "You have a standing rogue invitation.  In the Ta'Vaalor alley, LEAN first and then use the pass sequence."
+                        "You have a standing rogue invitation.  At a hidden rogue guild entry, LEAN first and then use the pass sequence."
                     )
+                elif int(getattr(session, "level", 0) or 0) < join_level:
+                    await session.send_line(f"Rogues are normally approached by the guild shortly after level {join_level}.")
                 else:
-                    await session.send_line("Visit a local guild authority and use GLD JOIN once you are eligible.")
+                    await session.send_line("The rogue guild has not yet contacted you.  Once invited, use the hidden entry sequence to reach a guild contact.")
             else:
                 await session.send_line("Visit a local guild authority and use GLD JOIN once you are eligible.")
         else:
@@ -285,18 +288,17 @@ async def _cmd_join(session, server):
 
     authority, npc = _get_local_authority(session, server, guild_def["guild_id"])
     if not npc and guild_def.get("guild_id") == "rogue" and getattr(server, "guild", None):
+        access = server.guild.get_access_row(session.character_id, "rogue") or {}
         access_point = server.guild.get_access_point_for_entry_room("rogue", getattr(session.current_room, "id", 0))
+        if access_point and access.get("is_invited"):
+            await session.send_line(
+                "Your invitation is already in order.  LEAN here first and then follow the pass sequence to reach the rogue contact inside."
+            )
+            return
         if access_point:
-            if server.guild.issue_remote_invite(
-                session.character_id,
-                "rogue",
-                notes=f"Remote rogue guild invite issued in room {session.current_room.id}.",
-            ):
-                await session.send_line(
-                    "A discreet invitation is now recorded for you.  In this alley, LEAN first and then use the pass sequence: PULL, PULL, SLAP, RUB, RUB, PUSH, TURN."
-                )
-            else:
-                await session.send_line("The rogue network fails to pass your invitation along right now.")
+            await session.send_line(
+                "The hidden entry gives you nothing.  The Rogue Guild will approach you on its own once you are eligible."
+            )
             return
     if not npc:
         await session.send_line(
@@ -1285,13 +1287,13 @@ def get_guild_npc_response(session, npc, topic, server):
         if guild_id == "rogue":
             if getattr(getattr(session, "current_room", None), "id", 0) == getattr(npc, "home_room_id", 0):
                 return "If you made it inside, use GLD JOIN here and I can record your membership."
-            return "If you are ready for rogue business, use GLD JOIN in the alley to receive your invitation and entry sequence."
+            return "When the Rogue Guild contacts you, use the hidden entry sequence to reach me, then GLD JOIN inside."
         return f"If you are at least level {guild_def.get('join_level', 15)}, use GLD JOIN here and I can record your membership."
     if topic_l in ("invite", "password", "entry", "sequence"):
         if guild_id == "rogue":
             if membership:
                 return "Your alley sequence remains: LEAN, then PULL, PULL, SLAP, RUB, RUB, PUSH, TURN."
-            return "Rogue access begins with GLD JOIN in the alley.  Once invited, LEAN first and then use the entry sequence."
+            return "Once invited, LEAN at the hidden rogue entry and then follow the pass sequence."
         return "This guild does not use a hidden entry sequence."
     if topic_l in ("dues", "pay", "silver"):
         return f"Monthly dues here are {int(guild_def.get('monthly_dues') or 0)} silver.  Use GLD PAY while standing here."

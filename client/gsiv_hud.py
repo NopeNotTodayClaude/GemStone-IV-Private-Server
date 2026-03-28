@@ -328,6 +328,10 @@ PLAYER_DEATH_SFX_RE = re.compile(
     r"(?:You have been slain\.|You have bled to death!)",
     re.I,
 )
+SKIN_SFX_RE = re.compile(
+    r"(?:^You skin .+|^[A-Z][A-Za-z' -]+ skins .+|^[A-Z][A-Za-z' -]+ fails to skin .+|^[A-Z][A-Za-z' -]+ makes a ruinous mess of .+)",
+    re.I,
+)
 ORDER_READY_SFX_RE = re.compile(
     r"(?:your order is ready!|Your order of .+ is ready!\s+Return and type REDEEM while holding your slip\.)",
     re.I,
@@ -374,6 +378,7 @@ SFX_ENEMY_DEATH = "universfield-fast-body-fall-impact-352725.mp3"
 SFX_SEVER = "Chopping Off Limb-SoundBible.com-884800545.mp3"
 SFX_PLAYER_DEATH = "ribhavagrawal-female-character-screamgaming-style-230506.mp3"
 SFX_ORDER_READY = "freesound_community-bing1-91919.mp3"
+SFX_SKIN = "Skinning.mp3"
 
 
 def _load_room_id_set(path: str) -> set[int]:
@@ -2321,10 +2326,24 @@ class HUDApp:
             insertbackground=ACCENT_BLUE,
             selectbackground="#2a3f5f",
         )
-        sb = ttk.Scrollbar(text_frame, command=self._text.yview)
+        self._text_follow_threshold = 0.98
+        self._text_follow_locked = False
+        sb = ttk.Scrollbar(text_frame, command=self._on_text_scrollbar)
         self._text.config(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
         self._text.pack(fill="both", expand=True)
+
+        self._text.bind("<MouseWheel>", self._on_text_user_scroll, add="+")
+        self._text.bind("<Button-4>", self._on_text_user_scroll, add="+")
+        self._text.bind("<Button-5>", self._on_text_user_scroll, add="+")
+        self._text.bind("<Prior>", self._on_text_user_scroll, add="+")
+        self._text.bind("<Next>", self._on_text_user_scroll, add="+")
+        self._text.bind("<Home>", self._on_text_user_scroll, add="+")
+        self._text.bind("<End>", self._on_text_user_scroll, add="+")
+        self._text.bind("<Up>", self._on_text_user_scroll, add="+")
+        self._text.bind("<Down>", self._on_text_user_scroll, add="+")
+        sb.bind("<ButtonRelease-1>", self._on_text_user_scroll, add="+")
+        sb.bind("<B1-Motion>", self._on_text_user_scroll, add="+")
 
         self._text.bind("<Control-MouseWheel>",
                         lambda e: self._resize_text(1 if e.delta > 0 else -1))
@@ -4859,17 +4878,40 @@ class HUDApp:
     # Text output
     # 
 
-    def _text_should_follow(self) -> bool:
-        """Auto-follow only when the player is already near the bottom."""
+    def _text_is_near_bottom(self) -> bool:
         try:
             _top, bottom = self._text.yview()
-            return bottom >= 0.98
+            return bottom >= self._text_follow_threshold
         except Exception:
             return True
+
+    def _update_text_follow_lock(self, user_initiated: bool = False):
+        near_bottom = self._text_is_near_bottom()
+        if near_bottom:
+            self._text_follow_locked = False
+        elif user_initiated:
+            self._text_follow_locked = True
+
+    def _on_text_user_scroll(self, _event=None):
+        try:
+            self.root.after_idle(lambda: self._update_text_follow_lock(user_initiated=True))
+        except Exception:
+            self._update_text_follow_lock(user_initiated=True)
+        return None
+
+    def _on_text_scrollbar(self, *args):
+        self._text.yview(*args)
+        self._on_text_user_scroll()
+
+    def _text_should_follow(self) -> bool:
+        """Auto-follow only when the player is already near the bottom."""
+        self._update_text_follow_lock(user_initiated=False)
+        return (not self._text_follow_locked) and self._text_is_near_bottom()
 
     def _text_follow_if_needed(self, should_follow: bool):
         if should_follow:
             self._text.see("end")
+            self._update_text_follow_lock(user_initiated=False)
 
     def _append_exits_line(self, raw: str, live_exits: Dict[str, int]):
         """
@@ -7317,6 +7359,9 @@ class HUDApp:
             return
         if PLAYER_DEATH_SFX_RE.search(clean):
             self._play_sfx(SFX_PLAYER_DEATH)
+            return
+        if SKIN_SFX_RE.search(clean):
+            self._play_sfx(SFX_SKIN)
             return
         if SEVER_SFX_RE.search(clean):
             self._play_sfx(SFX_SEVER)
