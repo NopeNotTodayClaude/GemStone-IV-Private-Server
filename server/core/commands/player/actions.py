@@ -129,9 +129,10 @@ def _available_pickpocket_silver(target_kind, target, character_id):
 def _parse_use_target(raw_args: str):
     text = (raw_args or "").strip()
     lower = text.lower()
-    if " at " in lower:
-        idx = lower.index(" at ")
-        return text[:idx].strip(), text[idx + 4 :].strip()
+    for needle in (" on ", " at "):
+        if needle in lower:
+            idx = lower.index(needle)
+            return text[:idx].strip(), text[idx + len(needle) :].strip()
     return text, ""
 
 
@@ -785,7 +786,7 @@ async def cmd_use(session, cmd, args, server):
             # ── All wound/scar/regen herbs → WoundBridge (Lua treatment.lua) ──
             wb = getattr(server, 'wound_bridge', None)
             if wb and wb.available:
-                result = wb.use_herb(session, use_item)
+                result = wb.use_herb(session, use_item, target_search or None)
                 msg = result.get('message', '')
                 if msg:
                     await session.send_line(colorize(f'  {msg}', TextPresets.SYSTEM))
@@ -898,36 +899,18 @@ async def cmd_wounds(session, cmd, args, server):
     """WOUNDS - Display all active wounds/scars with severity and herb recommendations."""
     from server.core.protocol.colors import colorize, TextPresets
 
-    # Herb recommendation table keyed by location slug
-    HERB_GUIDE = {
-        "head":          {"wound": ["aloeas stem"],              "scar": ["haphip root", "brostheras potion"]},
-        "neck":          {"wound": ["aloeas stem"],              "scar": ["haphip root", "brostheras potion"]},
-        "chest":         {"wound": ["basal moss", "pothinir grass"], "scar": ["blue argent tincture"]},
-        "abdomen":       {"wound": ["basal moss", "pothinir grass"], "scar": ["blue argent tincture"]},
-        "back":          {"wound": ["basal moss", "pothinir grass"], "scar": ["blue argent tincture"]},
-        "right_eye":     {"wound": ["basal moss", "pothinir grass"], "scar": ["aivren berry"],   "regen": ["bur-clover"]},
-        "left_eye":      {"wound": ["basal moss", "pothinir grass"], "scar": ["aivren berry"],   "regen": ["bur-clover"]},
-        "right_arm":     {"wound": ["ambrominas leaf", "ephlox moss"], "scar": ["cactacae spine"], "regen": ["sovyn clove"]},
-        "left_arm":      {"wound": ["ambrominas leaf", "ephlox moss"], "scar": ["cactacae spine"], "regen": ["sovyn clove"]},
-        "right_hand":    {"wound": ["ambrominas leaf", "ephlox moss"], "scar": ["cactacae spine"], "regen": ["sovyn clove"]},
-        "left_hand":     {"wound": ["ambrominas leaf", "ephlox moss"], "scar": ["cactacae spine"], "regen": ["sovyn clove"]},
-        "right_leg":     {"wound": ["ambrominas leaf", "ephlox moss"], "scar": ["cactacae spine"], "regen": ["sovyn clove"]},
-        "left_leg":      {"wound": ["ambrominas leaf", "ephlox moss"], "scar": ["cactacae spine"], "regen": ["sovyn clove"]},
-        "nervous_system":{"wound": ["wolifrew lichen", "bolmara potion"], "scar": ["woth flower"]},
-    }
-
     SEVERITY = {
         1: ("minor",      TextPresets.SYSTEM),
         2: ("moderate",   TextPresets.SYSTEM),
         3: ("major",      TextPresets.WARNING),
-        4: ("severe",     TextPresets.WARNING),
-        5: ("crippling",  TextPresets.HEALTH_CRIT),
     }
 
     wb = getattr(server, 'wound_bridge', None)
     wounds = {}
+    herb_guide = {}
     if wb:
         wounds = wb.get_wounds(session)
+        herb_guide = wb.get_client_treatment_guide()
 
     await session.send_line(colorize(
         "=" * 55, TextPresets.SYSTEM
@@ -964,7 +947,7 @@ async def cmd_wounds(session, cmd, args, server):
 
         has_any = True
         loc_display = loc_key.replace('_', ' ').title()
-        guide = HERB_GUIDE.get(loc_key, {})
+        guide = herb_guide.get(loc_key, {})
 
         # Wound line
         if wr:
@@ -978,23 +961,18 @@ async def cmd_wounds(session, cmd, args, server):
                 f"  {loc_display:<18} WOUND rank {wr} ({sev_name}){bleed_tag}",
                 sev_color
             ))
-            # Herb recommendation — rank 5 = severed/regen herb needed
-            if wr >= 5 and 'regen' in guide:
-                herbs = ', '.join(guide['regen'])
+            regen_names = [str(row.get("name") or "") for row in guide.get("regen", []) if row.get("name")]
+            wound_names = [str(row.get("name") or "") for row in guide.get("wound", []) if row.get("name")]
+            if wr >= 3 and regen_names:
                 await session.send_line(
-                    f"    \033[91m↳ SEVERED — use: {herbs}\033[0m"
+                    f"    \033[91m↳ RESTORE with: {', '.join(regen_names)}\033[0m"
                 )
-            elif wr >= 4 and 'regen' in guide:
-                herbs_w = ', '.join(guide.get('wound', ['unknown']))
-                herbs_r = ', '.join(guide['regen'])
+            elif wound_names:
                 await session.send_line(
-                    f"    \033[93m↳ Treat with: {herbs_w}  (or {herbs_r} to restore)\033[0m"
+                    f"    \033[36m↳ Treat with: {', '.join(wound_names)}\033[0m"
                 )
             else:
-                herbs = ', '.join(guide.get('wound', ['unknown']))
-                await session.send_line(
-                    f"    \033[36m↳ Treat with: {herbs}\033[0m"
-                )
+                await session.send_line("    \033[36m↳ Treat with: unknown\033[0m")
 
         # Scar line
         if sr:
@@ -1003,7 +981,8 @@ async def cmd_wounds(session, cmd, args, server):
                 f"  {loc_display:<18} SCAR  rank {sr} ({sev_name})",
                 sev_color
             ))
-            herbs = ', '.join(guide.get('scar', ['unknown']))
+            scar_names = [str(row.get("name") or "") for row in guide.get("scar", []) if row.get("name")]
+            herbs = ', '.join(scar_names or ['unknown'])
             await session.send_line(
                 f"    \033[33m↳ Reduce with: {herbs}\033[0m"
             )
@@ -1014,7 +993,7 @@ async def cmd_wounds(session, cmd, args, server):
     # Bleeding summary
     bleeding_locs = [
         k.replace('_', ' ') for k, v in wounds.items()
-        if v.get('is_bleeding') and not v.get('bandaged')
+        if int(v.get('wound_rank', 0) or 0) > 0 and v.get('is_bleeding') and not v.get('bandaged')
     ]
     if bleeding_locs:
         await session.send_line("")
@@ -1028,10 +1007,10 @@ async def cmd_wounds(session, cmd, args, server):
 
     await session.send_line(colorize("=" * 55, TextPresets.SYSTEM))
     await session.send_line(
-        "  EAT <herb> or DRINK <herb> from your hand to treat wounds."
+        "  USE <herb> ON <area> from your hand to target a specific injury."
     )
     await session.send_line(
-        "  Herbs auto-target the worst eligible wound they can treat."
+        "  USE <herb> without ON will still auto-target the worst eligible injury."
     )
     await session.send_line(colorize("=" * 55, TextPresets.SYSTEM))
 

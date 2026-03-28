@@ -223,6 +223,14 @@ class GameServer:
                 break
             playing = self.sessions.playing()
             if playing and self.db:
+                wound_bridge = getattr(self, 'wound_bridge', None)
+                if wound_bridge:
+                    for session in playing:
+                        try:
+                            wound_bridge.save_wounds_now(session)
+                        except Exception as _e:
+                            log.debug("Autosave wound flush failed for %s: %s",
+                                      getattr(session, 'character_name', 'unknown'), _e)
                 saved = self.db.save_all_characters(playing)
                 if saved > 0:
                     log.debug("Safety-net auto-save: %d character(s).", saved)
@@ -629,6 +637,14 @@ class GameServer:
         if self.db:
             playing = self.sessions.playing()
             if playing:
+                wound_bridge = getattr(self, 'wound_bridge', None)
+                if wound_bridge:
+                    for session in playing:
+                        try:
+                            wound_bridge.save_wounds_now(session)
+                        except Exception as _e:
+                            log.debug("Shutdown wound flush failed for %s: %s",
+                                      getattr(session, 'character_name', 'unknown'), _e)
                 saved = self.db.save_all_characters(playing)
                 log.info("Shutdown: saved %d character(s).", saved)
 

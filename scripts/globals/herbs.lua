@@ -45,7 +45,7 @@ Herbs.DATA = {
         bites       = 3,
         herb_group  = { "nervous_system" },
         heal_type   = "wound",
-        max_rank    = 2,
+        max_rank    = 1,
         hp_restore  = 0,
         roundtime   = 15,
         use_verb    = "eat",
@@ -67,10 +67,24 @@ Herbs.DATA = {
         eat_msg     = "You drink the bolmara potion.  An electric sensation runs through your nerves.",
     },
 
+    torban_leaf = {
+        name        = "torban leaf",
+        article     = "some",
+        bites       = 3,
+        herb_group  = { "nervous_system" },
+        heal_type   = "scar",
+        max_rank    = 1,
+        hp_restore  = 0,
+        roundtime   = 15,
+        use_verb    = "eat",
+        desc        = "a stiff, dark-veined leaf",
+        eat_msg     = "You eat the torban leaf.  The minor twitching from old nerve damage begins to settle.",
+    },
+
     woth_flower = {
         name        = "woth flower",
-        article     = "a",
-        bites       = 1,
+        article     = "some",
+        bites       = 3,
         herb_group  = { "nervous_system" },
         heal_type   = "scar",
         max_rank    = 3,
@@ -82,10 +96,24 @@ Herbs.DATA = {
     },
 
     ---------- HEAD & NECK ----------------------------------------------
+    rose_marrow_potion = {
+        name        = "rose-marrow potion",
+        article     = "a",
+        bites       = 1,
+        herb_group  = { "head", "neck" },
+        heal_type   = "wound",
+        max_rank    = 1,
+        hp_restore  = 0,
+        roundtime   = 15,
+        use_verb    = "drink",
+        desc        = "a rosy tonic in a stoppered vial",
+        eat_msg     = "You drink the rose-marrow potion.  A mild warmth settles around your head and neck.",
+    },
+
     aloeas_stem = {
         name        = "aloeas stem",
-        article     = "an",
-        bites       = 1,
+        article     = "some",
+        bites       = 3,
         herb_group  = { "head", "neck" },
         heal_type   = "wound",
         max_rank    = 3,
@@ -98,11 +126,11 @@ Herbs.DATA = {
 
     haphip_root = {
         name        = "haphip root",
-        article     = "a",
-        bites       = 1,
+        article     = "some",
+        bites       = 3,
         herb_group  = { "head", "neck" },
         heal_type   = "scar",
-        max_rank    = 2,
+        max_rank    = 1,
         hp_restore  = 0,
         roundtime   = 15,
         use_verb    = "eat",
@@ -131,7 +159,7 @@ Herbs.DATA = {
         bites       = 3,
         herb_group  = { "chest", "abdomen", "back", "right_eye", "left_eye" },
         heal_type   = "wound",
-        max_rank    = 2,
+        max_rank    = 1,
         hp_restore  = 0,
         roundtime   = 15,
         use_verb    = "eat",
@@ -153,9 +181,37 @@ Herbs.DATA = {
         eat_msg     = "You eat the pothinir grass.  A deep warmth penetrates your torso.",
     },
 
+    talneo_potion = {
+        name        = "talneo potion",
+        article     = "a",
+        bites       = 1,
+        herb_group  = { "chest", "abdomen", "back", "right_eye", "left_eye" },
+        heal_type   = "scar",
+        max_rank    = 1,
+        hp_restore  = 0,
+        roundtime   = 15,
+        use_verb    = "drink",
+        desc        = "a cloudy amber draught in a squat vial",
+        eat_msg     = "You drink the talneo potion.  Fine scar tissue across your torso begins to loosen.",
+    },
+
+    wingstem_potion = {
+        name        = "wingstem potion",
+        article     = "a",
+        bites       = 1,
+        herb_group  = { "chest", "abdomen", "back", "right_eye", "left_eye" },
+        heal_type   = "scar",
+        max_rank    = 3,
+        hp_restore  = 0,
+        roundtime   = 20,
+        use_verb    = "drink",
+        desc        = "a thick green tincture with a bitter scent",
+        eat_msg     = "You drink the wingstem potion.  Deep organ and eye scarring slowly begins to dissolve.",
+    },
+
     -- Eye restoration (missing eye -> restored with no scar)
     bur_clover = {
-        name        = "bur-clover",
+        name        = "bur-clover potion",
         article     = "a",
         bites       = 1,
         herb_group  = { "right_eye", "left_eye" },
@@ -163,35 +219,20 @@ Herbs.DATA = {
         max_rank    = 3,
         hp_restore  = 0,
         roundtime   = 30,
-        use_verb    = "eat",
+        use_verb    = "drink",
         desc        = "a spiky clover blossom with milky sap",
-        eat_msg     = "You eat the bur-clover.  A sharp tingling sensation spreads through your eye socket, then fades to warmth.",
-    },
-
-    -- Eye scar
-    aivren_berry = {
-        name        = "aivren berry",
-        article     = "an",
-        bites       = 1,
-        herb_group  = { "right_eye", "left_eye" },
-        heal_type   = "scar",
-        max_rank    = 3,
-        hp_restore  = 0,
-        roundtime   = 15,
-        use_verb    = "eat",
-        desc        = "a small purple berry",
-        eat_msg     = "You eat the aivren berry.  The old scar tissue around your eye gradually softens.",
+        eat_msg     = "You drink the bur-clover potion.  A sharp tingling sensation spreads through your eye socket, then fades to warmth.",
     },
 
     ---------- LIMBS (arms, hands, legs) --------------------------------
     ambrominas_leaf = {
         name        = "ambrominas leaf",
-        article     = "an",
+        article     = "some",
         bites       = 3,
         herb_group  = { "right_arm", "left_arm", "right_hand", "left_hand",
                         "right_leg", "left_leg" },
         heal_type   = "wound",
-        max_rank    = 2,
+        max_rank    = 1,
         hp_restore  = 0,
         roundtime   = 15,
         use_verb    = "eat",
@@ -233,12 +274,12 @@ Herbs.DATA = {
     -- Limb scar
     cactacae_spine = {
         name        = "cactacae spine",
-        article     = "a",
-        bites       = 1,
+        article     = "some",
+        bites       = 3,
         herb_group  = { "right_arm", "left_arm", "right_hand", "left_hand",
                         "right_leg", "left_leg" },
         heal_type   = "scar",
-        max_rank    = 3,
+        max_rank    = 1,
         hp_restore  = 0,
         roundtime   = 15,
         use_verb    = "eat",
@@ -246,10 +287,25 @@ Herbs.DATA = {
         eat_msg     = "You eat the cactacae spine.  Old scar tissue in your limbs begins to recede.",
     },
 
-    ---------- MISC / POISON / MANA -------------------------------------
-    -- Poison cure
     calamia_fruit = {
         name        = "calamia fruit",
+        article     = "some",
+        bites       = 3,
+        herb_group  = { "right_arm", "left_arm", "right_hand", "left_hand",
+                        "right_leg", "left_leg" },
+        heal_type   = "scar",
+        max_rank    = 3,
+        hp_restore  = 0,
+        roundtime   = 20,
+        use_verb    = "eat",
+        desc        = "a tart reddish fruit with a bitter rind",
+        eat_msg     = "You eat the calamia fruit.  Deep scar tissue in your limbs begins to recede.",
+    },
+
+    ---------- MISC / POISON / MANA -------------------------------------
+    -- Poison cure
+    poison_calamia_fruit = {
+        name        = "poison calamia fruit",
         article     = "a",
         bites       = 1,
         herb_group  = { "all" },
@@ -291,7 +347,8 @@ end
 function Herbs.find_by_name(name_fragment)
     local frag = (name_fragment or ""):lower()
     for key, herb in pairs(Herbs.DATA) do
-        if herb.name:find(frag, 1, true) then
+        local herb_name = (herb.name or ""):lower()
+        if herb_name:find(frag, 1, true) or frag:find(herb_name, 1, true) then
             return herb, key
         end
     end

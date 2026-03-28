@@ -334,6 +334,7 @@ def build_snapshot(session, server) -> dict:
         "room_enemies":   _build_room_enemies(session, server),
         "room_npcs":      _build_room_npcs(session, server),
         "wounds":         _build_wounds(session),
+        "wound_guide":    _build_wound_guide(server),
         "aimed_location": getattr(session, "aimed_location", None),
         "right_hand":     _item_noun(getattr(session, "right_hand", None)),
         "left_hand":      _item_noun(getattr(session, "left_hand",  None)),
@@ -685,6 +686,18 @@ def _build_wounds(session) -> dict:
             "bandaged":    False,
         }
     return out
+
+
+def _build_wound_guide(server) -> dict:
+    """Expose the canonical herb treatment guide for the client wounds panel."""
+    wb = getattr(server, "wound_bridge", None)
+    if not wb:
+        return {}
+    try:
+        return wb.get_client_treatment_guide()
+    except Exception:
+        log.exception("Failed building wound guide snapshot")
+        return {}
 
 
 def _build_encumbrance(session, server) -> dict:

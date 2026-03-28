@@ -951,6 +951,8 @@ class RoomGraph:
     def __init__(self, path: str = GRAPH_PATH):
         self.rooms: Dict[int, dict] = {}
         self.uid_to_room: Dict[int, int] = {}
+        self.wayto_commands: Dict[Tuple[int, int], List[str]] = {}
+        self.service_wayto: Dict[Tuple[int, int], List[str]] = {}
         self._path = path
         self._load()
 
@@ -1020,6 +1022,8 @@ class RoomGraph:
             if not isinstance(data, list):
                 return
             merged_count = 0
+            service_room_ids: set[int] = set()
+            all_wayto: Dict[Tuple[int, int], List[str]] = {}
             for entry in data:
                 if not isinstance(entry, dict):
                     continue
@@ -1043,10 +1047,102 @@ class RoomGraph:
                 if len(merged) != before:
                     room["tags"] = sorted(merged)
                     merged_count += 1
+                if any(tag in {"bank", "herbalist"} for tag in merged):
+                    service_room_ids.add(rid)
+            for entry in data:
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    src_room = int(entry.get("id"))
+                except (TypeError, ValueError):
+                    continue
+                if src_room not in self.rooms:
+                    continue
+                for dst_id, raw_cmd in (entry.get("wayto") or {}).items():
+                    try:
+                        dst_room = int(dst_id)
+                    except (TypeError, ValueError):
+                        continue
+                    if dst_room not in self.rooms:
+                        continue
+                    commands = self._extract_wayto_commands(raw_cmd)
+                    if not commands:
+                        continue
+                    all_wayto[(src_room, dst_room)] = commands
+                    if dst_room not in service_room_ids:
+                        continue
+                    self.service_wayto[(src_room, dst_room)] = commands
+            self.wayto_commands = all_wayto
+            self._overlay_wayto_commands()
             if merged_count:
                 print(f"[RoomGraph] Merged LICH tags for {merged_count} rooms.")
         except Exception as e:
             print(f"[RoomGraph] LICH tag merge error: {e}")
+
+    @staticmethod
+    def _extract_wayto_commands(raw_cmd) -> List[str]:
+        text = str(raw_cmd or "").strip()
+        if not text:
+            return []
+        commands: List[str] = []
+        for cmd in re.findall(r"move '([^']+)'", text):
+            cmd = str(cmd).strip()
+            if cmd and cmd not in commands:
+                commands.append(cmd)
+        if not commands and not text.startswith(";"):
+            commands.append(text)
+        commands.sort(key=lambda cmd: (0 if any(word in cmd for word in ("building", "structure", "bank", "healer", "herbal")) else 1, cmd))
+        return commands
+
+    def _overlay_wayto_commands(self):
+        """Prefer single-step LICH wayto commands over graph commands where safe."""
+        by_source: Dict[int, List[Tuple[int, str]]] = {}
+        for (from_id, to_id), commands in self.wayto_commands.items():
+            if len(commands) != 1:
+                continue
+            command = str(commands[0] or "").strip()
+            if not command:
+                continue
+            by_source.setdefault(int(from_id), []).append((int(to_id), command))
+
+        for src_room, room in self.rooms.items():
+            source_overrides = by_source.get(int(src_room), [])
+            if not source_overrides:
+                continue
+            edges = room.get("edges", []) or []
+            existing = {}
+            for edge in edges:
+                try:
+                    existing[int(edge.get("to"))] = edge
+                except (TypeError, ValueError):
+                    continue
+
+            for to_id, command in source_overrides:
+                edge = existing.get(to_id)
+                if edge is not None:
+                    edge["command"] = command
+                    edge["wayto"] = True
+                    continue
+                edges.append({
+                    "to": int(to_id),
+                    "command": command,
+                    "key": command.replace(" ", "_").lower(),
+                    "cost": 1.0,
+                    "wayto": True,
+                })
+            room["edges"] = edges
+
+    def get_service_entry_commands(self, from_id: int, to_id: int) -> List[str]:
+        try:
+            return list(self.service_wayto.get((int(from_id), int(to_id)), []))
+        except (TypeError, ValueError):
+            return []
+
+    def get_wayto_commands(self, from_id: int, to_id: int) -> List[str]:
+        try:
+            return list(self.wayto_commands.get((int(from_id), int(to_id)), []))
+        except (TypeError, ValueError):
+            return []
 
     def get(self, room_id: int) -> Optional[dict]:
         return self.rooms.get(int(room_id))
@@ -2046,6 +2142,7 @@ class HUDApp:
         # Wound panel state (populated via sync)
         # {loc: {wound_rank:0-5, scar_rank:0-5, is_bleeding:bool, bandaged:bool}}
         self._wounds: dict = {}
+        self._wound_guide: dict = {}
         # AUTO mode state
         self._auto_healing:     bool = False
         self._auto_saved_hands: list = []  # [(slot, item_name), ...]
@@ -2090,9 +2187,9 @@ class HUDApp:
         root.after(5000, self._passive_hp_regen)
         root.after(200, self._audio_tick)
 
-    # ════════════════════════════════════════════
+    # 
     # UI construction
-    # ════════════════════════════════════════════
+    # 
 
     def _build_ui(self):
         self.root.title("GemStone IV — Private Server HUD")
@@ -2312,7 +2409,7 @@ class HUDApp:
         self._skin_btn.pack(side="left", padx=3)
 
         self._look_btn = tk.Button(
-            combat_bar, text="👁  Look",
+            combat_bar, text="\U0001F441  Look",
             bg="#1a1a2a", fg="#aaaadd",
             activebackground="#2a2a4a",
             command=self._cmd_look, **btn_style)
@@ -2323,7 +2420,7 @@ class HUDApp:
                   activebackground="#2a4a2a",
                   command=self._cmd_pick,
                   **btn_style).pack(side="right", padx=3)
-        tk.Button(combat_bar, text="🔍  Detect",
+        tk.Button(combat_bar, text="\U0001F50D  Detect",
                   bg="#1a2a1a", fg="#88bbcc",
                   activebackground="#2a4a2a",
                   command=self._cmd_detect,
@@ -2436,7 +2533,7 @@ class HUDApp:
                   activebackground="#2a4a2a",
                   command=lambda: self._quick_cmd("exp"),
                   **util_style).pack(side="left", padx=3)
-        tk.Button(util_bar, text="❤ Health",
+        tk.Button(util_bar, text="\u2764 Health",
                   bg="#2a1a1a", fg="#dd8888",
                   activebackground="#4a2a2a",
                   command=lambda: self._quick_cmd("health"),
@@ -2781,13 +2878,16 @@ class HUDApp:
         if wounds_snap is not None:
             self._wounds = wounds_snap
             self._update_wounds_panel()
+        wound_guide = snap.get("wound_guide")
+        if isinstance(wound_guide, dict):
+            self._wound_guide = wound_guide
         self._current_aim = str(snap.get("aimed_location", None) or "").strip().lower()
         self._update_bodypart_btn()
 
 
-    # ══════════════════════════════════════════════════════════════════════════
+    # 
     # Status Effect Icon Bar  (embedded in toolbar, no floating window)
-    # ══════════════════════════════════════════════════════════════════════════
+    # 
 
     def _refresh_sync_hand_cache(self):
         """Keep lockbox button state aligned with the live sync snapshot."""
@@ -3107,24 +3207,24 @@ class HUDApp:
         )
         self._room_zone_lbl.pack(fill="x", padx=4, pady=(0, 2))
 
-    # ════════════════════════════════════════════
+    # 
     # Time & Weather panel
-    # ════════════════════════════════════════════
+    # 
 
     # Weather state → icon character + color
     _WEATHER_ICONS = {
         "clear":         ("☀",  "#ffd700"),
         "partly_cloudy": ("⛅", "#aaccff"),
-        "overcast":      ("☁",  "#8b949e"),
+        "overcast":      ("\u2601",  "#8b949e"),
         "fog":           ("🌫", "#8b949e"),
         "drizzle":       ("🌦", "#5599cc"),
         "light_rain":    ("🌧", "#5599cc"),
         "rain":          ("🌧", "#3377aa"),
         "heavy_rain":    ("🌧", "#2255aa"),
         "storm":         ("⛈", "#cc44cc"),
-        "snow":          ("❄",  "#aaddff"),
-        "heavy_snow":    ("❄",  "#88bbff"),
-        "blizzard":      ("❄",  "#6699ff"),
+        "snow":          ("\u2744",  "#aaddff"),
+        "heavy_snow":    ("\u2744",  "#88bbff"),
+        "blizzard":      ("\u2744",  "#6699ff"),
         "sleet":         ("🌨", "#99bbdd"),
         "blood_rain":    ("🩸", "#cc2222"),
         "thunderstorm":  ("⛈", "#ff44ff"),
@@ -3164,11 +3264,11 @@ class HUDApp:
         time_row = tk.Frame(frame, bg=BG_PANEL)
         time_row.pack(fill="x", padx=6, pady=(4, 0))
 
-        tk.Label(time_row, text="⏱", fg=TEXT_DIM, bg=BG_PANEL,
+        tk.Label(time_row, text="\u23F1", fg=TEXT_DIM, bg=BG_PANEL,
                  font=("Courier New", 10)).pack(side="left", padx=(0, 3))
 
         self._tw_time_lbl = tk.Label(
-            time_row, text="—:—",
+            time_row, text="\u2014:\u2014",
             fg=ACCENT_YEL, bg=BG_PANEL,
             font=("Courier New", 10, "bold"), anchor="w"
         )
@@ -3259,7 +3359,7 @@ class HUDApp:
             wx_label    = state.replace("_", " ").title()
             if self._tw_weather in ("still", "—", "", None):
                 wx_label = "Indoors"
-                icon     = "🏠"
+                icon     = "\U0001F3E0"
                 color    = TEXT_DIM
 
             self._tw_wx_icon_lbl.config(text=icon, fg=color)
@@ -3283,9 +3383,9 @@ class HUDApp:
         except Exception:
             pass  # panel may not be built yet on first sync tick
 
-    # ════════════════════════════════════════════
+    # 
     # Wounds Panel
-    # ════════════════════════════════════════════
+    # 
 
     # ── Herb → location mapping (wounds and scars, up to rank 5) ─────────────
     # Keyed by body-location slug.  Each entry lists herbs that treat wounds
@@ -3310,6 +3410,10 @@ class HUDApp:
     # Tags for shop / bank rooms in the map graph
     _HERBALIST_TAG = "herbalist"
     _BANK_TAG      = "bank"
+    _SERVICE_EXIT_ALIASES = {
+        "herbalist": ("herbalist", "healer", "herbs", "apothecary"),
+        "bank": ("bank",),
+    }
 
     def _build_wounds_panel(self, parent):
         """Human body silhouette with clickable wound/scar indicators per location."""
@@ -3424,8 +3528,8 @@ class HUDApp:
         leg = tk.Frame(outer, bg=BG_PANEL)
         leg.pack(fill="x", padx=6, pady=(2, 0))
         legend_items = [
-            ("#8b0000", "W1-2"), ("#cc0000", "W3-4"), ("#ff2020", "W5"),
-            ("#4a3500", "S1-2"), ("#8b6914", "S3-4"), ("#d4a017", "S5"),
+            ("#8b0000", "W1"), ("#b22222", "W2"), ("#cc0000", "W3"),
+            ("#4a3500", "S1"), ("#8b6914", "S2"), ("#d4a017", "S3"),
             ("#1a6a1a", "OK"),
         ]
         for col, lbl in legend_items:
@@ -3478,15 +3582,15 @@ class HUDApp:
     def _wound_color(wound_rank: int, scar_rank: int, is_bleeding: bool):
         """Return (fill_color, outline_color, label_text) for a body part."""
         wr, sr = wound_rank, scar_rank
-        if wr == 5:
-            return "#ff2020", "#ff6060", "†5"   # rank 5 = limb loss
         if wr >= 3:
             return "#cc0000", "#ff4444", f"W{wr}"
+        if wr == 2:
+            return "#b22222", "#ff5555", f"W{wr}"
         if wr >= 1:
             return "#8b0000", "#cc2222", f"W{wr}"
-        if sr == 5:
-            return "#d4a017", "#ffe066", "†5"
         if sr >= 3:
+            return "#d4a017", "#ffe066", f"S{sr}"
+        if sr == 2:
             return "#8b6914", "#d4a017", f"S{sr}"
         if sr >= 1:
             return "#4a3500", "#8b6914", f"S{sr}"
@@ -3545,99 +3649,43 @@ class HUDApp:
     # ── Click-to-heal a single location ──────────────────────────────────────
 
     def _wound_click(self, loc: str):
-        """Player clicked a body part — try to heal it from inventory."""
-        entry = self._wounds.get(loc, {})
-        wr    = int(entry.get("wound_rank", 0))
-        sr    = int(entry.get("scar_rank",  0))
+        """Heal a single clicked body part using the same workflow as AUTO heal."""
+        self._start_wound_heal(scope_loc=loc)
 
-        if not wr and not sr:
-            self._wound_status("No injury at " + loc.replace("_", " ") + ".")
+    def _start_wound_heal(self, scope_loc: Optional[str]):
+        if self._auto_healing:
+            self._wound_status("Healing is already in progress.")
+            return
+        if self._current_room_id is None:
+            self._wound_status("Healing needs a known room. Try LOOK first.")
+            return
+        if not self._wound_guide:
+            self._wound_status("The wound treatment guide has not synced yet.")
             return
 
-        # Determine which herb type we need
-        herbs_map = self._WOUND_HERBS.get(loc, {})
-        if wr == 5:
-            # Limb loss — need regen herb
-            need_type = "regen"
-        elif wr:
-            need_type = "wound"
-        else:
-            need_type = "scar"
-
-        herb_candidates = herbs_map.get(need_type, [])
-        if not herb_candidates:
-            herb_candidates = herbs_map.get("wound", [])
-
-        if not herb_candidates:
-            self._wound_status(f"No herb known for {loc.replace('_',' ')}.")
+        active_locs = self._heal_scope_locations(scope_loc)
+        if not active_locs:
+            target = scope_loc.replace("_", " ") if scope_loc else "anywhere"
+            self._wound_status(f"No active injury at {target}.")
             return
 
-        # Send: inv full — then parse response via the existing chat parser
-        # We queue a callback to check after "inv full" output arrives
-        self._wound_status("Preparing treatment...")
-        self._wound_pending_heal = (loc, herb_candidates, need_type)
-        self.root.after(50, self._wound_heal_exec)
-
-    def _wound_heal_exec(self):
-        """Called after inv full has been sent — stow hands, get herb, eat herb."""
-        if not hasattr(self, "_wound_pending_heal"):
-            return
-        loc, herb_candidates, need_type = self._wound_pending_heal
-        del self._wound_pending_heal
-
-        herb        = herb_candidates[0]
-        loc_display = loc.replace("_", " ")
-        self._wound_status(f"Healing {loc_display} with {herb}…")
-
-        # Determine which hands are occupied from the last sync snapshot so we
-        # know exactly which stow commands are needed before fetching the herb.
-        snap       = self._last_sync
-        right_item = snap.get("right_hand") if snap else None
-        left_item  = snap.get("left_hand")  if snap else None
-
-        # Build the command sequence with per-step delays:
-        #   stow right  (if held)  → 700 ms
-        #   stow left   (if held)  → 700 ms
-        #   get <herb>             → 900 ms   (allow server round-trip)
-        #   eat <herb>             → 900 ms
-        steps   = []
-        delays  = []
-
-        elapsed = 0
-        if right_item:
-            steps.append("stow right")
-            elapsed += 700
-            delays.append(elapsed)
-        if left_item:
-            steps.append("stow left")
-            elapsed += 700
-            delays.append(elapsed)
-
-        # Always try to stow both hands even if sync has no data,
-        # to handle the case where sync hasn't caught up yet.
-        if not right_item and not left_item:
-            steps.append("stow right")
-            elapsed += 700
-            delays.append(elapsed)
-            steps.append("stow left")
-            elapsed += 400
-            delays.append(elapsed)
-
-        steps.append(f"get {herb}")
-        elapsed += 900
-        delays.append(elapsed)
-
-        steps.append(f"use {herb}")
-        elapsed += 900
-        delays.append(elapsed)
-
-        for cmd, ms in zip(steps, delays):
-            self.root.after(ms, lambda c=cmd: self._send(c))
-
-        self.root.after(elapsed + 500,
-            lambda: self._send("wounds"))
-        self.root.after(elapsed + 850,
-            lambda: self._wound_status(f"Applied {herb} to {loc_display}."))
+        self._auto_healing = True
+        if hasattr(self, "_auto_heal_btn"):
+            self._auto_heal_btn.config(text="Healing...", state="disabled")
+        scope_text = active_locs[0].replace("_", " ") if scope_loc else "all wounds and scars"
+        self._wound_status(f"Healing {scope_text}. Taking an inventory snapshot...")
+        self._auto_ctx = {
+            "scope_loc": scope_loc,
+            "saved_hands": [],
+            "bank_target": (self._find_service_candidates(self._BANK_TAG, limit=1) or [None])[0],
+            "herbalist_candidates": self._find_service_candidates(self._HERBALIST_TAG, limit=8),
+            "herbalist_index": 0,
+            "bank_trips": 0,
+            "final_status": "",
+        }
+        self._send("inv full")
+        self._append("> inv full\n", "prompt")
+        self.root.after(900, self._auto_prepare_inventory)
 
     def _wound_status(self, msg: str):
         """Update the status label under the AUTO button."""
@@ -3654,16 +3702,96 @@ class HUDApp:
         bl = bool(entry.get("is_bleeding", False))
         loc_disp = loc.replace("_", " ").title()
         if wr or sr:
-            tip = f"{loc_disp}: W{wr} S{sr}" + (" ♥" if bl else "")
+            tip = f"{loc_disp}: W{wr} S{sr}" + (" " if bl else "")
         else:
             tip = f"{loc_disp}: clean"
         self._wound_status(tip)
 
-    # ── AUTO heal ─────────────────────────────────────────────────────────────
-
     def _auto_abort(self, message: str):
         self._wound_status(message)
+        if self._auto_healing:
+            self._auto_ctx["final_status"] = message
+        if self._auto_healing and self._auto_ctx.get("saved_hands") and not self._auto_ctx.get("restoring_after_abort"):
+            self._auto_ctx["restoring_after_abort"] = True
+            self._auto_cmd_queue = self._auto_build_restore_steps(self._auto_ctx) + [("done", None)]
+            self._auto_run_next()
+            return
         self._auto_done()
+
+    def _auto_find_local_service_cmd(self, tag: str) -> Optional[str]:
+        aliases = tuple(
+            str(alias or "").strip().lower()
+            for alias in self._SERVICE_EXIT_ALIASES.get(tag, (tag,))
+            if str(alias or "").strip()
+        )
+        if not aliases:
+            return None
+
+        for alias in aliases:
+            info = self._live_exits.get(alias)
+            if isinstance(info, tuple):
+                return str(info[1] or "").strip() or None
+
+        for token, info in self._live_exits.items():
+            lookup = str(token or "").strip().lower()
+            if not lookup:
+                continue
+            if any(alias == lookup or alias in lookup or lookup in alias for alias in aliases):
+                if isinstance(info, tuple):
+                    return str(info[1] or "").strip() or None
+        return None
+
+    def _find_service_candidates(self, tag: str, limit: int = 8) -> List[dict]:
+        if not self.graph or self._current_room_id is None:
+            return []
+
+        tag_key = str(tag or "").strip().lower()
+        if not tag_key:
+            return []
+
+        scored: List[Tuple[int, int, int, dict]] = []
+        seen: set[int] = set()
+
+        for rid, room in self.graph.rooms.items():
+            try:
+                rid_int = int(rid)
+            except (TypeError, ValueError):
+                continue
+            if rid_int in seen:
+                continue
+            tags = [str(t).strip().lower() for t in (room.get("tags") or [])]
+            if tag_key not in tags:
+                continue
+
+            exits = room.get("exits", {}) or {}
+            out_room = exits.get("out")
+            try:
+                approach_room = int(out_room) if out_room is not None else rid_int
+            except (TypeError, ValueError):
+                approach_room = rid_int
+
+            if approach_room != self._current_room_id:
+                path = self.graph.find_path(self._current_room_id, approach_room)
+                if path is None:
+                    continue
+                distance = len(path)
+            else:
+                distance = 0
+
+            candidate = {"room_id": rid_int, "tag": tag_key}
+            if approach_room != rid_int:
+                candidate["approach_room"] = approach_room
+                entry_cmds = self.graph.get_service_entry_commands(approach_room, rid_int)
+                if entry_cmds:
+                    candidate["entry_cmds"] = entry_cmds
+
+            # Prefer already-inside rooms first, then local approach rooms, then nearest reachable.
+            priority = 0 if rid_int == self._current_room_id else (1 if approach_room == self._current_room_id else 2)
+            scored.append((priority, distance, rid_int, candidate))
+            seen.add(rid_int)
+
+        scored.sort(key=lambda row: (row[0], row[1], row[2]))
+        return [row[3] for row in scored[:limit]]
 
     def _auto_worn_container_keys(self) -> List[str]:
         keys: List[str] = []
@@ -3686,9 +3814,9 @@ class HUDApp:
 
         if item_type == "weapon":
             return (
-                first_match(("sheath", "scabbard"))
-                or first_match(("cloak", "cape"))
+                first_match(("cloak", "cape"))
                 or first_match(("backpack", "rucksack", "haversack", "pack"))
+                or first_match(("sheath", "scabbard"))
                 or containers[0]
             )
 
@@ -3746,89 +3874,170 @@ class HUDApp:
             })
         return hand_items
 
-    def _auto_build_requirements(self) -> Tuple[dict, dict, List[str], List[str]]:
-        to_heal = {}
-        herb_counts: Dict[str, int] = {}
-        herb_sequence: List[str] = []
-        missing: List[str] = []
+    def _heal_scope_locations(self, scope_loc: Optional[str]) -> List[str]:
+        order = [
+            "head", "neck", "right_eye", "left_eye",
+            "chest", "abdomen", "back", "nervous_system",
+            "right_arm", "left_arm", "right_hand", "left_hand",
+            "right_leg", "left_leg",
+        ]
+        if scope_loc:
+            entry = self._wounds.get(scope_loc, {})
+            wr = int(entry.get("wound_rank", 0) or 0)
+            sr = int(entry.get("scar_rank", 0) or 0)
+            return [scope_loc] if (wr or sr) else []
+        return [
+            loc for loc in order
+            if int((self._wounds.get(loc, {}) or {}).get("wound_rank", 0) or 0)
+            or int((self._wounds.get(loc, {}) or {}).get("scar_rank", 0) or 0)
+        ]
 
-        for loc, entry in self._wounds.items():
-            wr = int(entry.get("wound_rank", 0))
-            sr = int(entry.get("scar_rank", 0))
-            if not (wr or sr):
+    def _heal_select_profile(self, loc: str, wr: int, sr: int) -> Optional[dict]:
+        guide = self._wound_guide.get(loc, {}) if isinstance(self._wound_guide, dict) else {}
+        if wr > 0:
+            regen = list(guide.get("regen", []))
+            if wr >= 3 and regen:
+                chosen = dict(regen[0])
+                chosen["bucket"] = "regen"
+                chosen["target_rank"] = wr
+                return chosen
+            wound_opts = list(guide.get("wound", []))
+            for row in wound_opts:
+                if int(row.get("max_rank", 0) or 0) >= wr:
+                    chosen = dict(row)
+                    chosen["bucket"] = "wound"
+                    chosen["target_rank"] = wr
+                    return chosen
+            if wound_opts:
+                chosen = dict(wound_opts[-1])
+                chosen["bucket"] = "wound"
+                chosen["target_rank"] = wr
+                return chosen
+        if sr > 0:
+            scar_opts = list(guide.get("scar", []))
+            for row in scar_opts:
+                if int(row.get("max_rank", 0) or 0) >= sr:
+                    chosen = dict(row)
+                    chosen["bucket"] = "scar"
+                    chosen["target_rank"] = sr
+                    return chosen
+            if scar_opts:
+                chosen = dict(scar_opts[-1])
+                chosen["bucket"] = "scar"
+                chosen["target_rank"] = sr
+                return chosen
+        return None
+
+    def _heal_next_target(self) -> Optional[dict]:
+        candidates: List[Tuple[int, int, int, dict]] = []
+        for idx, loc in enumerate(self._heal_scope_locations(self._auto_ctx.get("scope_loc"))):
+            entry = self._wounds.get(loc, {}) or {}
+            wr = int(entry.get("wound_rank", 0) or 0)
+            sr = int(entry.get("scar_rank", 0) or 0)
+            profile = self._heal_select_profile(loc, wr, sr)
+            if not profile:
                 continue
-            to_heal[loc] = {"wr": wr, "sr": sr}
-            herbs_map = self._WOUND_HERBS.get(loc, {})
+            if wr > 0:
+                priority = (0, -wr, idx)
+                kind = "wound"
+                rank = wr
+            else:
+                priority = (1, -sr, idx)
+                kind = "scar"
+                rank = sr
+            candidates.append((
+                priority[0], priority[1], priority[2],
+                {
+                    "loc": loc,
+                    "loc_display": loc.replace("_", " "),
+                    "kind": kind,
+                    "rank": rank,
+                    "profile": profile,
+                    "herb_key": self._item_key(str(profile.get("name") or "")),
+                }
+            ))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda row: (row[0], row[1], row[2]))
+        return candidates[0][3]
 
-            if wr == 5:
-                regen_herbs = herbs_map.get("regen", herbs_map.get("wound", []))
-                herb = regen_herbs[0] if regen_herbs else None
-                if herb:
-                    herb_counts[herb] = herb_counts.get(herb, 0) + 1
-                    herb_sequence.append(herb)
-                else:
-                    missing.append(f"{loc.replace('_', ' ')} wound")
-            elif wr > 0:
-                wound_herbs = herbs_map.get("wound", [])
-                herb = wound_herbs[0] if wound_herbs else None
-                if herb:
-                    herb_counts[herb] = herb_counts.get(herb, 0) + wr
-                    herb_sequence.extend([herb] * wr)
-                else:
-                    missing.append(f"{loc.replace('_', ' ')} wound")
+    def _herb_match_keys(self, name: str) -> set[str]:
+        text = self._item_key(name)
+        keys = {text} if text else set()
+        if not text:
+            return keys
+        base = re.sub(
+            r"^(?:tincture|elixir|potion|vial|brew|tea|infusion|essence)(?:\s+of)?\s+",
+            "",
+            text,
+        ).strip()
+        base = re.sub(
+            r"\s+(?:tincture|elixir|potion|brew|tea|infusion|essence)$",
+            "",
+            base,
+        ).strip()
+        if base:
+            keys.add(base)
+        return {k for k in keys if k}
 
-            if sr > 0:
-                scar_herbs = herbs_map.get("scar", [])
-                herb = scar_herbs[0] if scar_herbs else None
-                if herb:
-                    herb_counts[herb] = herb_counts.get(herb, 0) + sr
-                    herb_sequence.extend([herb] * sr)
-                else:
-                    missing.append(f"{loc.replace('_', ' ')} scar")
+    def _heal_find_inventory_herb(self, herb_key: str) -> Optional[dict]:
+        herb_container = str(self._auto_ctx.get("herb_container") or "")
+        herb_container_key = self._item_key(herb_container) if herb_container else ""
+        wanted_keys = self._herb_match_keys(herb_key)
+        matches: List[Tuple[int, str, dict]] = []
+        for key, info in self._known_items.items():
+            info_keys = self._herb_match_keys(str(info.get("full_name") or key))
+            if wanted_keys.isdisjoint(info_keys):
+                continue
+            state = str(info.get("state") or "")
+            if state not in ("in_container", "right_hand", "left_hand"):
+                continue
+            container_key = self._item_key(str(info.get("container") or "")) if info.get("container") else ""
+            if state == "in_container" and container_key == herb_container_key:
+                score = 0
+            elif state == "in_container":
+                score = 1
+            else:
+                score = 2
+            matches.append((score, container_key, info))
+        if not matches:
+            return None
+        matches.sort(key=lambda row: (row[0], row[1]))
+        return matches[0][2]
 
-        hp_cur = int(self._last_sync.get("vitals", {}).get("hp", 0))
-        hp_max = int(self._last_sync.get("vitals", {}).get("hp_max", 0))
-        hp_missing = max(0, hp_max - hp_cur)
-        acantha_needed = (hp_missing + 29) // 30 if hp_missing else 0
-        if acantha_needed:
-            herb_counts["acantha leaf"] = herb_counts.get("acantha leaf", 0) + acantha_needed
-            herb_sequence.extend(["acantha leaf"] * acantha_needed)
-
-        return to_heal, herb_counts, herb_sequence, missing
+    def _heal_match_catalog_entry(self, herb_key: str) -> Optional[dict]:
+        wanted_keys = self._herb_match_keys(herb_key)
+        for entry in self._shop_catalog.values():
+            if not isinstance(entry, dict):
+                continue
+            keys = set()
+            keys.update(self._herb_match_keys(str(entry.get("name") or "")))
+            keys.update(self._herb_match_keys(str(entry.get("short_name") or "")))
+            keys.update(self._herb_match_keys(str(entry.get("noun") or "")))
+            if not wanted_keys.isdisjoint(keys):
+                return entry
+        return None
 
     def _auto_build_restore_steps(self, ctx: dict) -> List[Tuple[str, object]]:
         steps: List[Tuple[str, object]] = []
-        steps.append(("send", "stow right"))
-        steps.append(("send", "stow left"))
-        steps.append(("delay", 500))
+        has_original_right = any(item.get("hand") == "right" for item in ctx.get("saved_hands", []))
         for item in ctx.get("saved_hands", []):
             container = item.get("restore_container")
             target = item.get("target")
             if not target:
                 continue
             if container:
+                steps.append(("send", f"open {container}"))
+                steps.append(("delay", 300))
                 steps.append(("send", f"get {target} from {container}"))
             else:
                 steps.append(("send", f"get {target}"))
             steps.append(("delay", 700))
-        return steps
-
-    def _auto_build_treatment_steps(self, ctx: dict) -> List[Tuple[str, object]]:
-        herb_container = ctx.get("herb_container")
-        herb_sequence = ctx.get("herb_sequence", [])
-        steps: List[Tuple[str, object]] = []
-        for herb in herb_sequence:
-            if herb_container:
-                steps.append(("send", f"get {herb} from {herb_container}"))
-            else:
-                steps.append(("send", f"get {herb}"))
-            steps.append(("delay", 700))
-            steps.append(("send", f"use {herb}"))
-            steps.append(("delay", 1200))
-        steps.extend(self._auto_build_restore_steps(ctx))
+            if item.get("hand") == "left" and not has_original_right:
+                steps.append(("send", "swap"))
+                steps.append(("delay", 500))
         steps.append(("send", "inv full"))
-        steps.append(("delay", 1000))
-        steps.append(("done", None))
+        steps.append(("delay", 950))
         return steps
 
     def _auto_queue_herbalist_visit(self):
@@ -3836,172 +4045,127 @@ class HUDApp:
         candidates = ctx.get("herbalist_candidates", [])
         idx = int(ctx.get("herbalist_index", 0))
         if idx >= len(candidates):
-            self._auto_abort("AUTO: I could not find a mapped herbalist carrying the required herbs.")
+            plan = ctx.get("pending_treatment") or {}
+            herb_name = str((plan.get("profile") or {}).get("name") or "the required herb")
+            self._auto_abort(f"Healing stopped: no mapped herbalist has {herb_name}.")
             return
 
-        dest = int(candidates[idx])
+        candidate = candidates[idx] or {}
+        dest = int(candidate.get("room_id"))
+        approach_room = candidate.get("approach_room")
         ctx["current_herbalist"] = dest
+        ctx["expected_service_room"] = dest
+        ctx["expected_service_tag"] = self._HERBALIST_TAG
         self._shop_catalog = {}
-        self._wound_status(f"AUTO: heading to herbalist room #{dest}.")
+        herb_name = str(((ctx.get("pending_treatment") or {}).get("profile") or {}).get("name") or "herbs")
+        self._wound_status(f"Heading to herbalist room #{dest} for {herb_name}.")
 
         steps: List[Tuple[str, object]] = []
         if self._current_room_id != dest:
-            steps.append(("nav", dest))
-            steps.append(("delay", 350))
+            if approach_room is not None:
+                if self._current_room_id != int(approach_room):
+                    steps.append(("nav", int(approach_room)))
+                    steps.append(("delay", 350))
+                steps.append(("service_entry", dict(candidate)))
+            else:
+                steps.append(("nav", dest))
+                steps.append(("delay", 350))
         steps.append(("send", "order"))
         steps.append(("delay", 1100))
         steps.append(("catalog", None))
         self._auto_cmd_queue = steps + getattr(self, "_auto_cmd_queue", [])
         self.root.after(10, self._auto_run_next)
 
-    def _auto_match_catalog(self) -> Tuple[dict, List[str], int]:
+    def _auto_queue_bank_visit(self):
         ctx = self._auto_ctx
-        herb_counts = ctx.get("herb_counts", {})
-        matched = {}
-        missing = []
-        total_cost = 0
+        target = ctx.get("bank_target") or {}
+        amount = int(ctx.get("pending_withdraw", 0) or 0)
+        if amount <= 0:
+            self._auto_abort("Healing stopped because no bank withdrawal was queued.")
+            return
+        if not target:
+            self._auto_abort("Healing stopped: need more silver, but no mapped bank was found.")
+            return
 
-        by_key = {}
-        for entry in self._shop_catalog.values():
-            if not isinstance(entry, dict):
-                continue
-            keys = {
-                self._item_key(entry.get("name", "")),
-                self._item_key(entry.get("short_name", "")),
-                self._item_key(entry.get("noun", "")),
-            }
-            for key in [k for k in keys if k]:
-                by_key.setdefault(key, entry)
+        dest = int(target.get("room_id"))
+        approach_room = target.get("approach_room")
+        ctx["expected_service_room"] = dest
+        ctx["expected_service_tag"] = self._BANK_TAG
+        self._wound_status(f"Heading to the bank for {amount} silver.")
 
-        for herb, qty in herb_counts.items():
-            entry = by_key.get(self._item_key(herb))
-            if not entry:
-                missing.append(herb)
-                continue
-            matched[herb] = entry
-            total_cost += int(entry.get("price", 0)) * int(qty)
-
-        return matched, missing, total_cost
+        steps: List[Tuple[str, object]] = []
+        if self._current_room_id != dest:
+            if approach_room is not None:
+                if self._current_room_id != int(approach_room):
+                    steps.append(("nav", int(approach_room)))
+                    steps.append(("delay", 350))
+                steps.append(("service_entry", dict(target)))
+            else:
+                steps.append(("nav", dest))
+                steps.append(("delay", 350))
+        steps.append(("send", f"withdraw {amount}"))
+        steps.append(("delay", 1600))
+        if ctx.get("current_herbalist") is not None:
+            steps.append(("herbalist", None))
+        self._auto_cmd_queue = steps + getattr(self, "_auto_cmd_queue", [])
+        self.root.after(10, self._auto_run_next)
 
     def _auto_process_catalog(self):
         ctx = self._auto_ctx
-        matched, missing, total_cost = self._auto_match_catalog()
+        plan = ctx.get("pending_treatment")
+        if not plan:
+            self._auto_abort("Healing stopped because no treatment step was queued.")
+            return
+        profile = plan.get("profile") or {}
+        herb_key = str(plan.get("herb_key") or "")
+        entry = self._heal_match_catalog_entry(herb_key)
         current_shop = ctx.get("current_herbalist")
 
-        if missing:
+        if not entry:
             ctx["herbalist_index"] = int(ctx.get("herbalist_index", 0)) + 1
             if ctx["herbalist_index"] >= len(ctx.get("herbalist_candidates", [])):
-                self._auto_abort(
-                    "AUTO: no mapped herbalist had all required herbs: "
-                    + ", ".join(sorted(missing))
-                )
+                self._auto_abort(f"Healing stopped: no mapped herbalist has {profile.get('name') or 'that herb'}.")
                 return
             self._wound_status(
-                "AUTO: this herbalist is missing "
-                + ", ".join(sorted(missing))
-                + ". Trying the next one."
+                f"This herbalist is missing {profile.get('name') or 'that herb'}. Trying the next one."
             )
             self._auto_cmd_queue = [("herbalist", None)] + getattr(self, "_auto_cmd_queue", [])
             self.root.after(10, self._auto_run_next)
             return
 
+        total_cost = int(entry.get("price", 0) or 0)
         silver = int(self._last_sync.get("silver", 0))
         shortfall = max(0, total_cost - silver)
         if shortfall > 0:
-            bank_id = ctx.get("bank_id")
-            if ctx.get("bank_attempted"):
+            if int(ctx.get("bank_trips", 0) or 0) >= 3:
                 self._auto_abort(
-                    f"AUTO: still short {shortfall} silver after the bank trip."
+                    f"Healing stopped: still short {shortfall} silver after multiple bank trips."
                 )
                 return
-            if bank_id is None:
+            if not ctx.get("bank_target"):
                 self._auto_abort(
-                    f"AUTO: need {shortfall} more silver, but no mapped bank was found."
+                    f"Healing stopped: need {shortfall} more silver, but no mapped bank was found."
                 )
                 return
-            ctx["bank_attempted"] = True
-            self._wound_status(f"AUTO: short {shortfall} silver. Heading to the bank.")
-            steps = [
-                ("nav", int(bank_id)),
-                ("delay", 350),
-                ("send", f"bank withdraw {shortfall}"),
-                ("delay", 1600),
-            ]
-            if current_shop is not None:
-                steps.append(("herbalist", None))
-            self._auto_cmd_queue = steps + getattr(self, "_auto_cmd_queue", [])
+            ctx["bank_trips"] = int(ctx.get("bank_trips", 0) or 0) + 1
+            ctx["pending_withdraw"] = shortfall
+            self._auto_cmd_queue = [("bank", None)] + getattr(self, "_auto_cmd_queue", [])
             self.root.after(10, self._auto_run_next)
             return
 
-        herb_container = ctx.get("herb_container")
-        if not herb_container:
-            self._auto_abort("AUTO: I need a pouch, backpack, or other worn container for herbs.")
-            return
-
-        buy_steps: List[Tuple[str, object]] = []
-        for herb, qty in ctx.get("herb_counts", {}).items():
-            entry = matched.get(herb)
-            if not entry:
-                continue
-            idx = entry.get("idx")
-            buy_target = str(idx) if idx else herb
-            for _ in range(int(qty)):
-                buy_steps.append(("send", f"buy {buy_target}"))
-                buy_steps.append(("delay", 800))
-                buy_steps.append(("send", f"put {herb} in {herb_container}"))
-                buy_steps.append(("delay", 550))
-
-        self._wound_status("AUTO: herbs secured. Treating wounds now.")
-        self._auto_cmd_queue = self._auto_build_treatment_steps(ctx) + getattr(self, "_auto_cmd_queue", [])
-        self._auto_cmd_queue = buy_steps + self._auto_cmd_queue
+        ctx["bank_trips"] = 0
+        idx = entry.get("idx")
+        buy_target = str(idx) if idx else str(profile.get("name") or herb_key)
+        self._wound_status(f"Buying {profile.get('name') or 'herb'} for your {plan.get('loc_display')}.")
+        self._auto_cmd_queue = [
+            ("send", f"buy {buy_target}"),
+            ("delay", 900),
+            ("call", "use_pending_treatment"),
+        ] + getattr(self, "_auto_cmd_queue", [])
         self.root.after(10, self._auto_run_next)
 
     def _wounds_auto_heal(self):
-        """
-        Full AUTO heal sequence:
-        1. Snapshot hands / worn containers from INV FULL
-        2. Stow current hand items into appropriate containers
-        3. Navigate to the nearest mapped herbalist and ORDER its catalog
-        4. If silver is short, navigate to the nearest mapped bank and withdraw
-        5. Buy the required herbs, stash them, treat wounds/scars, then restore hands
-        """
-        if self._auto_healing:
-            self._wound_status("AUTO heal already running.")
-            return
-
-        to_heal, herb_counts, herb_sequence, missing = self._auto_build_requirements()
-        if not to_heal and not herb_sequence:
-            self._wound_status("Nothing to heal.")
-            return
-        if missing:
-            self._wound_status(
-                "AUTO: no herb mapping for " + ", ".join(sorted(missing)) + "."
-            )
-            return
-        if self._current_room_id is None:
-            self._wound_status("AUTO: unknown current room. Try LOOK first.")
-            return
-
-        self._auto_healing = True
-        self._auto_heal_btn.config(text="⏳ Healing…", state="disabled")
-        self._wound_status("AUTO: taking inventory snapshot…")
-        self._auto_ctx = {
-            "to_heal": to_heal,
-            "herb_counts": herb_counts,
-            "herb_sequence": herb_sequence,
-            "bank_id": self._find_tagged_room(self._BANK_TAG),
-            "herbalist_candidates": self.graph.find_tagged_rooms(
-                self._HERBALIST_TAG,
-                from_id=self._current_room_id,
-                limit=8,
-            ) if self.graph else [],
-            "herbalist_index": 0,
-            "bank_attempted": False,
-        }
-
-        self._send("inv full")
-        self._append("> inv full\n", "prompt")
-        self.root.after(900, self._auto_prepare_inventory)
+        self._start_wound_heal(scope_loc=None)
 
     def _find_tagged_room(self, tag: str) -> int | None:
         if not self.graph:
@@ -4016,7 +4180,7 @@ class HUDApp:
         ctx = self._auto_ctx
         herb_container = self._auto_pick_herb_container()
         if not herb_container:
-            self._auto_abort("AUTO: I need a pouch, backpack, or other worn container first.")
+            self._auto_abort("Healing stopped: you need a pouch, backpack, or other worn container first.")
             return
 
         saved_hands = self._auto_snapshot_hands()
@@ -4025,6 +4189,8 @@ class HUDApp:
             container = self._auto_pick_hand_container(item.get("item_type", "misc"))
             item["restore_container"] = container
             if container:
+                stow_steps.append(("send", f"open {container}"))
+                stow_steps.append(("delay", 300))
                 stow_steps.append(("send", f"put {item['target']} in {container}"))
             else:
                 stow_steps.append(("send", f"stow {item['hand']}"))
@@ -4032,18 +4198,200 @@ class HUDApp:
 
         ctx["saved_hands"] = saved_hands
         ctx["herb_container"] = herb_container
+        backup_container = None
+        for cont in self._auto_worn_container_keys():
+            if cont != herb_container and any(word in cont for word in ("backpack", "rucksack", "haversack", "pack", "cloak", "cape", "pouch", "bag", "satchel", "sack")):
+                backup_container = cont
+                break
+        ctx["backup_herb_container"] = backup_container
 
-        if ctx.get("herb_counts"):
-            if not ctx.get("herbalist_candidates"):
-                self._auto_abort("AUTO: no mapped herbalist was found from this location.")
-                return
-            self._auto_cmd_queue = stow_steps + [("herbalist", None)]
-            self._wound_status("AUTO: inventory ready. Heading for herbs.")
-        else:
-            self._auto_cmd_queue = stow_steps + self._auto_build_treatment_steps(ctx)
-            self._wound_status("AUTO: herbs already on hand. Treating now.")
-
+        self._auto_cmd_queue = stow_steps + [("call", "next_treatment")]
+        self._wound_status("Inventory ready. Beginning treatment.")
         self._auto_run_next()
+
+    def _auto_next_treatment(self):
+        if not self._auto_healing:
+            return
+
+        plan = self._heal_next_target()
+        if not plan:
+            self._auto_ctx["final_status"] = "All wounds and scars are treated."
+            self._wound_status(self._auto_ctx["final_status"])
+            self._auto_cmd_queue = self._auto_build_restore_steps(self._auto_ctx) + [("done", None)]
+            self._auto_run_next()
+            return
+
+        self._auto_ctx["pending_treatment"] = plan
+        herb_name = str((plan.get("profile") or {}).get("name") or "herb")
+        held = self._heal_find_inventory_herb(str(plan.get("herb_key") or ""))
+        if held:
+            self._wound_status(f"Using {herb_name} on your {plan.get('loc_display')}.")
+            steps: List[Tuple[str, object]] = []
+            state = str(held.get("state") or "")
+            if state == "in_container":
+                container = self._item_key(str(held.get("container") or ""))
+                if container:
+                    steps.append(("send", f"open {container}"))
+                    steps.append(("delay", 300))
+                    steps.append(("send", f"get {herb_name} from {container}"))
+                    steps.append(("delay", 700))
+            self._auto_cmd_queue = steps + [("call", "use_pending_treatment")] + getattr(self, "_auto_cmd_queue", [])
+            self._auto_run_next()
+            return
+
+        if not self._auto_ctx.get("herbalist_candidates"):
+            self._auto_abort(f"Healing stopped: no mapped herbalist was found for {herb_name}.")
+            return
+        self._auto_cmd_queue = [("herbalist", None)] + getattr(self, "_auto_cmd_queue", [])
+        self._auto_run_next()
+
+    def _auto_use_pending_treatment(self):
+        plan = self._auto_ctx.get("pending_treatment")
+        if not plan:
+            self._auto_abort("Healing stopped because no herb was queued.")
+            return
+
+        profile = plan.get("profile") or {}
+        herb_name = str(profile.get("name") or "")
+        if not herb_name:
+            self._auto_abort("Healing stopped because the herb data was incomplete.")
+            return
+
+        target = str(plan.get("loc_display") or "").strip()
+        roundtime_ms = max(1250, int(profile.get("roundtime", 10) or 10) * 1000 + 450)
+        self._wound_status(f"Treating your {target} with {herb_name}.")
+        self._auto_cmd_queue = [
+            ("send", f"use {herb_name} on {target}"),
+            ("delay", roundtime_ms),
+            ("send", "inv full"),
+            ("delay", 950),
+            ("call", "post_use_refresh"),
+        ] + getattr(self, "_auto_cmd_queue", [])
+        self._auto_run_next()
+
+    def _auto_post_use_refresh(self):
+        plan = self._auto_ctx.get("pending_treatment")
+        if not plan:
+            self._auto_abort("Healing stopped because the treatment step was lost.")
+            return
+
+        herb_key = str(plan.get("herb_key") or "")
+        herb_name = str((plan.get("profile") or {}).get("name") or herb_key)
+        held = self._heal_find_inventory_herb(herb_key)
+        steps: List[Tuple[str, object]] = []
+
+        if held and str(held.get("state") or "") in ("right_hand", "left_hand"):
+            primary = str(self._auto_ctx.get("herb_container") or "")
+            if primary:
+                steps.append(("send", f"open {primary}"))
+                steps.append(("delay", 300))
+                steps.append(("send", f"put {herb_name} in {primary}"))
+                steps.append(("delay", 550))
+            steps.append(("send", "inv full"))
+            steps.append(("delay", 950))
+            steps.append(("call", "finish_post_use_refresh"))
+            self._auto_cmd_queue = steps + getattr(self, "_auto_cmd_queue", [])
+            self._auto_run_next()
+            return
+
+        steps.append(("call", "next_treatment"))
+        self._auto_cmd_queue = steps + getattr(self, "_auto_cmd_queue", [])
+        self._auto_run_next()
+
+    def _auto_finish_post_use_refresh(self):
+        plan = self._auto_ctx.get("pending_treatment")
+        if not plan:
+            self._auto_abort("Healing stopped because the treatment step was lost.")
+            return
+
+        herb_key = str(plan.get("herb_key") or "")
+        herb_name = str((plan.get("profile") or {}).get("name") or herb_key)
+        held = self._heal_find_inventory_herb(herb_key)
+        primary = str(self._auto_ctx.get("herb_container") or "")
+        backup = str(self._auto_ctx.get("backup_herb_container") or "")
+
+        if held and str(held.get("state") or "") in ("right_hand", "left_hand") and backup and backup != primary:
+            self._auto_cmd_queue = [
+                ("send", f"open {backup}"),
+                ("delay", 300),
+                ("send", f"put {herb_name} in {backup}"),
+                ("delay", 550),
+                ("send", "inv full"),
+                ("delay", 950),
+                ("call", "next_treatment"),
+            ] + getattr(self, "_auto_cmd_queue", [])
+        else:
+            self._auto_cmd_queue = [("call", "next_treatment")] + getattr(self, "_auto_cmd_queue", [])
+        self._auto_run_next()
+
+    def _auto_enter_service(self, payload):
+        if isinstance(payload, dict):
+            tag = str(payload.get("tag") or "").strip().lower()
+            room_id = payload.get("room_id")
+            fallback_cmds = [str(cmd).strip() for cmd in (payload.get("entry_cmds") or []) if str(cmd).strip()]
+        else:
+            tag = str(payload or "").strip().lower()
+            room_id = None
+            fallback_cmds = []
+
+        cmd = self._auto_find_local_service_cmd(tag)
+        if not cmd:
+            for candidate_cmd in fallback_cmds:
+                if candidate_cmd not in fallback_cmds[:fallback_cmds.index(candidate_cmd)]:
+                    cmd = candidate_cmd
+                    break
+        if not cmd:
+            self._auto_abort(f"Healing stopped: reached the {tag} approach room, but could not find the entry command.")
+            return
+        steps: List[Tuple[str, object]] = [
+            ("send", "look"),
+            ("delay", 900),
+            ("send", cmd),
+            ("delay", 700),
+        ]
+        if room_id is not None:
+            steps.extend([
+                ("send", "look"),
+                ("delay", 900),
+                ("call", "verify_service_entry"),
+            ])
+        self._auto_cmd_queue = steps + getattr(self, "_auto_cmd_queue", [])
+        self._auto_run_next()
+
+    def _auto_verify_service_entry(self):
+        ctx = self._auto_ctx
+        expected_room = ctx.get("expected_service_room")
+        expected_tag = str(ctx.get("expected_service_tag") or "").strip().lower()
+        if expected_room is None:
+            self._auto_run_next()
+            return
+        try:
+            expected_room = int(expected_room)
+        except (TypeError, ValueError):
+            expected_room = None
+        if expected_room is not None and self._current_room_id == expected_room:
+            ctx["expected_service_room"] = None
+            ctx["expected_service_tag"] = ""
+            self._auto_run_next()
+            return
+
+        if expected_tag == self._HERBALIST_TAG:
+            plan = ctx.get("pending_treatment") or {}
+            herb_name = str((plan.get("profile") or {}).get("name") or "that herb")
+            ctx["herbalist_index"] = int(ctx.get("herbalist_index", 0) or 0) + 1
+            if int(ctx.get("herbalist_index", 0)) >= len(ctx.get("herbalist_candidates", [])):
+                self._auto_abort(
+                    f"Healing stopped: could not enter a mapped herbalist for {herb_name}."
+                )
+                return
+            self._wound_status(
+                f"That approach command did not enter the herbalist. Trying the next mapped shop for {herb_name}."
+            )
+            self._auto_cmd_queue = [("herbalist", None)] + getattr(self, "_auto_cmd_queue", [])
+            self.root.after(10, self._auto_run_next)
+            return
+
+        self._auto_abort("Healing stopped: reached the service approach room, but the entry command did not enter the destination.")
 
     def _auto_run_next(self):
         """Pop and execute the next command in _auto_cmd_queue."""
@@ -4066,27 +4414,42 @@ class HUDApp:
         elif action == "catalog":
             self._auto_process_catalog()
 
+        elif action == "bank":
+            self._auto_queue_bank_visit()
+
+        elif action == "service_entry":
+            self._auto_enter_service(value)
+
         elif action == "nav":
-            # Use existing pathfind system; resume AUTO queue when arrived
             dest = int(value)
             if self._current_room_id == dest:
                 self.root.after(50, self._auto_run_next)
                 return
             path = self.graph.find_path(self._current_room_id, dest)
             if not path:
-                self._wound_status(f"AUTO: can't path to room {dest}.")
+                self._wound_status(f"Healing stopped: can't path to room {dest}.")
                 self._auto_done()
                 return
-            # Inject path steps directly into _pathfind_steps and hook completion
             self._pathfind_steps = path
             self._auto_waiting_nav = True
             self._do_next_step()
-            # _auto_nav_arrived() called from _do_next_step's completion handler
             self._auto_nav_resume_fn = self._auto_run_next
+
+        elif action == "call":
+            fn_name = str(value or "")
+            fn = getattr(self, f"_auto_{fn_name}", None)
+            if callable(fn):
+                fn()
+            else:
+                self._auto_abort(f"Healing stopped: unknown client callback {fn_name}.")
 
         elif action == "done":
             self._send("wounds")
-            self._wound_status("AUTO: all done! Wounds and scars treated.")
+            final_status = str(self._auto_ctx.get("final_status") or "").strip()
+            if final_status:
+                self._wound_status(final_status)
+            else:
+                self._wound_status("All wounds and scars are treated.")
             self._auto_done()
 
     def _auto_nav_arrived(self):
@@ -4105,11 +4468,7 @@ class HUDApp:
         self._auto_waiting_nav = False
         self._auto_nav_resume_fn = None
         if hasattr(self, "_auto_heal_btn"):
-            self._auto_heal_btn.config(text="⚕ AUTO Heal", state="normal")
-
-    # ════════════════════════════════════════════
-    # Text widget color tags
-    # ════════════════════════════════════════════
+            self._auto_heal_btn.config(text="AUTO Heal", state="normal")
 
     def _setup_tags(self):
         self._apply_font_tags()
@@ -4496,9 +4855,9 @@ class HUDApp:
             return "default"
         return f"c_{hexcol.lstrip('#')}"
 
-    # ════════════════════════════════════════════
+    # 
     # Text output
-    # ════════════════════════════════════════════
+    # 
 
     def _text_should_follow(self) -> bool:
         """Auto-follow only when the player is already near the bottom."""
@@ -4924,9 +5283,9 @@ class HUDApp:
     def _sys(self, msg: str):
         self._append(f"[{msg}]\n", "sys")
 
-    # ════════════════════════════════════════════
+    # 
     # Connection
-    # ════════════════════════════════════════════
+    # 
 
 
     def _start_sync(self, token: str, port: int):
@@ -4948,7 +5307,7 @@ class HUDApp:
 
     def _connect(self):
         self._sys(f"Connecting to {self.host}:{self.port}…")
-        self._conn_btn.config(text="● Connecting…", bg="#2a2a0a", fg=ACCENT_YEL,
+        self._conn_btn.config(text=" Connecting…", bg="#2a2a0a", fg=ACCENT_YEL,
                               state="disabled")
         self._conn_status.config(text=f"{self.host}:{self.port}")
         self._telnet = TelnetThread(self.host, self.port, self.rx_q)
@@ -5123,9 +5482,9 @@ class HUDApp:
         if self._telnet:
             self._telnet.send(text)
 
-    # ════════════════════════════════════════════
+    # 
     # Event polling (tkinter main loop)
-    # ════════════════════════════════════════════
+    # 
 
     def _poll(self):
         # root.after is in finally so the loop ALWAYS reschedules even if
@@ -5176,9 +5535,9 @@ class HUDApp:
         elif msg_type == "line":
             self._handle_line(payload)
 
-    # ════════════════════════════════════════════
+    # 
     # Line processing
-    # ════════════════════════════════════════════
+    # 
 
     def _handle_line(self, raw: str):
         # ── Real-time sync init control line ──────────────────────────────────
@@ -5379,6 +5738,8 @@ class HUDApp:
                                 self._live_exits[lookup_part] = (exits[gkey], lookup_part)
                             elif lookup_part in exits:
                                 self._live_exits[lookup_part] = (exits[lookup_part], lookup_part)
+                            else:
+                                self._live_exits[lookup_part] = (None, f"go {lookup_part}")
             # Render the exits line with clickable direction links
             self._append_exits_line(raw, self._live_exits)
             return  # already appended, skip normal display below
@@ -5573,9 +5934,9 @@ class HUDApp:
                     return rule_name
         return zone or map_zone or title
 
-    # ════════════════════════════════════════════
+    # 
     # Command input
-    # ════════════════════════════════════════════
+    # 
 
     def _current_input_mode_info(self) -> dict:
         for mode in INPUT_MODES:
@@ -5711,9 +6072,9 @@ class HUDApp:
             self._entry_var.set(self._hist[self._hist_idx])
         return "break"
 
-    # ════════════════════════════════════════════
+    # 
     # Map click → pathfinding (:go2 behaviour)
-    # ════════════════════════════════════════════
+    # 
 
     def _map_room_center(self, zone_name: str, room_id: int) -> Optional[Tuple[float, float]]:
         zone = self.regions.get(zone_name, {})
@@ -5922,20 +6283,19 @@ class HUDApp:
         self._append(f"  → {direction}\n", "path")
         self._send(direction)
 
-        if self._pathfind_steps:
-            self._pathfind_waiting = True
-            # Fallback: if the server sends no status/prompt tag within a short window
-            # (e.g. a move type we don't intercept), proceed anyway.
-            # _nav_on_ready() cancels this timer if it fires first.
-            if self._pathfind_timer:
-                self.root.after_cancel(self._pathfind_timer)
-            self._pathfind_timer = self.root.after(PATHFIND_FALLBACK_MS, self._nav_fallback_tick)
+        self._pathfind_waiting = True
+        # Fallback: if the server sends no status/prompt tag within a short window
+        # (e.g. a move type we don't intercept), proceed anyway.
+        # _nav_on_ready() cancels this timer if it fires first.
+        if self._pathfind_timer:
+            self.root.after_cancel(self._pathfind_timer)
+        self._pathfind_timer = self.root.after(PATHFIND_FALLBACK_MS, self._nav_fallback_tick)
 
     def _nav_fallback_tick(self):
         """Fires shortly after a step is sent if the server hasn't signalled RT status.
         Covers normal room moves where no GSIV tag or RT prompt is produced."""
         self._pathfind_timer = None
-        if self._pathfind_waiting and self._pathfind_steps:
+        if self._pathfind_waiting:
             self._pathfind_waiting = False
             self._do_next_step()
 
@@ -5947,7 +6307,7 @@ class HUDApp:
           • Clean prompt match (PROMPT_RE, no RT in prompt)
           • _clear_rt() when the RT bar expires naturally
         """
-        if not self._pathfind_waiting or not self._pathfind_steps:
+        if not self._pathfind_waiting:
             return
         # Cancel fallback timer — server told us we're clear
         if self._pathfind_timer:
@@ -5959,7 +6319,7 @@ class HUDApp:
 
     def _do_next_step_deferred(self):
         """Legacy shim — kept for safety, routes through new logic."""
-        if self._pathfind_waiting and self._pathfind_steps:
+        if self._pathfind_waiting:
             self._nav_on_ready()
 
     def _cancel_pathfind(self):
@@ -5981,9 +6341,9 @@ class HUDApp:
         self._send(cmd)
         self._append(f"> {cmd}\n", "prompt")
 
-    # ════════════════════════════════════════════
+    # 
     # Inventory model + clickable items
-    # ════════════════════════════════════════════
+    # 
 
     def _register_item(self, full_name: str, state: str,
                        container: str = '', itype: str = '') -> None:
@@ -6648,8 +7008,10 @@ class HUDApp:
             if loc: stat_lines.append(_kv("Worn on", loc))
 
         elif itype in ("herb", "consumable"):
-            ht  = (data.get("herb_heal_type") or "").replace("_", " ").title()
-            ha  = data.get("herb_heal_amount") or 0
+            ht  = str(data.get("herb_heal_type") or data.get("heal_type") or "").replace("_", " ").title()
+            ha  = data.get("herb_heal_amount")
+            if ha in (None, "", 0, "0"):
+                ha = data.get("heal_amount") or 0
             if ht: stat_lines.append(_kv("Heals", ht))
             if ha: stat_lines.append(_kv("Amount", f"+{ha}"))
 
@@ -6999,9 +7361,9 @@ class HUDApp:
         self.root.after(450, _apply_once)
         self.root.after(900, _apply_once)
 
-    # ════════════════════════════════════════════
+    # 
     # Combat button handlers
-    # ════════════════════════════════════════════
+    # 
 
     # Regex to detect creature/enemy lines from room description
     # Matches lines like "A large rat is here." / "A snow orc attacks you!"
@@ -7080,9 +7442,9 @@ class HUDApp:
         if m3:
             _add_enemy(m3.group(1))
 
-    # ════════════════════════════════════════════
+    # 
     # Combat command handlers
-    # ════════════════════════════════════════════
+    # 
 
     def _cmd_attack(self):
         """Attack current target. If no target set yet, auto-pick first known enemy."""
@@ -7148,9 +7510,9 @@ class HUDApp:
         self._current_target_match = ""
         self._target_lbl.config(text="No target", fg=TEXT_DIM)
 
-    # ════════════════════════════════════════════
+    # 
     # AIM body-part targeting (GS4 AIM command)
-    # ════════════════════════════════════════════
+    # 
 
     # All aimable locations grouped by body region (biped baseline — server
     # validates against creature body type on each attack).
@@ -7490,9 +7852,9 @@ class HUDApp:
         self._send(cmd)
         self._append(f"> {cmd}\n", "prompt")
 
-    # ════════════════════════════════════════════
+    # 
     # Cleanup
-    # ════════════════════════════════════════════
+    # 
 
     def on_close(self):
         self._save_config()

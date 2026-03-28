@@ -345,6 +345,13 @@ class SessionManager:
     def remove_session(self, session: Session):
         if session.id in self._sessions:
             # Save character before removing
+            if session.character_id:
+                try:
+                    wound_bridge = getattr(self.server, 'wound_bridge', None)
+                    if wound_bridge:
+                        wound_bridge.save_wounds_now(session)
+                except Exception as _e:
+                    log.debug("Wound save on disconnect failed: %s", _e)
             if session.character_id and hasattr(self.server, 'db') and self.server.db:
                 self.server.db.save_character(session)
                 log.info("Character saved on disconnect: %s", session.character_name)

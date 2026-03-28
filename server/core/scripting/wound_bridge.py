@@ -40,6 +40,7 @@ Usage
 """
 
 import logging
+import re
 from typing import Optional
 
 from server.core.engine.magic_effects import get_active_buff_totals
@@ -57,6 +58,7 @@ class WoundBridge:
         self._treatment   = None  # Lua Treatment table
         self._bleed_sys   = None  # Lua BleedSystem table
         self._herbs       = None  # Lua Herbs table
+        self._client_treatment_guide_cache = None
 
     # ──────────────────────────────────────────────────────────────────
     # Initialisation
@@ -75,6 +77,7 @@ class WoundBridge:
             self._treatment  = self._lua_require("globals/treatment")
             self._bleed_sys  = self._lua_require("globals/bleed_system")
             self._herbs      = self._lua_require("globals/herbs")
+            self._client_treatment_guide_cache = None
             log.info("WoundBridge: Lua wound modules loaded")
 
         except Exception as e:
@@ -140,6 +143,73 @@ class WoundBridge:
         raw = lua_to_python(lua_tbl)
         return raw if isinstance(raw, dict) else {}
 
+    def get_client_treatment_guide(self) -> dict:
+        """Return a cached client-friendly herb guide derived from canonical Lua herb data."""
+        if self._client_treatment_guide_cache is not None:
+            return self._client_treatment_guide_cache
+
+        guide = {}
+        if not self.available or self._herbs is None:
+            self._client_treatment_guide_cache = guide
+            return guide
+
+        try:
+            from server.core.scripting.lua_engine import lua_to_python
+
+            raw_herbs = lua_to_python(getattr(self._herbs, "DATA", None))
+            raw_locations = lua_to_python(getattr(self._wound_sys, "LOCATIONS", None))
+            locations = [str(loc) for loc in raw_locations] if isinstance(raw_locations, list) else []
+            guide = {loc: {"wound": [], "scar": [], "regen": []} for loc in locations}
+
+            def _bucket_for(heal_type: str) -> str | None:
+                if heal_type in ("wound", "scar"):
+                    return heal_type
+                if heal_type in ("limb_regen", "eye_regen"):
+                    return "regen"
+                return None
+
+            for herb in (raw_herbs or {}).values():
+                if not isinstance(herb, dict):
+                    continue
+                heal_type = str(herb.get("heal_type") or "").strip().lower()
+                bucket = _bucket_for(heal_type)
+                if not bucket:
+                    continue
+
+                profile = {
+                    "name": str(herb.get("name") or "").strip().lower(),
+                    "heal_type": heal_type,
+                    "max_rank": int(herb.get("max_rank") or 0),
+                    "roundtime": int(herb.get("roundtime") or 10),
+                    "use_verb": str(herb.get("use_verb") or "eat").strip().lower(),
+                    "article": str(herb.get("article") or "").strip().lower(),
+                    "bites": int(herb.get("bites") or 1),
+                }
+                if not profile["name"]:
+                    continue
+
+                for loc in herb.get("herb_group") or []:
+                    loc_key = str(loc or "").strip()
+                    if loc_key in guide:
+                        guide[loc_key][bucket].append(dict(profile))
+
+            for loc_data in guide.values():
+                for bucket in ("wound", "scar", "regen"):
+                    loc_data[bucket].sort(
+                        key=lambda row: (
+                            int(row.get("max_rank", 0) or 0),
+                            int(row.get("roundtime", 10) or 10),
+                            str(row.get("name") or ""),
+                        )
+                    )
+
+        except Exception as exc:
+            log.error("WoundBridge.get_client_treatment_guide error: %s", exc, exc_info=True)
+            guide = {}
+
+        self._client_treatment_guide_cache = guide
+        return guide
+
     # ──────────────────────────────────────────────────────────────────
     # Session wound accessors
     # ──────────────────────────────────────────────────────────────────
@@ -150,6 +220,39 @@ class WoundBridge:
         if not hasattr(session, 'wounds') or session.wounds is None:
             session.wounds = {}
         return session.wounds
+
+    def _normalize_location_key(self, location: str) -> str:
+        loc = str(location or "").strip().lower()
+        if not loc:
+            return ""
+        loc = re.sub(r"\s+", " ", loc)
+        try:
+            if self.available and self._wound_sys is not None and hasattr(self._wound_sys, "resolve_location"):
+                resolved = self._wound_sys.resolve_location(loc)
+                if resolved:
+                    return str(resolved)
+        except Exception:
+            pass
+        return loc.replace(" ", "_")
+
+    def _sanitize_wound_entry(self, entry: dict) -> Optional[dict]:
+        if not isinstance(entry, dict):
+            return None
+        wr = max(0, int(entry.get('wound_rank', 0) or 0))
+        sr = max(0, int(entry.get('scar_rank', 0) or 0))
+        bleeding = bool(entry.get('is_bleeding', False))
+        bandaged = bool(entry.get('bandaged', False))
+        if wr <= 0:
+            bleeding = False
+            bandaged = False
+        if wr <= 0 and sr <= 0:
+            return None
+        return {
+            'wound_rank': wr,
+            'scar_rank': sr,
+            'is_bleeding': bleeding,
+            'bandaged': bandaged,
+        }
 
     @staticmethod
     def _set_wounds(session, wounds_dict: dict):
@@ -168,7 +271,7 @@ class WoundBridge:
             wr = int(entry.get('wound_rank', 0) or 0)
             if wr > 0:
                 injuries[loc] = wr
-            if entry.get('is_bleeding') and not entry.get('bandaged'):
+            if wr > 0 and entry.get('is_bleeding') and not entry.get('bandaged'):
                 bleeding_locs.append(loc)
                 highest_bleed_rank = max(highest_bleed_rank, wr)
         session.injuries = injuries
@@ -309,7 +412,7 @@ class WoundBridge:
 
     # ──────────────────────────────────────────────────────────────────
 
-    def use_herb(self, session, item_dict: dict) -> dict:
+    def use_herb(self, session, item_dict: dict, location_hint: Optional[str] = None) -> dict:
         """
         Apply an herb from inventory to the player's wounds.
         Returns dict: { ok, message, hp_restore, mana_restore, cure_poison }
@@ -328,20 +431,47 @@ class WoundBridge:
             herb_data = self._herbs.find_by_noun(noun_key)
 
             if herb_data is None:
-                for candidate in (
-                    item_dict.get('short_name'),
-                    item_dict.get('base_name'),
-                    item_dict.get('name'),
-                ):
-                    text = str(candidate or '').strip().lower()
+                candidate_texts = []
+                seen_candidates = set()
+
+                def _add_candidate(text: str):
+                    text = str(text or "").strip().lower()
                     if not text:
-                        continue
+                        return
                     if text.startswith('some '):
                         text = text[5:]
                     elif text.startswith('a '):
                         text = text[2:]
                     elif text.startswith('an '):
                         text = text[3:]
+                    text = re.sub(r"\s+", " ", text).strip()
+                    if not text or text in seen_candidates:
+                        return
+                    seen_candidates.add(text)
+                    candidate_texts.append(text)
+
+                    base = re.sub(
+                        r"^(?:tincture|elixir|potion|vial|brew|tea|infusion|essence)(?:\s+of)?\s+",
+                        "",
+                        text,
+                    ).strip()
+                    base = re.sub(
+                        r"\s+(?:tincture|elixir|potion|brew|tea|infusion|essence)$",
+                        "",
+                        base,
+                    ).strip()
+                    if base and base != text and base not in seen_candidates:
+                        seen_candidates.add(base)
+                        candidate_texts.append(base)
+
+                for candidate in (
+                    item_dict.get('short_name'),
+                    item_dict.get('base_name'),
+                    item_dict.get('name'),
+                ):
+                    _add_candidate(candidate)
+
+                for text in candidate_texts:
                     key = text.replace(' ', '_').replace('-', '_')
                     herb_data = self._herbs.find_by_noun(key)
                     if herb_data is None and hasattr(self._herbs, "find_by_name"):
@@ -351,10 +481,10 @@ class WoundBridge:
 
             if herb_data is None:
                 # Try DB heal_type field as fallback
-                return self._fallback_herb(session, wounds, item_dict)
+                return self._fallback_herb(session, wounds, item_dict, location_hint)
 
             lua_wounds = self._wounds_to_lua(wounds)
-            lua_result = self._treatment.use_herb(lua_wounds, herb_data, fa_bonus)
+            lua_result = self._treatment.use_herb(lua_wounds, herb_data, fa_bonus, location_hint)
             res        = self._lua_result_to_py(lua_result)
 
             if res.get('ok'):
@@ -377,9 +507,9 @@ class WoundBridge:
 
         except Exception as e:
             log.error("WoundBridge.use_herb error: %s", e, exc_info=True)
-            return self._fallback_herb(session, wounds, item_dict)
+            return self._fallback_herb(session, wounds, item_dict, location_hint)
 
-    def _fallback_herb(self, session, wounds: dict, item_dict: dict) -> dict:
+    def _fallback_herb(self, session, wounds: dict, item_dict: dict, location_hint: Optional[str] = None) -> dict:
         """Fallback herb handler using raw DB item fields."""
         heal_type   = item_dict.get('heal_type') or item_dict.get('herb_heal_type') or 'blood'
         heal_amount = int(item_dict.get('heal_amount') or item_dict.get('herb_heal_amount') or 0)
@@ -442,9 +572,30 @@ class WoundBridge:
         def _display(loc):
             return display_names.get(loc, str(loc).replace('_', ' '))
 
+        resolved_hint = None
+        if location_hint:
+            hint = str(location_hint or "").strip().lower().replace(" ", "_")
+            if hint in wounds or hint in display_names:
+                resolved_hint = hint
+            elif '_' not in hint:
+                alt_hint = f"{hint}_eye"
+                if alt_hint in wounds:
+                    resolved_hint = alt_hint
+
+        if resolved_hint is not None and resolved_hint not in locations:
+            return {
+                'ok': False,
+                'message': "You have no injury there that this herb can treat.",
+                'hp_restore': 0,
+                'mana_restore': 0,
+                'cure_poison': False,
+                'scar_added': False,
+            }
+
         if heal_type in ('eye', 'eye_regen', 'limb_regen'):
             target = None
-            for loc in locations:
+            candidate_locs = [resolved_hint] if resolved_hint in locations else list(locations)
+            for loc in candidate_locs:
                 entry = wounds.get(loc) or {}
                 if int(entry.get('wound_rank', 0) or 0) >= 3:
                     target = loc
@@ -478,7 +629,8 @@ class WoundBridge:
         scar_limit = 1 if heal_rank <= 3 else 3
         wants_scar = heal_rank >= 3
 
-        for loc in locations:
+        candidate_locs = [resolved_hint] if resolved_hint is not None else list(locations)
+        for loc in candidate_locs:
             entry = wounds.get(loc) or {}
             wr = int(entry.get('wound_rank', 0) or 0)
             sr = int(entry.get('scar_rank', 0) or 0)
@@ -745,6 +897,7 @@ class WoundBridge:
                 (char_id,)
             )
             wounds = {}
+            dirty = False
             for row in (rows or []):
                 if isinstance(row, dict):
                     loc = row.get('location') or row.get(0)
@@ -760,14 +913,35 @@ class WoundBridge:
                     bandaged = row[4] if len(row) > 4 else False
                 if not loc:
                     continue
-                wounds[loc] = {
-                    'wound_rank':  int(wound_rank),
-                    'scar_rank':   int(scar_rank),
-                    'is_bleeding': bool(is_bleeding),
-                    'bandaged':    bool(bandaged),
-                }
+                norm_loc = self._normalize_location_key(loc)
+                if not norm_loc:
+                    dirty = True
+                    continue
+                if norm_loc != str(loc):
+                    dirty = True
+                cleaned = self._sanitize_wound_entry({
+                    'wound_rank': wound_rank,
+                    'scar_rank': scar_rank,
+                    'is_bleeding': is_bleeding,
+                    'bandaged': bandaged,
+                })
+                if cleaned is None:
+                    dirty = True
+                    continue
+                existing = wounds.get(norm_loc)
+                if existing:
+                    cleaned = {
+                        'wound_rank': max(int(existing.get('wound_rank', 0) or 0), cleaned['wound_rank']),
+                        'scar_rank': max(int(existing.get('scar_rank', 0) or 0), cleaned['scar_rank']),
+                        'is_bleeding': bool(existing.get('is_bleeding')) or cleaned['is_bleeding'],
+                        'bandaged': bool(existing.get('bandaged')) or cleaned['bandaged'],
+                    }
+                    dirty = True
+                wounds[norm_loc] = cleaned
             session.wounds = wounds
             self.sync_session_state(session)
+            if dirty:
+                self.save_wounds_now(session)
             if wounds:
                 log.debug("WoundBridge: loaded %d wound records for char %d",
                           len(wounds), char_id)
@@ -775,8 +949,8 @@ class WoundBridge:
             log.error("WoundBridge.load_wounds: %s", e, exc_info=True)
             session.wounds = {}
 
-    async def save_wounds(self, session):
-        """Persist session.wounds to DB.  Uses UPSERT for efficiency."""
+    def save_wounds_now(self, session):
+        """Persist session.wounds to DB immediately using canonical location keys."""
         char_id = getattr(session, 'character_id', None)
         wounds  = getattr(session, 'wounds', {}) or {}
         if not char_id or not self._server.db:
@@ -784,40 +958,31 @@ class WoundBridge:
 
         try:
             db = self._server.db
-
-            # Delete cleared locations (wound_rank=0 AND scar_rank=0)
-            for loc, entry in list(wounds.items()):
-                if entry.get('wound_rank', 0) == 0 and entry.get('scar_rank', 0) == 0:
-                    db.execute_query(
-                        "DELETE FROM character_wounds "
-                        "WHERE character_id=%s AND location=%s",
-                        (char_id, loc)
-                    )
-
-            # Upsert active entries
+            db.execute_query("DELETE FROM character_wounds WHERE character_id=%s", (char_id,))
             for loc, entry in wounds.items():
-                wr = entry.get('wound_rank', 0)
-                sr = entry.get('scar_rank',  0)
-                if wr > 0 or sr > 0:
-                    db.execute_query(
-                        """
-                        INSERT INTO character_wounds
-                            (character_id, location, wound_rank, scar_rank, is_bleeding, bandaged)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        ON DUPLICATE KEY UPDATE
-                            wound_rank  = VALUES(wound_rank),
-                            scar_rank   = VALUES(scar_rank),
-                            is_bleeding = VALUES(is_bleeding),
-                            bandaged    = VALUES(bandaged)
-                        """,
-                        (
-                            char_id, loc, wr, sr,
-                            1 if entry.get('is_bleeding') else 0,
-                            1 if entry.get('bandaged')    else 0,
-                        )
+                norm_loc = self._normalize_location_key(loc)
+                cleaned = self._sanitize_wound_entry(entry)
+                if not norm_loc or cleaned is None:
+                    continue
+                db.execute_query(
+                    """
+                    INSERT INTO character_wounds
+                        (character_id, location, wound_rank, scar_rank, is_bleeding, bandaged)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        char_id, norm_loc,
+                        cleaned['wound_rank'],
+                        cleaned['scar_rank'],
+                        1 if cleaned.get('is_bleeding') else 0,
+                        1 if cleaned.get('bandaged') else 0,
                     )
+                )
         except Exception as e:
             log.error("WoundBridge.save_wounds: %s", e, exc_info=True)
+
+    async def save_wounds(self, session):
+        self.save_wounds_now(session)
 
     # ──────────────────────────────────────────────────────────────────
     # Helpers
@@ -842,6 +1007,6 @@ class WoundBridge:
         """Quick check: is the player bleeding from any location?"""
         wounds = self.get_wounds(session)
         return any(
-            e.get('is_bleeding') and not e.get('bandaged')
+            int(e.get('wound_rank', 0) or 0) > 0 and e.get('is_bleeding') and not e.get('bandaged')
             for e in wounds.values()
         )

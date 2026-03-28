@@ -169,9 +169,14 @@ function Treatment.use_herb(wounds, herb_data, first_aid_bonus, location_hint)
 
     -- Prefer wounds over scars; within same type, prefer higher rank
     local best_is_wound = false
+    local resolved_hint = nil
+    if location_hint and location_hint ~= "" then
+        resolved_hint = WoundSystem.resolve_location(location_hint)
+    end
+    local candidate_locs = resolved_hint and { resolved_hint } or WoundSystem.LOCATIONS
 
     -- Candidate iterator
-    for _, loc in ipairs(WoundSystem.LOCATIONS) do
+    for _, loc in ipairs(candidate_locs) do
         local e = wounds[loc]
         if e and Herbs.can_treat(herb_data, loc, (e.wound_rank or 0), heal_type) then
             local wr = e.wound_rank or 0
@@ -199,9 +204,17 @@ function Treatment.use_herb(wounds, herb_data, first_aid_bonus, location_hint)
 
     if not best_loc then
         if heal_type == "wound" then
-            result.msg = "You have no wounds that this herb can treat."
+            if resolved_hint then
+                result.msg = "You have no wound there that this herb can treat."
+            else
+                result.msg = "You have no wounds that this herb can treat."
+            end
         else
-            result.msg = "You have no scars that this herb can treat."
+            if resolved_hint then
+                result.msg = "You have no scar there that this herb can treat."
+            else
+                result.msg = "You have no scars that this herb can treat."
+            end
         end
         result.ok = false
         return result
