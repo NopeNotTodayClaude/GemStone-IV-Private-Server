@@ -23,7 +23,11 @@ Worn Locations (simplified):
 import logging
 import random
 from server.core.protocol.colors import colorize, TextPresets, item_name as fmt_item_name, roundtime_msg
-from server.core.engine.skinning import can_remove_corpse
+from server.core.engine.skinning import (
+    can_remove_corpse,
+    get_skinning_sheath_nouns,
+    get_skinning_tool_bonus,
+)
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +54,7 @@ WEAR_VERBS = {
     'legs': ('You strap on ', '.'),
     'feet': ('You put on ', '.'),
     'pin': ('You attach ', '.'),
+    'skinning_sheath': ('You strap ', ' to your belt.'),
 }
 
 # Remove verbs by slot
@@ -69,6 +74,7 @@ REMOVE_VERBS = {
     'legs': 'You remove ',
     'feet': 'You remove ',
     'pin': 'You unpin ',
+    'skinning_sheath': 'You unstrap ',
 }
 
 # Default worn location by item_type (fallback if DB worn_location is null)
@@ -97,6 +103,7 @@ CONTAINER_SLOTS = {
 
 TREASURE_CONTAINER_NOUNS = {'box', 'coffer', 'chest', 'strongbox', 'trunk', 'crate'}
 LOCKED_ITEM_MARKER = " {L}"
+SKINNING_SHEATH_SLOT = "skinning_sheath"
 
 
 # =========================================================
@@ -415,6 +422,132 @@ def _get_worn_containers(session):
             and not i.get('container_id')]
 
 
+def _is_skinning_sheath(container):
+    if not container or container.get('item_type') != 'container':
+        return False
+    slot = str(container.get('slot') or container.get('worn_location') or '').lower()
+    sheath_type = str(container.get('sheath_type') or '').lower()
+    return slot == SKINNING_SHEATH_SLOT or sheath_type == 'skinning_tool_sheath'
+
+
+def _container_priority_key(container):
+    noun = str(container.get('noun') or '').lower()
+    slot = str(container.get('slot') or container.get('worn_location') or '').lower()
+    if _is_skinning_sheath(container):
+        return (99, 0, noun)
+    if noun == 'backpack':
+        return (0, 0, noun)
+    if noun in ('cloak', 'cape') or slot == 'shoulders':
+        return (1, 0, noun)
+    return (2, 0, noun)
+
+
+def _container_accepts_item(container, item, server, *, allow_special_sheath=False):
+    if not container or container.get('item_type') != 'container':
+        return False
+    if _is_skinning_sheath(container):
+        if not allow_special_sheath:
+            return False
+        if get_skinning_tool_bonus(item, server) is None:
+            return False
+        allowed_nouns = get_skinning_sheath_nouns(server)
+        if allowed_nouns:
+            noun = str(item.get('noun') or '').lower().strip()
+            return noun in allowed_nouns
+        return True
+    return True
+
+
+def _find_best_stow_container(session, server, item_dict, *, allow_special_sheath=False):
+    candidates = []
+    for cont in _get_worn_containers(session):
+        if not _container_accepts_item(
+            cont,
+            item_dict,
+            server,
+            allow_special_sheath=allow_special_sheath,
+        ):
+            continue
+        cont.setdefault('opened', True)
+        cont_inv_id = cont.get('inv_id')
+        if cont_inv_id is None:
+            continue
+        contents = _get_container_contents(session, cont)
+        capacity = cont.get('container_capacity', 10) or 10
+        free = capacity - len(contents)
+        if free <= 0:
+            continue
+        candidates.append((_container_priority_key(cont), -free, cont))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda row: (row[0], row[1]))
+    return candidates[0][2]
+
+
+def _move_held_item_to_container(session, server, hand, container):
+    _ensure_hands(session)
+    item = session.right_hand if hand == 'right' else session.left_hand
+    if not item:
+        return False, None, "You aren't holding that."
+    if not container:
+        return False, None, "You don't have anywhere to stow that."
+    if not _container_accepts_item(container, item, server, allow_special_sheath=True):
+        return False, None, "That won't fit in there."
+    contents = _get_container_contents(session, container)
+    capacity = container.get('container_capacity', 10) or 10
+    if len(contents) >= capacity:
+        return False, None, "That container is full."
+
+    _clear_hand(session, hand, server)
+
+    if server.db and item.get('inv_id'):
+        _db_update_container(server, item['inv_id'], container.get('inv_id'))
+    elif server.db and session.character_id and item.get('item_id'):
+        inv_id = server.db.add_item_to_inventory(session.character_id, item['item_id'])
+        if inv_id:
+            item['inv_id'] = inv_id
+            _db_update_container(server, inv_id, container.get('inv_id'))
+
+    item['slot'] = None
+    item['container_id'] = container.get('inv_id')
+    if item not in session.inventory:
+        session.inventory.append(item)
+    return True, item, None
+
+
+def _move_inventory_item_to_hand(session, server, item, preferred_hand=None):
+    _ensure_hands(session)
+    hand = None
+    if preferred_hand == 'right' and not session.right_hand:
+        hand = 'right'
+    elif preferred_hand == 'left' and not session.left_hand:
+        hand = 'left'
+    elif not session.right_hand:
+        hand = 'right'
+    elif not session.left_hand:
+        hand = 'left'
+    if not hand:
+        return None
+
+    hand_slot = 'right_hand' if hand == 'right' else 'left_hand'
+    if server.db and item.get('inv_id'):
+        _db_update_slot(server, item.get('inv_id'), hand_slot)
+    elif server.db and session.character_id and item.get('item_id'):
+        inv_id = server.db.add_item_to_inventory(session.character_id, item['item_id'], slot=hand_slot)
+        if inv_id:
+            item['inv_id'] = inv_id
+
+    if item in session.inventory:
+        session.inventory.remove(item)
+    item['slot'] = hand_slot
+    item['container_id'] = None
+    if hand == 'right':
+        session.right_hand = item
+    else:
+        session.left_hand = item
+    return hand
+
+
 def _db_update_slot(server, inv_id, slot):
     """Update an item's slot in the DB. THE ITEM STAYS IN DB."""
     if server.db and inv_id:
@@ -567,26 +700,6 @@ def _normalize_loose_inventory(server, session):
     normalized = 0
     hand_moved = []
 
-    def _best_container():
-        best = None
-        best_free = 0
-        for cont in _get_worn_containers(session):
-            cont_inv_id = cont.get('inv_id')
-            if cont_inv_id is None:
-                continue
-            contents = [i for i in session.inventory if i.get('container_id') == cont_inv_id]
-            capacity = cont.get('container_capacity', 10) or 10
-            free = capacity - len(contents)
-            if free <= 0:
-                continue
-            is_backpack = (cont.get('noun') or '').lower() == 'backpack'
-            if is_backpack:
-                return cont
-            if free > best_free:
-                best = cont
-                best_free = free
-        return best
-
     for item in loose_items:
         noun = (item.get('noun') or '').lower()
         inv_id = item.get('inv_id')
@@ -599,7 +712,7 @@ def _normalize_loose_inventory(server, session):
                 normalized += 1
                 continue
 
-        cont = _best_container()
+        cont = _find_best_stow_container(session, server, item, allow_special_sheath=False)
         if cont and cont.get('inv_id') is not None:
             item['container_id'] = cont.get('inv_id')
             _db_update_container(server, inv_id, cont.get('inv_id'))
@@ -625,7 +738,7 @@ def _normalize_loose_inventory(server, session):
 # Auto-stow helper (used by LOOT, SKIN, SEARCH)
 # =========================================================
 
-def auto_stow_item(session, server, item_dict):
+def auto_stow_item(session, server, item_dict, *, allow_hands=True, allow_special_sheath=False):
     """Try to auto-stow an item into a worn container, then hands.
     Returns (success, location_name, fail_msg).
     - success=True, location_name='backpack' or 'right hand'
@@ -633,25 +746,13 @@ def auto_stow_item(session, server, item_dict):
     """
     _ensure_hands(session)
 
-    # Try worn containers first (prefer backpack)
-    containers = _get_worn_containers(session)
-    best_cont = None
-    best_free = 0
-    for cont in containers:
-        cont_inv_id = cont.get('inv_id')
-        contents = [i for i in session.inventory if i.get('container_id') == cont_inv_id]
-        capacity = cont.get('container_capacity', 10) or 10
-        free = capacity - len(contents)
-        if free > 0:
-            if (cont.get('noun') or '').lower() == 'backpack':
-                best_cont = cont
-                best_free = free
-                break
-            elif not best_cont:
-                best_cont = cont
-                best_free = free
-
-    if best_cont and best_free > 0:
+    best_cont = _find_best_stow_container(
+        session,
+        server,
+        item_dict,
+        allow_special_sheath=allow_special_sheath,
+    )
+    if best_cont:
         item_id = item_dict.get('item_id') or item_dict.get('id')
         if server.db and session.character_id and item_id:
             inv_id = server.db.add_item_to_inventory(session.character_id, item_id)
@@ -669,6 +770,10 @@ def auto_stow_item(session, server, item_dict):
                 session.inventory.append(item_dict)
                 cont_name = best_cont.get('short_name') or best_cont.get('noun') or 'container'
                 return True, cont_name, None
+
+    if not allow_hands:
+        item_name = item_dict.get('name') or item_dict.get('short_name') or 'something'
+        return False, None, f"No container space remaining! {item_name} was left on the ground."
 
     # Try hands
     if not session.right_hand:
@@ -1127,6 +1232,13 @@ async def cmd_put(session, cmd, args, server):
         await session.send_line('That is closed.')
         return
 
+    if not _container_accepts_item(cont, item, server, allow_special_sheath=True):
+        if _is_skinning_sheath(cont):
+            await session.send_line("Only properly-sized skinning tools will fit in that sheath.")
+        else:
+            await session.send_line("That won't fit in there.")
+        return
+
     # Capacity check
     contents = _get_container_contents(session, cont)
     capacity = cont.get('container_capacity', 10) or 10
@@ -1405,15 +1517,7 @@ async def cmd_stow(session, cmd, args, server):
             await session.send_line("You aren't holding that.")
             return
 
-    # Find first worn container (prefer backpack)
-    containers = _get_worn_containers(session)
-    default_cont = None
-    for c in containers:
-        if c.get('noun') == 'backpack':
-            default_cont = c
-            break
-    if not default_cont and containers:
-        default_cont = containers[0]
+    default_cont = _find_best_stow_container(session, server, item, allow_special_sheath=False)
 
     if not default_cont:
         await session.send_line("You don't have any containers to stow that in.")
@@ -1940,7 +2044,10 @@ async def cmd_loot(session, cmd, args, server):
     )
 
     if getattr(creature, 'searched', False):
-        await session.send_line('  You find nothing more of value.')
+        msg = '  You find nothing more of value.'
+        if getattr(creature, 'skin', None) and not getattr(creature, 'skinned', False):
+            msg += '  You could still try to skin it.'
+        await session.send_line(msg)
     elif generate_treasure and server.db:
         creature.searched = True
         loot = generate_treasure(server.db, creature)

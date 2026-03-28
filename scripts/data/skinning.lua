@@ -43,6 +43,15 @@ Skinning.tool_bonuses = {
     ["handaxe"]        = -8,
 }
 
+Skinning.sheath_nouns = {
+    dagger        = true,
+    knife         = true,
+    ["main gauche"] = true,
+    dirk          = true,
+    stiletto      = true,
+    ["sgian dubh"] = true,
+}
+
 Skinning.noun_values = {
     pelt       = 45,
     hide       = 40,

@@ -31,7 +31,7 @@ from server.core.commands.player.actions import (
 )
 from server.core.commands.player.combat import (
     cmd_attack, cmd_kill, cmd_ambush, cmd_hide, cmd_sneak, cmd_stance,
-    cmd_search, cmd_skin, cmd_feint, cmd_aim, cmd_sweep, cmd_subdue, cmd_cheapshot,
+    cmd_search, cmd_skin, cmd_autoskin, cmd_feint, cmd_aim, cmd_sweep, cmd_subdue, cmd_cheapshot,
     cmd_stunman, cmd_rgambit, cmd_ready, cmd_fire, cmd_hurl, cmd_mstrike
 )
 from server.core.commands.player.lockpicking import cmd_pick, cmd_disarm, cmd_detect, cmd_lmaster
@@ -256,6 +256,7 @@ class CommandRouter:
         self.register("aim",    cmd_aim)
         self.register("search", cmd_search)
         self.register("skin", cmd_skin)
+        self.register("autoskin", cmd_autoskin)
 
         # ---- Shop ----
         self.register("order", cmd_order)

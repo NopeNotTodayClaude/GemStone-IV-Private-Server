@@ -55,6 +55,65 @@ def _get_config(server) -> dict:
     }
 
 
+def _tool_bonus_for_item(item, tool_bonuses: dict) -> Optional[int]:
+    if not item:
+        return None
+    names = [
+        str(item.get("short_name") or "").lower(),
+        str(item.get("name") or "").lower(),
+        str(item.get("noun") or "").lower(),
+    ]
+    best_bonus = None
+    for key, value in (tool_bonuses or {}).items():
+        key = str(key or "").lower().strip()
+        if not key:
+            continue
+        if any(key in field for field in names):
+            bonus = int(value)
+            if best_bonus is None or bonus > best_bonus:
+                best_bonus = bonus
+    return best_bonus
+
+
+def get_skinning_tool_bonus(item, server) -> Optional[int]:
+    cfg = _get_config(server)
+    return _tool_bonus_for_item(item, cfg.get("tool_bonuses", {}) or {})
+
+
+def is_skinning_tool(item, server) -> bool:
+    return get_skinning_tool_bonus(item, server) is not None
+
+
+def find_best_skinning_tool(candidates, server):
+    cfg = _get_config(server)
+    best_item = None
+    best_bonus = None
+    for item in candidates or []:
+        bonus = _tool_bonus_for_item(item, cfg.get("tool_bonuses", {}) or {})
+        if bonus is None:
+            continue
+        if best_bonus is None or bonus > best_bonus:
+            best_item = item
+            best_bonus = bonus
+    if best_item is None:
+        return None, None
+    return best_item, int(best_bonus or 0)
+
+
+def get_skinning_sheath_nouns(server) -> set[str]:
+    cfg = _get_config(server)
+    raw = cfg.get("sheath_nouns") or {}
+    if isinstance(raw, dict):
+        return {
+            str(noun).lower().strip()
+            for noun, allowed in raw.items()
+            if allowed
+        }
+    if isinstance(raw, (list, tuple, set)):
+        return {str(noun).lower().strip() for noun in raw if noun}
+    return set()
+
+
 def _strip_article(name: str) -> tuple[str, str]:
     text = str(name or "").strip()
     lowered = text.lower()
@@ -66,33 +125,23 @@ def _strip_article(name: str) -> tuple[str, str]:
 
 
 def _find_skinning_tool(session, cfg: dict):
-    tool_bonuses = cfg.get("tool_bonuses", {}) or {}
     candidates = []
     for hand_name in ("right_hand", "left_hand"):
         item = getattr(session, hand_name, None)
         if item:
             candidates.append(item)
-
     best_item = None
     best_bonus = None
     for item in candidates:
-        names = [
-            str(item.get("short_name") or "").lower(),
-            str(item.get("name") or "").lower(),
-            str(item.get("noun") or "").lower(),
-        ]
-        bonus = None
-        for key, value in tool_bonuses.items():
-            if any(key and key in field for field in names):
-                if bonus is None or int(value) > bonus:
-                    bonus = int(value)
-        if bonus is not None and (best_bonus is None or bonus > best_bonus):
+        bonus = _tool_bonus_for_item(item, cfg.get("tool_bonuses", {}) or {})
+        if bonus is None:
+            continue
+        if best_bonus is None or bonus > best_bonus:
             best_item = item
             best_bonus = bonus
-
-    if best_item is not None:
-        return best_item, int(best_bonus or 0)
-    return None, None
+    if best_item is None:
+        return None, None
+    return best_item, int(best_bonus or 0)
 
 
 def _resolve_skin_spec(creature, server) -> dict:

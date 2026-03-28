@@ -2304,6 +2304,13 @@ class HUDApp:
             command=self._cmd_loot, **btn_style)
         self._loot_btn.pack(side="left", padx=(0, 3))
 
+        self._skin_btn = tk.Button(
+            combat_bar, text="Skin",
+            bg="#2a1f14", fg="#e3c08c",
+            activebackground="#4a3522",
+            command=self._cmd_skin, **btn_style)
+        self._skin_btn.pack(side="left", padx=3)
+
         self._look_btn = tk.Button(
             combat_bar, text="👁  Look",
             bg="#1a1a2a", fg="#aaaadd",
@@ -4722,7 +4729,7 @@ class HUDApp:
                         score = 100
                     if score < 0:
                         continue
-                    if info.get("state") == "shop":
+                    if info.get("state") == "shop" and self._last_room_was_shop:
                         score += 50
                     if score > matched_score or (score == matched_score and len(candidate_key) > matched_len):
                         matched_key = key
@@ -5200,7 +5207,7 @@ class HUDApp:
             try:
                 import json as _json
                 catalog = _json.loads(sc.group(1))
-                self._shop_catalog = {}
+                self._clear_shop_catalog_state()
                 for entry in catalog:
                     idx  = str(entry.get("idx", ""))
                     key  = self._item_key(entry.get("name", ""))
@@ -5483,6 +5490,7 @@ class HUDApp:
                 self._play_sfx(SFX_SHOP_ENTER)
             elif was_shop and not is_shop:
                 self._play_sfx(SFX_SHOP_EXIT)
+                self._clear_shop_catalog_state()
         self._last_room_was_shop = is_shop
         self._map.set_room(room_id)
         self.root.after_idle(lambda rid=room_id: self._map.set_room(rid))
@@ -6092,6 +6100,13 @@ class HUDApp:
                 raw_name = re.sub(r'\x1b\[[0-9;]*m', '', raw_name).strip()
                 raw_name = ITEM_MARKER_SUFFIX_RE.sub("", raw_name).strip()
                 self._register_item(raw_name, 'in_container', self._inv_cur_cont)
+
+    def _clear_shop_catalog_state(self):
+        """Drop stale shop entries so inventory clicks stop opening buy popups."""
+        self._shop_catalog = {}
+        for key in list(self._known_items.keys()):
+            if self._known_items[key].get("state") == "shop":
+                del self._known_items[key]
 
     @staticmethod
     def _strip_articles(name: str) -> str:
@@ -7401,6 +7416,10 @@ class HUDApp:
     def _cmd_loot(self):
         self._send("loot all")
         self._append("> loot all\n", "prompt")
+
+    def _cmd_skin(self):
+        self._send("autoskin")
+        self._append("> autoskin\n", "prompt")
 
     def _cmd_look(self):
         self._send("look")

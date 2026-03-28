@@ -33,6 +33,14 @@ local ACCEPTS = {
         ["knife"]      = true,
         ["sgian dubh"] = true,
     },
+    skinning_tool_sheath = {
+        ["dagger"]     = true,
+        ["main gauche"]= true,
+        ["dirk"]       = true,
+        ["stiletto"]   = true,
+        ["knife"]      = true,
+        ["sgian dubh"] = true,
+    },
     small_scabbard = {
         ["short sword"] = true,
         ["backsword"]   = true,

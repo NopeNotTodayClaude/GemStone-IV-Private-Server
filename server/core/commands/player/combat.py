@@ -12,10 +12,23 @@ from server.core.protocol.colors import (
     colorize, TextPresets, creature_name as fmt_creature_name,
     roundtime_msg, item_name as fmt_item_name, combat_damage, combat_crit, combat_death
 )
-from server.core.commands.player.inventory import auto_stow_item
+from server.core.commands.player.inventory import (
+    _get_container_contents,
+    _get_worn_containers,
+    _is_skinning_sheath,
+    _find_best_stow_container,
+    _move_held_item_to_container,
+    _move_inventory_item_to_hand,
+    auto_stow_item,
+)
 from server.core.engine.magic_effects import apply_roundtime_effects, get_active_buff_totals
 from server.core.engine.treasure import generate_coins, generate_gem, generate_box, generate_scroll
-from server.core.engine.skinning import can_remove_corpse, resolve_skinning
+from server.core.engine.skinning import (
+    can_remove_corpse,
+    find_best_skinning_tool,
+    is_skinning_tool,
+    resolve_skinning,
+)
 from server.core.scripting.loaders.body_types_loader import get_aimable, resolve_aim
 
 log = logging.getLogger(__name__)
@@ -1586,25 +1599,105 @@ def _fallback_box(level):
 # SKIN - Auto-stow with space checks
 # =========================================================
 
-async def cmd_skin(session, cmd, args, server):
-    """SKIN - Skin a dead creature for materials. Auto-stows to inventory."""
+def _find_skinning_target(session, server):
     room = session.current_room
     if not room:
-        return
-
+        return None, "You don't see anything to skin."
     dead = server.creatures.get_dead_creatures_in_room(room.id)
     if not dead:
-        await session.send_line("You don't see anything to skin.")
-        return
-
+        return None, "You don't see anything to skin."
     creature = dead[0]
     if creature.skinned:
-        await session.send_line(f"The {creature.name} has already been skinned.")
+        return None, f"The {creature.name} has already been skinned."
+    if not creature.skin:
+        return None, f"You can't skin {creature.full_name}."
+    return creature, None
+
+
+def _find_worn_skinning_sheath(session):
+    for cont in _get_worn_containers(session):
+        if _is_skinning_sheath(cont):
+            return cont
+    return None
+
+
+def _find_best_accessible_skinning_tool(session, server):
+    sheath = _find_worn_skinning_sheath(session)
+    if sheath:
+        tool, _ = find_best_skinning_tool(_get_container_contents(session, sheath), server)
+        if tool:
+            return tool, "sheath"
+
+    hand_candidates = [
+        item for item in (getattr(session, "right_hand", None), getattr(session, "left_hand", None))
+        if item and is_skinning_tool(item, server)
+    ]
+    tool, _ = find_best_skinning_tool(hand_candidates, server)
+    if tool:
+        return tool, "hand"
+
+    other_candidates = [
+        item for item in session.inventory
+        if item.get("container_id") or (not item.get("slot") and not item.get("container_id"))
+    ]
+    tool, _ = find_best_skinning_tool(other_candidates, server)
+    if tool:
+        return tool, "inventory"
+
+    return None, None
+
+
+def _stash_hands_for_skinning(session, server):
+    stashed = []
+    for hand in ("right", "left"):
+        held = session.right_hand if hand == "right" else session.left_hand
+        if not held:
+            continue
+        best_cont = _find_best_stow_container(session, server, held, allow_special_sheath=False)
+        if not best_cont:
+            return False, stashed, "You need room in a pack or cloak to free your hands first."
+        ok, item, err = _move_held_item_to_container(session, server, hand, best_cont)
+        if not ok:
+            return False, stashed, err or "You can't stow that right now."
+        stashed.append({"item": item, "hand": hand})
+    return True, stashed, None
+
+
+def _restore_stashed_hands(session, server, stashed):
+    for row in stashed:
+        item = row.get("item")
+        preferred = row.get("hand")
+        if not item or item.get("slot") in ("right_hand", "left_hand"):
+            continue
+        if item not in session.inventory and not item.get("container_id"):
+            continue
+        _move_inventory_item_to_hand(session, server, item, preferred_hand=preferred)
+
+
+def _return_tool_after_skinning(session, server, tool, tool_was_original_hand_item):
+    if tool_was_original_hand_item:
+        return
+    tool_hand = None
+    if getattr(session, "right_hand", None) is tool:
+        tool_hand = "right"
+    elif getattr(session, "left_hand", None) is tool:
+        tool_hand = "left"
+    if not tool_hand:
         return
 
-    if not creature.skin:
-        await session.send_line(f"You can't skin {creature.full_name}.")
-        return
+    sheath = _find_worn_skinning_sheath(session)
+    if sheath:
+        ok, _, _ = _move_held_item_to_container(session, server, tool_hand, sheath)
+        if ok:
+            return
+
+    fallback = _find_best_stow_container(session, server, tool, allow_special_sheath=False)
+    if fallback:
+        _move_held_item_to_container(session, server, tool_hand, fallback)
+
+
+async def _perform_skin_attempt(session, creature, server, *, allow_result_hands=True):
+    room = session.current_room
 
     outcome = resolve_skinning(session, creature, server)
     creature.skinned = True
@@ -1631,7 +1724,12 @@ async def cmd_skin(session, cmd, args, server):
             )
             skin_data["item_id"] = item_id
 
-        success, location, _ = auto_stow_item(session, server, skin_data)
+        success, location, _ = auto_stow_item(
+            session,
+            server,
+            skin_data,
+            allow_hands=allow_result_hands,
+        )
         display_name = skin_data.get("name") or creature.skin
 
         if success:
@@ -1695,6 +1793,48 @@ async def cmd_skin(session, cmd, args, server):
 
     session.set_roundtime(roundtime)
     await session.send_line(roundtime_msg(roundtime))
+
+
+async def cmd_skin(session, cmd, args, server):
+    """SKIN - Skin a dead creature for materials. Auto-stows to inventory."""
+    creature, err = _find_skinning_target(session, server)
+    if not creature:
+        await session.send_line(err)
+        return
+    await _perform_skin_attempt(session, creature, server, allow_result_hands=True)
+
+
+async def cmd_autoskin(session, cmd, args, server):
+    """AUTOSKIN - Smart skin flow for the client button."""
+    creature, err = _find_skinning_target(session, server)
+    if not creature:
+        await session.send_line(err)
+        return
+
+    stashed = []
+    ok, stashed, err = _stash_hands_for_skinning(session, server)
+    if not ok:
+        _restore_stashed_hands(session, server, stashed)
+        await session.send_line(err or "You need free hands to skin that.")
+        return
+
+    tool, _source = _find_best_accessible_skinning_tool(session, server)
+    if not tool:
+        _restore_stashed_hands(session, server, stashed)
+        await session.send_line("You need a skinning tool before you can do that.")
+        return
+
+    tool_was_original_hand_item = any(row.get("item") is tool for row in stashed)
+    if tool.get("slot") not in ("right_hand", "left_hand"):
+        drawn_hand = _move_inventory_item_to_hand(session, server, tool, preferred_hand="right")
+        if not drawn_hand:
+            _restore_stashed_hands(session, server, stashed)
+            await session.send_line("You can't get your skinning tool into hand right now.")
+            return
+
+    await _perform_skin_attempt(session, creature, server, allow_result_hands=False)
+    _return_tool_after_skinning(session, server, tool, tool_was_original_hand_item)
+    _restore_stashed_hands(session, server, stashed)
 # =========================================================
 # AIM - Persistent body location targeting preference
 # =========================================================
