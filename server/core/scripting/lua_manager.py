@@ -179,6 +179,10 @@ class LuaManager:
         from server.core.scripting.loaders.pets_loader import load_pets
         return self._load_once("pets", lambda: load_pets(self._engine))
 
+    def get_traps(self) -> Optional[dict]:
+        from server.core.scripting.loaders.traps_loader import load_traps
+        return self._load_once("traps", lambda: load_traps(self._engine))
+
     # ── Spell seeding ─────────────────────────────────────────────────────────
 
     async def seed_spells(self) -> dict:

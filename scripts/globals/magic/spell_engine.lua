@@ -177,6 +177,10 @@ local function activate(char, target, spell_number, spell_ranks, verb, skip_mana
         return false, "That spell is unknown."
     end
 
+    if char.pet_cheat_cast then
+        skip_mana = true
+    end
+
     local mana_cost = spell.mana_cost or (spell_number % 100)
     if not skip_mana then
         local ok, injured = Mana.deduct(char.mana_current or 0, mana_cost)
@@ -268,6 +272,11 @@ local function activate(char, target, spell_number, spell_ranks, verb, skip_mana
         lore_ranks   = lore_ranks,
         mana_control = mana_control,
     }, result)
+
+    if char.pet_cheat_cast and type(result) == "table" then
+        result.blocked = false
+        result.fumble = false
+    end
 
     return true, result.message or "", result
 end

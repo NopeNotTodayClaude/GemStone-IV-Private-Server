@@ -588,7 +588,7 @@ def _db_save_item_state(server, inv_id, item_dict):
     EXTRA_KEYS = (
         'is_locked', 'lock_difficulty', 'opened',
         'trap_type', 'trapped', 'trap_difficulty', 'trap_checked',
-        'trap_detected', 'trap_disarmed',
+        'trap_detected', 'trap_disarmed', 'trap_variant', 'trap_payload',
         'contents',
         'value', 'base_value', 'skin_quality', 'quality_label', 'base_skin_name',
         'charges', 'spell_number', 'spell_name', 'spell_type', 'spell_level',
@@ -1604,14 +1604,13 @@ async def cmd_open(session, cmd, args, server):
             if cont.get("trapped") and not cont.get("trap_disarmed"):
                 try:
                     from server.core.commands.player.lockpicking import _trigger_trap
-                    from server.core.engine.treasure import TRAP_DEFS
-                    trap = TRAP_DEFS.get(cont.get("trap_type"), TRAP_DEFS.get("needle"))
+                    trap = server.traps.get_trap_def(cont.get("trap_type")) if getattr(server, "traps", None) else None
                     await session.send_line(colorize(
                         f"You carefully start to open {_item_display(cont)}...",
                         TextPresets.WARNING
                     ))
                     if trap:
-                        await _trigger_trap(session, server, cont, trap)
+                        await _trigger_trap(session, server, cont, trap, source="open")
                     else:
                         await session.send_line(colorize("Something hidden in the latch snaps at you!", TextPresets.WARNING))
                     return
@@ -2055,6 +2054,8 @@ async def cmd_loot(session, cmd, args, server):
     creature = dead[0]
     found_anything = False
     left_on_ground = []
+    can_still_skin = bool(getattr(creature, 'skin', None) and not getattr(creature, 'skinned', False))
+    was_already_searched = bool(getattr(creature, 'searched', False))
 
     await session.send_line('You search ' + creature.full_name + '...')
     await server.world.broadcast_to_room(
@@ -2063,14 +2064,14 @@ async def cmd_loot(session, cmd, args, server):
         exclude=session
     )
 
-    if getattr(creature, 'searched', False):
+    if was_already_searched:
         msg = '  You find nothing more of value.'
-        if getattr(creature, 'skin', None) and not getattr(creature, 'skinned', False):
+        if can_still_skin:
             msg += '  You could still try to skin it.'
         await session.send_line(msg)
     elif generate_treasure and server.db:
         creature.searched = True
-        loot = generate_treasure(server.db, creature)
+        loot = generate_treasure(server.db, creature, server=server)
 
         if loot['coins'] > 0:
             session.silver += loot['coins']
@@ -2148,6 +2149,9 @@ async def cmd_loot(session, cmd, args, server):
             f"  {session.character_name} searches {creature.full_name} but finds nothing of value.",
             exclude=session
         )
+
+    if can_still_skin and not was_already_searched:
+        await session.send_line('  You could still try to skin it.')
 
     if left_on_ground:
         for iname in left_on_ground:

@@ -7,7 +7,7 @@ Hooks into the game_loop tick to check whether events should start or expire.
 Sends broadcast announcements to online players when events fire.
 
 Events:
-  Gift of Lumnis   — Saturday + Sunday midnight, per-character absorption bonus
+  Gift of Lumnis   — Saturday midnight, per-character absorption bonus
   Bonus XP Event   — Sunday midnight, 24h server-wide kill XP multiplier
 """
 
@@ -50,7 +50,7 @@ def _load_config() -> dict:
 # ── Hardcoded fallback (matches events_config.lua) ────────────────────────────
 _DEFAULTS = {
     "lumnis": {
-        "active_days":       [5, 6],
+        "active_days":       [5],
         "start_hour":        0,
         "phase1_multiplier": 3,
         "phase2_multiplier": 2,
@@ -127,7 +127,7 @@ class EventManager:
     async def _check_lumnis(self, dt: datetime):
         """Fire or expire the Gift of Lumnis based on current day/time."""
         cfg  = self.cfg.get("lumnis", _DEFAULTS["lumnis"])
-        days = cfg.get("active_days", [5, 6])      # 5=Sat, 6=Sun (datetime.weekday())
+        days = cfg.get("active_days", [5])         # 5=Sat (datetime.weekday())
         hour = int(cfg.get("start_hour", 0))
 
         db   = self.server.db

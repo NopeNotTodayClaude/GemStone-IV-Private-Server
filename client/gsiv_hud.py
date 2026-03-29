@@ -837,7 +837,8 @@ class DockManager:
 # ─────────────────────────────────────────────────────────────────────────────
 # Status Effect Icon Definitions
 # Each entry: effect_id -> dict with visual and tooltip info.
-# Icons are drawn procedurally on 32x32 Canvas cells (no image files needed).
+# Icons default to procedural drawing, but obvious states now prefer the real
+# clientmedia icon assets when a clean mapping exists.
 # Style inspiration: FFXI status effect icons — solid coloured square with
 # a symbol/letter, category-coloured border.
 #
@@ -920,6 +921,56 @@ STATUS_ICON_DEFS = {
     "bonus_xp":    {"shape":"square", "color":"#ad1457","border":"#f48fb1","symbol":"XP","label":"BonusXP", "tip":"Bonus Experience\nEvent bonus active.\nCreatures award additional experience."},
     "floofer_glow":{"shape":"circle", "color":"#8e24aa","border":"#f8bbd0","symbol":"FG","label":"Glow", "tip":"Comforting Glow\nA Floofer's regen spell is active.\nHeals you every 5 seconds for a short duration."},
     "in_combat":   {"shape":"diamond","color":"#b71c1c","border":"#ff5252","symbol":"⚔","label":"Combat",  "tip":"In Combat\nEngaged in active combat."},
+    "dead":        {"shape":"skull",  "color":"#000000","border":"#666666","symbol":"D","label":"Dead", "tip":"Dead\nYou are dead and awaiting revival."},
+}
+
+STATUS_ICON_IMAGE_MAP = {
+    "dead": "0.png",
+    "death_sting": "15.png",
+    "unconscious": "7.png",
+    "possessed": "9.png",
+    "stunned": "16.png",
+    "rooted": "16.png",
+    "immobile": "37.png",
+    "webbed": "64.png",
+    "bleeding": "23.png",
+    "major_bleed": "31.png",
+    "poisoned": "3.png",
+    "major_poison": "3.png",
+    "disease": "20.png",
+    "mind_rot": "31.png",
+    "prone": "13.png",
+    "blinded": "67.png",
+    "slowed": "33.png",
+    "groggy": "19.png",
+    "fear": "22.png",
+    "sheer_fear": "63.png",
+    "terrified": "63.png",
+    "horrified": "18.png",
+    "sleeping": "2.png",
+    "resting": "14.png",
+    "sitting": "11.png",
+    "kneeling": "12.png",
+    "hidden": "49.png",
+    "sneaking": "32.png",
+    "invisible": "77.png",
+    "sleeping": "2.png",
+    "calmed": "57.png",
+    "quickness": "32.png",
+    "defensive_posture": "62.png",
+    "forceful_blows": "46.png",
+    "slashing_strikes": "65.png",
+    "concussive_blows": "44.png",
+    "recent_block": "50.png",
+    "recent_parry": "65.png",
+    "recent_evade": "60.png",
+    "counter": "72.png",
+    "empowered": "58.png",
+    "shrouded": "49.png",
+    "in_combat": "54.png",
+    "lumnis": "196.png",
+    "bonus_xp": "196.png",
+    "floofer_glow": "14.png",
 }
 
 # Effects to never show in the status bar (internal state, not player-facing)
@@ -1768,6 +1819,7 @@ class MapImageCanvas(tk.Canvas):
         self._drag_moved:    bool   = False
         self._hover_room: Optional[int] = None
         self._overlay_items: Dict[int, List[int]] = {}
+        self._special_map_path: str = ""
 
         self.bind("<Configure>",       lambda _: self._render())
         self.bind("<MouseWheel>",      self._on_wheel)
@@ -1797,6 +1849,14 @@ class MapImageCanvas(tk.Canvas):
                 return region_name
         return zone
 
+    def set_special_map_path(self, image_path: str = ""):
+        image_path = str(image_path or "").strip()
+        if image_path == self._special_map_path:
+            return
+        self._special_map_path = image_path
+        if self.current_room_id is not None:
+            self._load_zone(self._current_zone)
+
     def set_room(self, room_id: int):
         same_room = room_id == self.current_room_id
         self.current_room_id = room_id
@@ -1819,9 +1879,13 @@ class MapImageCanvas(tk.Canvas):
         self._tk_img  = None
 
         zone_data = self.regions.get(zone_name)
-        if zone_data and PIL_AVAILABLE:
-            img_rel  = zone_data.get("image", "")
-            img_path = _resolve_map_image_path(img_rel)
+        if PIL_AVAILABLE:
+            img_path = ""
+            if self._special_map_path:
+                img_path = self._special_map_path
+            elif zone_data:
+                img_rel  = zone_data.get("image", "")
+                img_path = _resolve_map_image_path(img_rel)
             if os.path.exists(img_path):
                 try:
                     self._pil_img = Image.open(img_path).convert("RGBA")
@@ -2123,7 +2187,10 @@ class HUDApp:
         # Embedded status effect bar (toolbar strip)
         self._fx_icon_frame: "Optional[tk.Frame]" = None
         self._fx_bar_icons: dict = {}
+        self._fx_effect_state: dict = {}
+        self._fx_bar_signature: tuple = ()
         self._fx_tooltip_win: "Optional[tk.Toplevel]" = None
+        self._fx_icon_images: dict = {}
 
         # Dock manager
         self._dock: "Optional[DockManager]" = None
@@ -2930,6 +2997,43 @@ class HUDApp:
         """No-op — bar is built inline in _build_ui toolbar."""
         pass
 
+    def _get_status_icon_image(self, effect_id: str):
+        filename = STATUS_ICON_IMAGE_MAP.get(effect_id)
+        if not filename:
+            return None
+        if filename in self._fx_icon_images:
+            return self._fx_icon_images[filename]
+        icon_path = os.path.join(CLIENTMEDIA_ROOT, "icons", filename)
+        if not os.path.exists(icon_path):
+            return None
+        try:
+            img = tk.PhotoImage(file=icon_path)
+        except Exception:
+            return None
+        self._fx_icon_images[filename] = img
+        return img
+
+    def _fx_tooltip_text_for_effect(self, effect_id: str) -> str:
+        defn = STATUS_ICON_DEFS.get(effect_id, {
+            "tip": effect_id.replace("_", " ").title(),
+        })
+        se = self._fx_effect_state.get(effect_id) or {}
+        stacks = int(se.get("stacks", 1) or 1)
+        rem = float(se.get("remaining", -1) or -1)
+        tip_lines = [defn.get("tip", effect_id.replace("_", " ").title())]
+        if 0 <= rem:
+            rem_int = int(rem)
+            tip_lines.append(
+                f"Remaining: {rem_int}s" if rem_int < 60
+                else f"Remaining: {rem_int // 60}m{rem_int % 60:02d}s"
+            )
+        if stacks > 1:
+            tip_lines.append(f"Stacks: {stacks}")
+        return "\n".join(tip_lines)
+
+    def _show_fx_tooltip_for_effect(self, event, effect_id: str):
+        self._show_fx_tooltip(event, self._fx_tooltip_text_for_effect(effect_id))
+
     def _draw_fx_icon(self, parent, effect_id: str, se: dict) -> tk.Frame:
         """
         Draw a 26x26 icon cell inside the toolbar frame.
@@ -2946,9 +3050,19 @@ class HUDApp:
         cell = tk.Frame(parent, bg=BG_PANEL)
         cell.pack(side="left", padx=1, pady=2)
 
-        c = tk.Canvas(cell, width=SZ, height=SZ,
-                      bg=BG_PANEL, highlightthickness=0)
-        c.pack()
+        icon_image = self._get_status_icon_image(effect_id)
+        widgets = [cell]
+        if icon_image:
+            icon_widget = tk.Label(cell, image=icon_image, bg=BG_PANEL, bd=0, highlightthickness=0)
+            icon_widget.image = icon_image
+            icon_widget.pack()
+            widgets.append(icon_widget)
+            c = None
+        else:
+            c = tk.Canvas(cell, width=SZ, height=SZ,
+                          bg=BG_PANEL, highlightthickness=0)
+            c.pack()
+            widgets.append(c)
 
         color  = defn["color"]
         border = defn["border"]
@@ -2959,34 +3073,34 @@ class HUDApp:
         p = 1   # padding inside icon
 
         # ── Shape ────────────────────────────────────────────────────────────
-        if shape == "square":
+        if c and shape == "square":
             c.create_rectangle(p, p, SZ-p, SZ-p, fill=color, outline=border, width=2)
-        elif shape == "circle":
+        elif c and shape == "circle":
             c.create_oval(p, p, SZ-p, SZ-p, fill=color, outline=border, width=2)
-        elif shape == "diamond":
+        elif c and shape == "diamond":
             m = SZ // 2
             c.create_polygon([m, p+1, SZ-p-1, m, m, SZ-p-1, p+1, m],
                              fill=color, outline=border, width=2)
-        elif shape == "skull":
+        elif c and shape == "skull":
             c.create_oval(p+2, p+1, SZ-p-2, SZ-p-4, fill=color, outline=border, width=2)
             c.create_rectangle(SZ//2-3, SZ-p-5, SZ//2+3, SZ-p-1,
                                fill=color, outline=border, width=1)
             c.create_oval(p+5, SZ//2-4, p+9,  SZ//2,   fill="#000", outline="")
             c.create_oval(SZ-p-9, SZ//2-4, SZ-p-5, SZ//2, fill="#000", outline="")
-        elif shape == "arrow_down":
+        elif c and shape == "arrow_down":
             m = SZ // 2
             c.create_polygon([m, SZ-p-1, p+1, p+2, SZ-p-1, p+2],
                              fill=color, outline=border, width=2)
-        elif shape == "arrow_up":
+        elif c and shape == "arrow_up":
             m = SZ // 2
             c.create_polygon([m, p+1, p+1, SZ-p-1, SZ-p-1, SZ-p-1],
                              fill=color, outline=border, width=2)
-        elif shape == "zzz":
+        elif c and shape == "zzz":
             c.create_rectangle(p, p, SZ-p, SZ-p, fill=color, outline=border, width=2)
             c.create_text(SZ-6, 6,    text="z", fill="#90caf9", font=("Courier New", 5, "bold"))
             c.create_text(SZ//2+2, SZ//2-2, text="Z", fill="#bbdefb", font=("Courier New", 7, "bold"))
             c.create_text(7, SZ-7,  text="Z", fill="#e3f2fd", font=("Courier New", 9, "bold"))
-        elif shape == "blood_drop":
+        elif c and shape == "blood_drop":
             # FFXI-style blood drop: teardrop — round bottom, pointed top
             cx = SZ // 2
             # Circular body (bottom 60% of icon)
@@ -3004,15 +3118,15 @@ class HUDApp:
             # Highlight glint (top-left of drop body — FFXI style)
             c.create_oval(cx-br//2, by+2, cx-2, by+br//2,
                           fill="#ff8a80", outline="", stipple="")
-        elif shape == "dot":
+        elif c and shape == "dot":
             r = (SZ-2*p)//3
             cx, cy = SZ//2, SZ//2
             c.create_oval(cx-r, cy-r, cx+r, cy+r, fill=color, outline=border, width=2)
-        else:
+        elif c:
             c.create_rectangle(p, p, SZ-p, SZ-p, fill=color, outline=border, width=2)
 
         # ── Symbol (skip shapes that already drew their own content) ──────────
-        if shape not in ("skull", "zzz", "blood_drop"):
+        if c and shape not in ("skull", "zzz", "blood_drop"):
             fs = 7 if len(symbol) > 1 else 10
             c.create_text(SZ//2+1, SZ//2+1, text=symbol,
                           fill="#111111", font=("Courier New", fs, "bold"))
@@ -3020,14 +3134,14 @@ class HUDApp:
                           fill="#ffffff",  font=("Courier New", fs, "bold"))
 
         # ── Stacks badge ──────────────────────────────────────────────────────
-        if stacks > 1:
+        if c and stacks > 1:
             bx, by = SZ-3, 3
             c.create_oval(bx-5, by-5, bx+5, by+5, fill="#e65100", outline="")
             c.create_text(bx, by, text=str(stacks), fill="white",
                           font=("Courier New", 5, "bold"))
 
         # ── Timer overlay ─────────────────────────────────────────────────────
-        if 0 <= rem < 60:
+        if c and 0 <= rem < 60:
             col = "#ff5252" if rem < 5 else ("#e3b341" if rem < 15 else "#8b949e")
             c.create_text(SZ-2, SZ-2, text=f"{int(rem)}s",
                           fill=col, font=("Courier New", 5), anchor="se")
@@ -3035,18 +3149,9 @@ class HUDApp:
                 c.create_rectangle(p, p, SZ-p, SZ-p,
                                    fill="#111111", outline="", stipple="gray50")
 
-        # ── Tooltip ───────────────────────────────────────────────────────────
-        tip_lines = [defn.get("tip", effect_id.replace("_"," ").title())]
-        if 0 <= rem:
-            tip_lines.append(f"Remaining: {int(rem)}s" if rem < 60
-                             else f"Remaining: {int(rem)//60}m{int(rem)%60:02d}s")
-        if stacks > 1:
-            tip_lines.append(f"Stacks: {stacks}")
-        tip_text = "\n".join(tip_lines)
-
-        for w in (c, cell):
-            w.bind("<Enter>",  lambda e, t=tip_text: self._show_fx_tooltip(e, t))
-            w.bind("<Leave>",  lambda e:              self._hide_fx_tooltip())
+        for w in widgets:
+            w.bind("<Enter>",  lambda e, eid=effect_id: self._show_fx_tooltip_for_effect(e, eid))
+            w.bind("<Leave>",  lambda e: self._hide_fx_tooltip())
 
         return cell
 
@@ -3058,11 +3163,6 @@ class HUDApp:
         if self._fx_icon_frame is None:
             return
 
-        # Destroy all current icon cells
-        for w in self._fx_icon_frame.winfo_children():
-            w.destroy()
-        self._fx_bar_icons.clear()
-
         # Filter: remove internal states AND effects that have expired (remaining == 0)
         # remaining == -1 means indefinite (keep), > 0 means active (keep), == 0 means done (drop)
         visible = [
@@ -3070,6 +3170,18 @@ class HUDApp:
             if e.get("id") not in STATUS_BAR_HIDDEN
             and e.get("remaining", -1) != 0
         ]
+        self._fx_effect_state = {e.get("id", ""): dict(e) for e in visible if e.get("id")}
+        signature = tuple((e.get("id", ""), int(e.get("stacks", 1) or 1)) for e in visible)
+
+        if signature == self._fx_bar_signature and self._fx_icon_frame.winfo_children():
+            return
+
+        self._fx_bar_signature = signature
+
+        # Destroy all current icon cells
+        for w in self._fx_icon_frame.winfo_children():
+            w.destroy()
+        self._fx_bar_icons.clear()
 
         if not visible:
             # Show the dim placeholder
@@ -5953,12 +6065,15 @@ class HUDApp:
                 self._play_sfx(SFX_SHOP_EXIT)
                 self._clear_shop_catalog_state()
         self._last_room_was_shop = is_shop
-        self._map.set_room(room_id)
-        self.root.after_idle(lambda rid=room_id: self._map.set_room(rid))
-
         room = self.graph.get(room_id)
         title = self._current_room_title or (room.get("title", f"Room #{room_id}") if room else f"Room #{room_id}")
         zone  = room.get("zone_name", "Unknown Zone") if room else "Unknown Zone"
+        pet_shop_map = ""
+        if "moonwhisker menagerie" in str(title or "").lower():
+            pet_shop_map = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "clientmedia", "pets", "ShopMap.jpg"))
+        self._map.set_special_map_path(pet_shop_map)
+        self._map.set_room(room_id)
+        self.root.after_idle(lambda rid=room_id: self._map.set_room(rid))
         map_zone = self._map._region_name_for_room(room_id) if hasattr(self._map, "_region_name_for_room") else zone
         audio_zone = self._resolve_audio_zone(title, zone, map_zone)
 

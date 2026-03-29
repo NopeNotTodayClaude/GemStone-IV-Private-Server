@@ -93,7 +93,7 @@ def generate_gem(db, creature_level):
     return None
 
 
-def generate_box(db, creature_level):
+def generate_box(db, creature_level, server=None):
     """
     Pick a random treasure container appropriate for creature level.
     Returns item dict with lock_difficulty, trap info, and contents set, or None.
@@ -102,8 +102,21 @@ def generate_box(db, creature_level):
     chosen_name = random.choice(box_names)
 
     lock_diff  = creature_level * LOCK_DIFFICULTY_BASE + random.randint(-10, 20)
-    trap_type  = _random_trap(creature_level)
-    trap_diff  = (creature_level * 12 + random.randint(-5, 15)) if trap_type else 0
+    trap_state = {}
+    if server and getattr(server, "traps", None):
+        trap_state = server.traps.build_box_trap_state(creature_level) or {}
+    else:
+        trap_type = _random_trap(creature_level, server=None)
+        trap_state = {
+            "trap_type": trap_type,
+            "trapped": trap_type is not None,
+            "trap_difficulty": (creature_level * 12 + random.randint(-5, 15)) if trap_type else 0,
+            "trap_checked": False,
+            "trap_detected": False,
+            "trap_disarmed": False,
+            "trap_variant": None,
+            "trap_payload": {},
+        }
 
     box = None
 
@@ -148,12 +161,14 @@ def generate_box(db, creature_level):
         "lock_difficulty":  max(10, lock_diff),
         "is_locked":        True,
         "opened":           False,
-        "trap_type":        trap_type,
-        "trapped":          trap_type is not None,
-        "trap_difficulty":  trap_diff,
-        "trap_checked":     False,
-        "trap_detected":    False,
-        "trap_disarmed":    False,
+        "trap_type":        trap_state.get("trap_type"),
+        "trapped":          bool(trap_state.get("trapped")),
+        "trap_difficulty":  int(trap_state.get("trap_difficulty", 0) or 0),
+        "trap_checked":     bool(trap_state.get("trap_checked", False)),
+        "trap_detected":    bool(trap_state.get("trap_detected", False)),
+        "trap_disarmed":    bool(trap_state.get("trap_disarmed", False)),
+        "trap_variant":     trap_state.get("trap_variant"),
+        "trap_payload":     dict(trap_state.get("trap_payload") or {}),
         "contents":         [],   # populated below
     })
 
@@ -263,9 +278,11 @@ def generate_herb(db, creature_level):
     return None
 
 
-def _random_trap(creature_level):
+def _random_trap(creature_level, server=None):
     """Possibly generate a trap type for a box based on creature level.
     Uses weighted random selection from TRAP_WEIGHTS tiers."""
+    if server and getattr(server, "traps", None):
+        return server.traps.choose_random_trap(creature_level)
     if creature_level < 3:
         return None
     trap_chance = min(0.6, creature_level * 0.03)
@@ -740,7 +757,7 @@ def generate_box_contents(db, creature_level):
     return contents
 
 
-def generate_treasure(db, creature):
+def generate_treasure(db, creature, server=None):
     """
     Generate all treasure drops for a killed creature.
 
@@ -772,7 +789,7 @@ def generate_treasure(db, creature):
 
     # Boxes (30% chance if flagged)
     if treasure_flags.get("boxes") and random.random() < 0.3:
-        box = generate_box(db, level)
+        box = generate_box(db, level, server=server)
         if box:
             result["items"].append(box)
 

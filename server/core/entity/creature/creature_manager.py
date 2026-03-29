@@ -50,6 +50,7 @@ class CreatureManager:
         self._dead_creatures: List[Creature] = []
         self._spawn_config: List[dict] = []
         self._hunting_rooms: set = set()
+        self._zone_level_spawn_threshold = 10
 
     # ── Initialization ────────────────────────────────────────────────────
 
@@ -73,7 +74,8 @@ class CreatureManager:
             template = get_template(config["template_id"])
             if not template or not config["rooms"]:
                 continue
-            for _ in range(config["max_count"]):
+            desired = self._desired_population_for_config(config)
+            for _ in range(desired):
                 room_id = random.choice(config["rooms"])
                 if self.spawn_creature(config["template_id"], room_id):
                     spawned += 1
@@ -303,8 +305,11 @@ class CreatureManager:
             configs.append({
                 "template_id": tid,
                 "max_count":   max_count,
+                "base_max_count": max_count,
+                "template_level": int(tmpl.get("level", 1) or 1),
                 "rooms":       valid_spawn,
                 "wander":      valid_wander,
+                "zone_ids":    sorted({int(self.server.world.get_room(r).zone_id) for r in valid_spawn if self.server.world.get_room(r)}),
                 "source":      "lua",
             })
             hunting.update(valid_spawn)
@@ -325,8 +330,11 @@ class CreatureManager:
                 configs.append({
                     "template_id": cfg["template_id"],
                     "max_count":   cfg.get("max_count", 1),
+                    "base_max_count": cfg.get("max_count", 1),
+                    "template_level": int((get_template(cfg["template_id"]) or {}).get("level", 1) or 1),
                     "rooms":       valid_spawn,
                     "wander":      valid_spawn,
+                    "zone_ids":    sorted({int(self.server.world.get_room(r).zone_id) for r in valid_spawn if self.server.world.get_room(r)}),
                     "source":      "sql",
                 })
                 hunting.update(valid_spawn)
@@ -434,6 +442,81 @@ class CreatureManager:
                 await self.server.world.broadcast_to_room(
                     room_id,
                     creature_arrival(new_c.full_name, "scurries in from the shadows")
+                )
+        await self._maintain_zone_populations()
+
+    def _config_population_bump(self, cfg: dict) -> int:
+        base = int(cfg.get("base_max_count", cfg.get("max_count", 1)) or 1)
+        level = int(cfg.get("template_level", 1) or 1)
+        if level <= self._zone_level_spawn_threshold:
+            return 0
+        return max(1, min(2, (base + 3) // 4))
+
+    def _zone_party_multiplier(self, zone_ids: list[int]) -> int:
+        if not zone_ids:
+            return 1
+        mgr = getattr(self.server, "party_manager", None)
+        world = getattr(self.server, "world", None)
+        if not mgr or not world:
+            return 1
+        seen_parties = set()
+        for session in self.server.sessions.playing():
+            room = getattr(session, "current_room", None)
+            if not room or int(getattr(room, "zone_id", 0) or 0) not in zone_ids:
+                continue
+            party = mgr.get_party(session)
+            if not party or party.id in seen_parties:
+                continue
+            seen_parties.add(party.id)
+            in_zone = [
+                member for member in party.living_members()
+                if getattr(member, "current_room", None)
+                and int(getattr(member.current_room, "zone_id", 0) or 0) in zone_ids
+            ]
+            if len(in_zone) >= 2:
+                return 2
+        return 1
+
+    def _desired_population_for_config(self, cfg: dict) -> int:
+        base = int(cfg.get("base_max_count", cfg.get("max_count", 1)) or 1)
+        desired = base + self._config_population_bump(cfg)
+        desired *= self._zone_party_multiplier(cfg.get("zone_ids") or [])
+        return max(1, desired)
+
+    def _alive_creatures_for_config(self, cfg: dict) -> list[Creature]:
+        room_ids = set(int(r) for r in (cfg.get("rooms") or []))
+        template_id = cfg.get("template_id")
+        return [
+            creature for creature in self._creatures.values()
+            if creature.alive
+            and creature.template_id == template_id
+            and int(getattr(creature, "current_room_id", 0) or 0) in room_ids
+        ]
+
+    async def _maintain_zone_populations(self):
+        for cfg in self._spawn_config:
+            desired = self._desired_population_for_config(cfg)
+            alive = self._alive_creatures_for_config(cfg)
+            deficit = desired - len(alive)
+            if deficit <= 0:
+                continue
+            spawn_budget = min(deficit, 2 if self._zone_party_multiplier(cfg.get("zone_ids") or []) > 1 else 1)
+            candidate_rooms = []
+            for room_id in cfg.get("rooms") or []:
+                room = self.server.world.get_room(room_id)
+                if not room or room.safe:
+                    continue
+                candidate_rooms.append(room_id)
+            if not candidate_rooms:
+                continue
+            for _ in range(spawn_budget):
+                room_id = random.choice(candidate_rooms)
+                new_c = self.spawn_creature(cfg["template_id"], room_id)
+                if not new_c:
+                    continue
+                await self.server.world.broadcast_to_room(
+                    room_id,
+                    creature_arrival(new_c.full_name, "emerges from deeper in the hunting grounds"),
                 )
 
     async def _creature_ai_tick(self, now: float):

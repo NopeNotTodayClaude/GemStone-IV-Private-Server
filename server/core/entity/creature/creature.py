@@ -47,6 +47,8 @@ class Creature:
         self.ds_ranged = template.get("ds_ranged", 20)
         self.ds_bolt = template.get("ds_bolt", 20)
         self.td = template.get("td", 3)  # Target defense (vs magic)
+        self.td_spiritual = template.get("td_spiritual", self.td)
+        self.td_elemental = template.get("td_elemental", self.td)
         self.udf = template.get("udf", 14)
         self.armor_asg = template.get("armor_asg", 1)  # Armor skin group
         self.cva = template.get("cva", 0)  # Creature vs Armor modifier
@@ -71,6 +73,9 @@ class Creature:
         self.abilities = list(template.get("abilities", []) or [])
         self.immune = list(template.get("immune", []) or [])
         self.resist = list(template.get("resist", []) or [])
+        self.skills = list(template.get("skills", []) or [])
+        self.preferred_stance = (template.get("preferred_stance") or None)
+        self.stance_profile = (template.get("stance_profile") or None)
 
         # State
         self.current_room_id = 0
@@ -432,7 +437,7 @@ class Creature:
         ranged_abilities = {
             "hurl_weapon", "stone_throw", "aimed_shot", "fire_bolt", "water_bolt", "call_wind",
             "acid_spray", "ant_acid_spray", "fire_spit", "tail_spike_volley", "gas_cloud",
-            "mind_blast", "sonic_wail", "earthen_fury_caster",
+            "mind_blast", "sonic_wail", "earthen_fury_caster", "shock_burst",
         }
         ranged_profile = bool(self.spells) or any(
             str(ability or "").lower() in ranged_abilities for ability in (self.abilities or [])
@@ -454,6 +459,19 @@ class Creature:
             self.stance = "advance"
         else:
             self.stance = "neutral"
+
+        preferred = str(getattr(self, "preferred_stance", "") or "").lower().strip()
+        profile = str(getattr(self, "stance_profile", "") or "").lower().strip()
+        if preferred and hp_pct >= 0.45 and severe_wounds == 0 and not leg_disabled:
+            self.stance = preferred
+        elif profile == "ranged" and hp_pct >= 0.30 and not leg_disabled:
+            self.stance = "guarded"
+        elif profile == "berserker" and hp_pct >= 0.25 and severe_wounds == 0:
+            self.stance = "forward"
+        elif profile == "skirmisher" and hp_pct >= 0.45 and not leg_disabled:
+            self.stance = "advance"
+        elif profile == "caster" and hp_pct >= 0.35:
+            self.stance = "guarded"
         return self.stance
 
     def wound_summary(self) -> str:

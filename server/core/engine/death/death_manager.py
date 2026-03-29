@@ -41,6 +41,9 @@ CLERIC_ROOMS = {
     # "icemule_trace":     [XXXXX],
 }
 
+TEMPORAL_RIFT_ROOMS = {1768}
+DEFAULT_RIFT_RECOVERY_ROOM = 10376
+
 # ── Cleric NPC name pool ───────────────────────────────────────────────────────
 CLERIC_NAMES = [
     "Aelindra",
@@ -324,11 +327,28 @@ class DeathManager:
 
         # Find nearest cleric room
         death_room_id  = session.death_room_id or 0
-        cleric_room_id = self._find_nearest_cleric_room(death_room_id)
+        cleric_search_origin = death_room_id
+        if death_room_id in TEMPORAL_RIFT_ROOMS:
+            cleric_search_origin = int(getattr(session, "temporal_rift_origin_room_id", 0) or death_room_id)
+        cleric_room_id = self._find_nearest_cleric_room(cleric_search_origin)
 
         if cleric_room_id is None:
             # Fallback — no cleric room found, just revive with penalty
-            log.warning("No cleric room found from room %d — emergency revive", death_room_id)
+            if death_room_id in TEMPORAL_RIFT_ROOMS:
+                cleric_room_id = DEFAULT_RIFT_RECOVERY_ROOM
+            else:
+                log.warning("No cleric room found from room %d — emergency revive", death_room_id)
+                await self._ghost_revive(session, death_room_id, in_place=True)
+                return
+
+        if death_room_id in TEMPORAL_RIFT_ROOMS:
+            task = asyncio.create_task(
+                self._run_rift_recovery(session, int(cleric_room_id or DEFAULT_RIFT_RECOVERY_ROOM), death_room_id)
+            )
+            self._beefy_tasks[id(session)] = task
+            return
+
+        if cleric_room_id is None:
             await self._ghost_revive(session, death_room_id, in_place=True)
             return
 
@@ -541,6 +561,38 @@ class DeathManager:
         finally:
             self._beefy_tasks.pop(id(session), None)
 
+    async def _run_rift_recovery(self, session, cleric_room_id: int, death_room_id: int):
+        """Special 1-2 player safety path for temporal rift deaths."""
+        try:
+            world = self.server.world
+            cleric_room_id = int(cleric_room_id or DEFAULT_RIFT_RECOVERY_ROOM)
+            room = world.get_room(death_room_id)
+            if room:
+                await world.broadcast_to_room(
+                    death_room_id,
+                    colorize(
+                        "A jagged seam of silver light tears open through the temporal rift as unseen hands seize the drifting corpse.",
+                        TextPresets.WARNING,
+                    ),
+                )
+            if session.is_dead:
+                await session.send_line(colorize(
+                    "  The temporal rift recoils.  Sergeant Beefy catches hold of you through the tear and hauls you toward a waiting shrine.",
+                    TextPresets.SYSTEM,
+                ))
+            await asyncio.sleep(3)
+            await self._ghost_revive(session, cleric_room_id, "Sergeant Beefy and a waiting cleric")
+            session.temporal_rift_room_id = None
+            session.temporal_rift_release_at = 0
+        except asyncio.CancelledError:
+            log.info("Rift recovery task cancelled for session %s", getattr(session, "character_name", "?"))
+        except Exception as e:
+            log.error("Rift recovery error: %s", e, exc_info=True)
+            if session.is_dead:
+                await self._ghost_revive(session, cleric_room_id or DEFAULT_RIFT_RECOVERY_ROOM, in_place=False)
+        finally:
+            self._beefy_tasks.pop(id(session), None)
+
     async def _ghost_revive(self, session, revive_room_id: int,
                             cleric_name: str = None, in_place: bool = False):
         """Apply ghost revival: 1% HP, 90% stat penalty.
@@ -564,6 +616,8 @@ class DeathManager:
                 world.add_player_to_room(session, new_room.id)
 
         session.death_room_id = None
+        session.temporal_rift_room_id = None
+        session.temporal_rift_release_at = 0
 
         # Set HP to 1% (min 1)
         session.health_current = max(1, session.health_max // 100)

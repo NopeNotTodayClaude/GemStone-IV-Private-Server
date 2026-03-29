@@ -83,6 +83,13 @@ def _get_local_authority(session, server, guild_id=None):
     return None, None
 
 
+def _is_ledger_authority(entry, npc):
+    role_type = str((entry or {}).get("role_type") or "").lower()
+    if role_type == "trainer":
+        return False
+    return bool(npc)
+
+
 def _guild_summary_line(membership):
     guild_name = membership.get("guild_name", "Unknown Guild")
     rank_name = membership.get("rank_name") or "Member"
@@ -213,12 +220,12 @@ async def _show_status(session, server):
                 join_level = int(prof_guild.get("join_level") or 15)
                 if access.get("is_invited"):
                     await session.send_line(
-                        "You have a standing rogue invitation.  At a hidden rogue guild entry, LEAN first and then use the pass sequence."
+                        "You have a standing rogue invitation.  In Ta'Vaalor, start at the shed on Gaeld Var, work the shed puzzle, then LEAN at the inner basement door and use the pass sequence."
                     )
                 elif int(getattr(session, "level", 0) or 0) < join_level:
                     await session.send_line(f"Rogues are normally approached by the guild shortly after level {join_level}.")
                 else:
-                    await session.send_line("The rogue guild has not yet contacted you.  Once invited, use the hidden entry sequence to reach a guild contact.")
+                    await session.send_line("The rogue guild has not yet contacted you.  Once invited, Ta'Vaalor rogues begin at the shed on Gaeld Var.")
             else:
                 await session.send_line("Visit a local guild authority and use GLD JOIN once you are eligible.")
         else:
@@ -238,7 +245,8 @@ async def _show_status(session, server):
     if membership.get("guild_id") == "rogue" and getattr(server, "guild", None):
         password_text = server.guild.get_password_text("rogue")
         if password_text:
-            await session.send_line(f"Your rogue entry sequence is {password_text}.")
+            await session.send_line(f"Your rogue inner-door sequence is {password_text}.")
+        await session.send_line("Ta'Vaalor entry order: shed on Gaeld Var, LOOK TOOL, work the panel, then LEAN in the basement and use the inner-door sequence.  Established members may use GO CHUTE from Shind's locksmith.")
     tasks = getattr(session, "guild_tasks", []) or []
     if tasks:
         await session.send_line(_active_task_line(tasks[0]))
@@ -287,6 +295,8 @@ async def _cmd_join(session, server):
         return
 
     authority, npc = _get_local_authority(session, server, guild_def["guild_id"])
+    if npc and not _is_ledger_authority(authority, npc):
+        npc = None
     if not npc and guild_def.get("guild_id") == "rogue" and getattr(server, "guild", None):
         access = server.guild.get_access_row(session.character_id, "rogue") or {}
         access_point = server.guild.get_access_point_for_entry_room("rogue", getattr(session.current_room, "id", 0))
@@ -305,6 +315,14 @@ async def _cmd_join(session, server):
             f"You need to be at a local {guild_def.get('name', 'guild')} authority before you can join."
         )
         return
+
+    if guild_def.get("guild_id") == "rogue" and getattr(server, "guild", None):
+        access = server.guild.get_access_row(session.character_id, "rogue") or {}
+        if not access.get("entry_proved_at"):
+            await session.send_line(
+                npc_speech(npc.display_name, 'says, "The guild has not yet seen you come in the quiet way.  Start with the shed on Gaeld Var."')
+            )
+            return
 
     initiation_fee = int(guild_def.get("initiation_fee") or 0)
     if int(getattr(session, "silver", 0) or 0) < initiation_fee:
@@ -333,10 +351,9 @@ async def _cmd_join(session, server):
         return
 
     if guild_def.get("guild_id") == "rogue" and getattr(server, "guild", None):
-        server.guild.grant_member_access(
+        server.guild.unlock_member_access(
             session.character_id,
             "rogue",
-            actor_template_id=getattr(npc, "template_id", None),
         )
 
     _refresh_guild_state(session, server)
@@ -348,6 +365,13 @@ async def _cmd_join(session, server):
             f'says, "Welcome to the {guild_def["name"]}.  Your membership is recorded."'
         )
     )
+    if guild_def.get("guild_id") == "rogue":
+        await session.send_line(
+            npc_speech(
+                npc.display_name,
+                'adds, "Pay your dues, check in with the ledger, and remember this: after today, Shind\'s chute is your clean way back in."'
+            )
+        )
     if initiation_fee > 0:
         await session.send_line(
             colorize(f"  You pay {initiation_fee} silver in initiation fees.", TextPresets.ITEM_NAME)
@@ -371,6 +395,8 @@ async def _cmd_pay(session, args, server):
         return
 
     authority, npc = _get_local_authority(session, server, membership["guild_id"])
+    if npc and not _is_ledger_authority(authority, npc):
+        npc = None
     if not npc:
         await session.send_line("You must be with a local guild authority to pay guild dues.")
         return
@@ -454,6 +480,8 @@ async def _cmd_checkin(session, server):
         return
 
     authority, npc = _get_local_authority(session, server, membership["guild_id"])
+    if npc and not _is_ledger_authority(authority, npc):
+        npc = None
     if not npc:
         await session.send_line("You must be with a local guild authority to check in.")
         return
@@ -878,6 +906,8 @@ async def _cmd_quest(session, args, server):
 
     if subcmd == "start":
         authority, npc = _get_local_authority(session, server, "rogue")
+        if npc and not _is_ledger_authority(authority, npc):
+            npc = None
         if not npc:
             await session.send_line("You must be with a local rogue guild authority to receive a guild quest.")
             return
@@ -986,7 +1016,10 @@ async def _cmd_password(session, args, server):
         if guild_id == "rogue" and not (membership or access.get("is_invited") or access.get("password_known")):
             await session.send_line("You do not currently have a rogue guild invitation or password on record.")
             return
-        await session.send_line(f"The current sequence is {password_text}.")
+        await session.send_line(f"The current inner-door sequence is {password_text}.")
+        await session.send_line("Ta'Vaalor rogues: start at the shed on Gaeld Var, LOOK TOOL, then PULL HOE, PULL RAKE, PULL SHOVEL, GO PANEL.  In the basement beyond, LEAN and use the inner-door sequence, then OPEN DOOR.")
+        if membership and membership.get("guild_id") == "rogue":
+            await session.send_line("Once the guild has accepted you, GO CHUTE from Shind's locksmith is your normal way in and out.")
         return
 
     if not membership or membership.get("guild_id") != guild_id or not int(membership.get("is_guildmaster", 0) or 0):
@@ -1006,7 +1039,7 @@ async def _cmd_password(session, args, server):
         await session.send_line("The password ledger refuses to cooperate right now.")
         return
 
-    await target.send_line(f"{session.character_name} quietly reviews the rogue entry sequence with you: {password_text}.")
+    await target.send_line(f"{session.character_name} quietly reviews the rogue inner-door sequence with you: {password_text}.  In Ta'Vaalor, the shed on Gaeld Var comes first.")
     await session.send_line(f"You quietly review the sequence with {target.character_name}: {password_text}.")
 
 
@@ -1265,6 +1298,29 @@ async def _cmd_promote(session, args, server):
 
 def get_guild_npc_response(session, npc, topic, server):
     """Provide dynamic guild NPC responses before falling back to static dialogue."""
+    topic_l = (topic or "guild").strip().lower()
+    template_id = getattr(npc, "template_id", "") or ""
+    if template_id == "shind" and getattr(server, "guild", None):
+        guild_engine = server.guild
+        prof_guild = _get_profession_guild(session, server)
+        if prof_guild and prof_guild.get("guild_id") == "rogue":
+            access = guild_engine.get_access_row(session.character_id, "rogue") or {}
+            membership = getattr(session, "guild_membership", None) or {}
+            is_member = str(membership.get("guild_id") or "").lower() == "rogue"
+            if topic_l in ("guild", "rogue", "shed", "entry", "password", "sequence"):
+                if is_member or access.get("member_access_at"):
+                    return "You proved yourself already.  Use GO CHUTE here when you want the quick way back into the guild."
+                if access.get("is_invited"):
+                    guild_engine.note_shind_guidance(session.character_id, "rogue")
+                    return "Gaeld Var.  The shed.  Go in, LOOK TOOL, and mind the panel before you worry about the inner door.  Once the guild takes you in, this shop's chute becomes your regular entrance."
+                return "When the guild finally notices you, the first stop in Ta'Vaalor is a shed on Gaeld Var.  Until then, there is nothing here for you."
+
+    if template_id in {"tv_rogue_lockmaster", "tv_rogue_bruiser", "tv_rogue_drillmaster"}:
+        if topic_l in ("join", "membership", "ledger", "dues", "pay", "checkin"):
+            return "Kharst keeps the guild ledger in the alley.  I'm here to train you, not to sign your papers."
+        if topic_l in ("training", "skills", "lock", "mastery", "cheapshot", "sweep", "subdue", "stun", "gambit", "drill"):
+            return None
+
     guild_id = getattr(npc, "guild_id", None)
     if not guild_id:
         return None
@@ -1277,7 +1333,6 @@ def get_guild_npc_response(session, npc, topic, server):
     if getattr(session, "guild_membership", None) and session.guild_membership.get("guild_id") == guild_id:
         membership = session.guild_membership
 
-    topic_l = (topic or "guild").strip().lower()
     guild_name = guild_def.get("name", "guild")
     if guild_def.get("profession_id") != getattr(session, "profession_id", None):
         return f"I only handle {guild_name} business.  This is not your profession guild."
@@ -1286,14 +1341,14 @@ def get_guild_npc_response(session, npc, topic, server):
             return f"You are already recorded in the {guild_name}.  Use GLD STATUS for the ledger summary."
         if guild_id == "rogue":
             if getattr(getattr(session, "current_room", None), "id", 0) == getattr(npc, "home_room_id", 0):
-                return "If you made it inside, use GLD JOIN here and I can record your membership."
-            return "When the Rogue Guild contacts you, use the hidden entry sequence to reach me, then GLD JOIN inside."
+                return "You made it in.  Use GLD JOIN here, then settle your dues and check in before you start worrying about the deeper work."
+            return "In Ta'Vaalor, the first route in is the shed on Gaeld Var.  Get through that and the basement door properly before you come asking to join."
         return f"If you are at least level {guild_def.get('join_level', 15)}, use GLD JOIN here and I can record your membership."
     if topic_l in ("invite", "password", "entry", "sequence"):
         if guild_id == "rogue":
             if membership:
-                return "Your alley sequence remains: LEAN, then PULL, PULL, SLAP, RUB, RUB, PUSH, TURN."
-            return "Once invited, LEAN at the hidden rogue entry and then follow the pass sequence."
+                return "Ta'Vaalor has two steps.  The shed on Gaeld Var comes first.  After that, the inner-door sequence remains LEAN, then PULL, PULL, SLAP, RUB, RUB, PUSH, TURN.  Once you are established, use Shind's chute."
+            return "Once invited, start with the shed on Gaeld Var.  The inner basement door is worked only after that."
         return "This guild does not use a hidden entry sequence."
     if topic_l in ("dues", "pay", "silver"):
         return f"Monthly dues here are {int(guild_def.get('monthly_dues') or 0)} silver.  Use GLD PAY while standing here."

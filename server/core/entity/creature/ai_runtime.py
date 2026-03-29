@@ -71,6 +71,7 @@ _STATUS_ABILITY_MAP = {
     "curse_touch": ("slowed", 14, 22, "{name} brushes {target} with a draining curse!"),
     "stunning_keen": ("stunned", 5, 16, "{name} lands a stunningly precise strike on {target}!"),
     "ghoul_master_aura": ("fear", 14, 22, "{name}'s deathly aura presses in on {target}!"),
+    "thunder_roar": ("fear", 12, 20, "{name} unleashes a thunderous roar that rattles {target} to the bone!"),
 }
 
 _PREDATORY_ABILITIES = {
@@ -159,6 +160,7 @@ _DIRECT_ATTACK_ABILITIES = {
     "earthen_fury_caster": {"as_bonus": 12, "damage_type": "crush", "cooldown": 18, "verb_first": "hammers you with earthen fury", "verb_third": "hammers {target} with earthen fury"},
     "sulfurous_appearance": {"as_bonus": 8, "damage_type": "fire", "cooldown": 16, "verb_first": "lashes you with a sulfurous flare", "verb_third": "lashes {target} with a sulfurous flare", "status": "fear", "duration": 4},
     "rend": {"as_bonus": 12, "damage_type": "slash", "cooldown": 16, "verb_first": "rends into you with tearing force", "verb_third": "rends into {target} with tearing force"},
+    "shock_burst": {"as_bonus": 11, "damage_type": "electric", "cooldown": 16, "verb_first": "detonates a crackling burst of lightning into you", "verb_third": "detonates a crackling burst of lightning into {target}", "status": "stunned", "duration": 3},
 }
 
 _DISARM_ABILITIES = {

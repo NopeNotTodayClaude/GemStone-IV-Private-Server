@@ -20,6 +20,8 @@ from server.core.protocol.colors import colorize, TextPresets
 
 log = logging.getLogger(__name__)
 
+PET_COMFORTING_GLOW_SPELL = 5001
+
 
 class PetManager:
     """Central owner for pet data, runtime state, and pet-specific hooks."""
@@ -563,9 +565,6 @@ class PetManager:
         return 1
 
     def _ability_summary_text(self, ability_key: str, scaling: dict, *, locked: bool = False) -> str:
-        if locked:
-            unlock_level = int(scaling.get("level") or 1)
-            return f"Unlocks at level {unlock_level}."
         if ability_key == "guardian_spark":
             charges = int(scaling.get("charges") or 0)
             cooldown = self._format_duration_short(int(scaling.get("cooldown_seconds") or 0))
@@ -581,6 +580,9 @@ class PetManager:
             revive_pct = float(scaling.get("revive_health_pct") or 0.0) * 100.0
             cooldown = self._format_duration_short(int(scaling.get("cooldown_seconds") or 0))
             return f"Revives the owner in place at {revive_pct:.0f}% HP once every {cooldown}."
+        if locked:
+            unlock_level = int(scaling.get("level") or 1)
+            return f"Unlocks at level {unlock_level}."
         return ""
 
     def _ability_status_text(self, session, pet: dict, ability_key: str, state: dict, scaling: dict) -> str:
@@ -654,6 +656,53 @@ class PetManager:
         if self.server.status.has(session, "floofer_glow"):
             return
         if int(state.get("cooldown_until") or 0) > now:
+            return
+
+        from server.core.commands.player.spellcasting import (
+            _apply_lua_char_updates,
+            _get_spell_engine,
+            _lua_returns,
+            _refresh_post_spell_state,
+            _session_to_spell_entity,
+            _target_to_entity,
+        )
+
+        engine, spell_engine = _get_spell_engine(self.server)
+        if not engine or not spell_engine:
+            return
+
+        caster_entity = _session_to_spell_entity(session, self.server)
+        caster_entity["pet_cheat_cast"] = True
+        caster_entity["pet_name"] = pet.get("pet_name")
+        caster_entity["pet_species_key"] = pet.get("species_key")
+
+        target_entity = _target_to_entity(session, self.server) or {}
+        target_entity["pet_spell_data"] = {
+            "heal_pct": float(scaling.get("heal_pct") or 0.01),
+            "duration_seconds": int(scaling.get("duration_seconds") or 60),
+            "tick_interval": int(scaling.get("tick_interval") or 5),
+            "status_effect": "floofer_glow",
+            "pet_name": pet.get("pet_name"),
+            "owner_pet_id": pet.get("id"),
+        }
+
+        raw_char = engine.python_to_lua(caster_entity)
+        raw_target = engine.python_to_lua(target_entity)
+        raw = engine.call_hook(
+            spell_engine,
+            "cast_direct",
+            raw_char,
+            raw_target,
+            PET_COMFORTING_GLOW_SPELL,
+            "cast",
+            None,
+            True,
+        )
+        values = _lua_returns(raw)
+        ok = bool(values[0]) if values else False
+        _apply_lua_char_updates(engine, raw_char, session)
+        _refresh_post_spell_state(session, self.server)
+        if not ok:
             return
 
         self.server.status.apply(
@@ -879,7 +928,13 @@ class PetManager:
             await session.send_line("That is not a recognized pet training item.")
             return
 
-        inv_item = self._find_inventory_item(session, treat.get("item_short_name"))
+        inv_item = self._find_inventory_item(
+            session,
+            item_query,
+            treat.get("item_short_name"),
+            treat.get("short_name"),
+            treat.get("label"),
+        )
         if not inv_item:
             await session.send_line(f"You are not carrying any {treat.get('label', 'pet treat')}.")
             return
@@ -1240,6 +1295,12 @@ class PetManager:
                 return row
         return None
 
+    def _normalize_item_query(self, text: str) -> str:
+        text = str(text or "").strip().lower()
+        text = re.sub(r"[^a-z0-9' -]+", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
+
     def _pet_item_delivery_status(self, session) -> dict:
         from server.core.commands.player.inventory import _find_best_stow_container, restore_inventory_state
 
@@ -1371,12 +1432,38 @@ class PetManager:
             return False, None, "The menagerie could not hand over that item."
         return True, best_cont.get("short_name") or best_cont.get("noun") or "container", None
 
-    def _find_inventory_item(self, session, short_name: str) -> Optional[dict]:
-        wanted = (short_name or "").strip().lower()
+    def _find_inventory_item(self, session, *queries: str) -> Optional[dict]:
+        from server.core.commands.player.inventory import restore_inventory_state
+
+        restore_inventory_state(self.server, session)
+        wanted = [self._normalize_item_query(q) for q in queries if self._normalize_item_query(q)]
+        if not wanted:
+            return None
+
+        scored = []
         for item in getattr(session, "inventory", []) or []:
-            if (item.get("short_name") or "").lower() == wanted:
-                return item
-        return None
+            fields = [
+                self._normalize_item_query(item.get("short_name") or ""),
+                self._normalize_item_query(item.get("name") or ""),
+                self._normalize_item_query(item.get("noun") or ""),
+            ]
+            best = None
+            for query in wanted:
+                for field in fields:
+                    if not field:
+                        continue
+                    if field == query:
+                        best = 0 if best is None else min(best, 0)
+                    elif field.startswith(query) or query.startswith(field):
+                        best = 1 if best is None else min(best, 1)
+                    elif query in field:
+                        best = 2 if best is None else min(best, 2)
+            if best is not None:
+                scored.append((best, -len(fields[0] or ""), item))
+        if not scored:
+            return None
+        scored.sort(key=lambda row: (row[0], row[1]))
+        return scored[0][2]
 
     def _consume_inventory_item(self, session, item: dict):
         inv_id = item.get("inv_id")

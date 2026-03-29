@@ -193,6 +193,56 @@ async def show_room_hints(session, room, server):
         await session.send_line(_fmt(label, cmds))
         shown.add("menagerie")
 
+    if room.id == 17805 and "tv_rogue_shed" not in shown:
+        await session.send_line(_fmt("Rogue Entry", [
+            "LOOK TOOL",
+            "PULL HOE",
+            "PULL RAKE",
+            "PULL SHOVEL",
+            "GO PANEL",
+            "OUT",
+        ]))
+        shown.add("tv_rogue_shed")
+
+    if room.id == 18348 and "tv_rogue_basement" not in shown:
+        await session.send_line(_fmt("Rogue Inner Door", [
+            "LEAN",
+            "PULL",
+            "PULL",
+            "SLAP",
+            "RUB",
+            "RUB",
+            "PUSH",
+            "TURN",
+            "OPEN DOOR",
+            "GO TUNNEL",
+        ]))
+        shown.add("tv_rogue_basement")
+
+    if room.id in {36780, 36781, 36782, 36783} and "tv_rogue_guild" not in shown:
+        await session.send_line(_fmt("Rogue Guild", [
+            "GLD STATUS",
+            "GLD JOIN",
+            "GLD PAY {months}",
+            "GLD CHECKIN",
+            "GLD SKILLS",
+            "GLD TASK {skill}",
+            "GLD PRACTICE",
+            "GLD COMPLETE",
+            "GLD QUEST START",
+            "GLD QUEST",
+            "GO CHUTE",
+        ]))
+        shown.add("tv_rogue_guild")
+
+    guild_engine = getattr(server, "guild", None)
+    if room.id == 10434 and guild_engine and "tv_rogue_chute" not in shown:
+        membership = getattr(session, "guild_membership", None) or {}
+        access = guild_engine.get_access_row(getattr(session, "character_id", 0) or 0, "rogue") or {}
+        if str(membership.get("guild_id") or "").lower() == "rogue" or access.get("member_access_at"):
+            await session.send_line(_fmt("Rogue Guild", ["GO CHUTE"]))
+            shown.add("tv_rogue_chute")
+
     locker_ctx = _get_public_locker_context(server, room.id)
     if locker_ctx:
         roles = set(locker_ctx.get("roles") or [])

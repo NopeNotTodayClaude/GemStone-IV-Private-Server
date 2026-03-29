@@ -375,11 +375,17 @@ _HTML = """<!doctype html>
 .bar{height:10px;background:#0b0f14;border-radius:999px;overflow:hidden;border:1px solid #2f4657}
 .fill{height:100%;background:linear-gradient(90deg,var(--rose),var(--vio))}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.ability-list{display:grid;gap:10px;margin:14px 0}
-.ability{padding:10px 12px;border-radius:14px;background:#0d151b;border:1px solid #2b404e}
-.ability h4{margin:0 0 4px;color:var(--gold);font-size:1rem}
-.ability .ability-status{color:var(--green);font-weight:700;margin-bottom:4px}
-.ability .ability-next{color:var(--muted);margin-top:4px}
+.ability-shell{margin:10px 0 0}
+.ability-toggle{display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--gold);font-size:.92rem;font-weight:700;list-style:none}
+.ability-toggle::-webkit-details-marker{display:none}
+.ability-sign{display:inline-flex;width:18px;justify-content:center;color:var(--muted)}
+.ability-shell[open] .ability-sign::after{content:"-"}
+.ability-shell:not([open]) .ability-sign::after{content:"+"}
+.ability-list{display:grid;gap:6px;margin:8px 0 0}
+.ability{padding:7px 9px;border-radius:10px;background:#0d151b;border:1px solid #2b404e;font-size:.82rem;line-height:1.35}
+.ability h4{margin:0 0 3px;color:var(--gold);font-size:.72rem}
+.ability .ability-status{color:var(--green);font-weight:700;margin-bottom:3px;font-size:.76rem}
+.ability .ability-next{color:var(--muted);margin-top:4px;font-size:.72rem}
 .input{width:100%;padding:10px 12px;border-radius:12px;border:1px solid #324755;background:#0d151b;color:var(--ink)}
 #msg{margin:14px 0 0;color:var(--muted);min-height:20px}
 @media (max-width:820px){.hero{grid-template-columns:1fr}.wrap{padding:14px}}
@@ -408,7 +414,7 @@ _HTML = """<!doctype html>
 </div>
 <script>
 const TOKEN = "TOKEN_PLACEHOLDER";
-const ASSET_VERSION = '20260328e';
+const ASSET_VERSION = '20260329d';
 let state = null;
 const $ = s => document.querySelector(s);
 const el = (tag, cls, html) => { const e=document.createElement(tag); if(cls)e.className=cls; if(html!==undefined)e.innerHTML=html; return e; };
@@ -464,6 +470,11 @@ function renderAbilityList(abilities){
       + '</div>';
   }).join('') + '</div>';
 }
+function renderAbilitySection(abilities){
+  return '<details class="ability-shell"><summary class="ability-toggle">Abilities <span class="ability-sign"></span></summary>'
+    + renderAbilityList(abilities || [])
+    + '</details>';
+}
 function renderHeader(){
   const c = state.character, shop = state.shop;
   const activePet = (state.pets || []).find(p => p.active);
@@ -487,7 +498,7 @@ function renderSale(){
     const card = el('div','pet-card');
     card.innerHTML = '<h3>'+spec.label+'</h3><div class="muted" style="margin-bottom:10px">'+spec.description+'</div>'
       + '<div class="row" style="justify-content:space-between"><span class="price">'+(spec.price===0?'FREE':spec.price.toLocaleString()+' silver')+'</span></div>'
-      + renderAbilityList(spec.abilities || [])
+      + renderAbilitySection(spec.abilities || [])
       + '<button class="btn">Purchase</button>';
     card.addEventListener('click', () => setHero(spec.image_path || '/assets/floofer', spec.label + ' portrait'));
     card.querySelector('button').onclick = async () => {
@@ -531,7 +542,7 @@ function renderTraining(){
     const pct = pet.xp_to_next>0 ? Math.max(0,Math.min(100,(pet.xp_into_level / pet.xp_to_next)*100)) : 100;
     card.innerHTML = '<h3>'+pet.pet_name+'</h3><div class="muted">Level '+pet.level+' • XP '+pet.xp+'</div>'
       + '<div class="bar" style="margin:10px 0"><div class="fill" style="width:'+pct+'%"></div></div>'
-      + renderAbilityList(pet.abilities || [])
+      + renderAbilitySection(pet.abilities || [])
       + '<div class="muted">Train in the field with PET FEED &lt;treat&gt;. Menagerie purchases place treats directly in your inventory.</div>';
     card.addEventListener('click', () => setHero(pet.image_path || '/assets/floofer', pet.pet_name + ' portrait'));
     g.appendChild(card);
@@ -559,7 +570,12 @@ function renderSwap(){
       await promptForPetName(pet.id, pet.pet_name);
     };
     buttons[2].onclick = async () => {
-      if(!confirm('Permanently remove '+pet.pet_name+'? This cannot be undone.')) return;
+      const typed = window.prompt('Type CONFIRM to permanently remove '+pet.pet_name+'. This cannot be undone.', '');
+      if(typed === null) return;
+      if(String(typed).trim().toUpperCase() !== 'CONFIRM'){
+        say('Permanent removal cancelled.');
+        return;
+      }
       try{
         const result = await api('/api/pets/delete',{pet_id:pet.id});
         state = result.state; renderAll(); say(result.message,true);

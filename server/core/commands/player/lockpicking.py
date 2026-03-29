@@ -38,7 +38,6 @@ from server.core.protocol.colors import (
     colorize, TextPresets, item_name as fmt_item_name, roundtime_msg
 )
 from server.core.engine.magic_effects import get_active_buff_totals
-from server.core.engine.treasure import TRAP_DEFS
 from server.data.items.lockpicks.lockpicks import (
     get_material_data, get_condition, effective_modifier,
     rank_penalty, bend_chance, LOCKPICK_CONDITIONS,
@@ -385,6 +384,8 @@ def _save_box_state(server, box: dict, **overrides):
         "trap_checked":    box.get("trap_checked", False),
         "trap_detected":   box.get("trap_detected", False),
         "trap_disarmed":   box.get("trap_disarmed", False),
+        "trap_variant":    box.get("trap_variant"),
+        "trap_payload":    box.get("trap_payload", {}),
         "pick_mod_down":   box.get("pick_mod_down", 0),
         "contents":        box.get("contents", []),
     }
@@ -439,6 +440,11 @@ def _clear_detected(session, box: dict):
     key = _box_cache_key(session, box)
     if key is not None:
         _get_detect_cache(session).pop(key, None)
+
+
+def _trap_def(server, trap_type: str):
+    traps = getattr(server, "traps", None)
+    return traps.get_trap_def(trap_type) if traps else None
 
 
 def _bend_pick(server, session, lockpick: dict, endroll: int) -> bool:
@@ -595,7 +601,14 @@ async def cmd_detect(session, cmd, args, server):
 
     else:
         box["trap_checked"] = True
-        trap = TRAP_DEFS.get(trap_type, TRAP_DEFS["needle"])
+        trap = _trap_def(server, trap_type)
+        if not trap:
+            trap = {
+                "examine": "You suspect some sort of trap mechanism in the housing.",
+                "diff_bonus": 0,
+                "tools": [],
+                "tool_action": [],
+            }
 
         if _is_detected(session, box):
             _save_box_state(server, box)
@@ -688,7 +701,12 @@ async def cmd_disarm(session, cmd, args, server):
                 TextPresets.WARNING
             ))
 
-    trap = TRAP_DEFS.get(trap_type, TRAP_DEFS["needle"])
+    trap = _trap_def(server, trap_type)
+    if not trap:
+        await session.send_line("You cannot quite make sense of the trap's mechanism.")
+        session.set_roundtime(3)
+        await session.send_line(roundtime_msg(3))
+        return
     focus_bonus = _lockmastery_focus_bonus(session, consume=True)
     if focus_bonus:
         await session.send_line(colorize(f"  Lock Mastery focus sharpens each movement.  (+{focus_bonus})", TextPresets.SYSTEM))
@@ -855,67 +873,19 @@ async def cmd_disarm(session, cmd, args, server):
     session.set_roundtime(4)
     await session.send_line(roundtime_msg(4))
 
-async def _trigger_trap(session, server, box: dict, trap: dict):
-    """Fire a trap — deal damage, apply effect, broadcast."""
+async def _trigger_trap(session, server, box: dict, trap: dict, *, source: str = "lockpicking"):
+    """Fire a trap through the canonical trap runtime."""
+    _clear_detected(session, box)
+    traps = getattr(server, "traps", None)
+    if traps:
+        await traps.trigger_trap(session, box, trap, source=source)
+        return
+
     box["trapped"] = False
     box["trap_disarmed"] = True
     box["trap_detected"] = True
-    _clear_detected(session, box)
-    dmg = random.randint(trap["dmg_min"], trap["dmg_max"])
-    try:
-        from server.core.engine.magic_effects import has_effect
-        if trap.get("damage_type") == "poison":
-            if has_effect(server, session, "gas_immune"):
-                dmg = 0
-            elif has_effect(server, session, "poison_resist"):
-                dmg = max(0, dmg // 2)
-    except Exception:
-        pass
-    session.health_current = max(0, session.health_current - dmg)
-
-    await session.send_line(colorize(f"  {trap['fail_msg']}", TextPresets.COMBAT_MISS))
-    await session.send_line(colorize(
-        f"  You take {dmg} points of {trap['damage_type']} damage!",
-        TextPresets.WARNING
-    ))
-
-    if trap.get("effect"):
-        if trap["damage_type"] == "magic":
-            drain = dmg // 2
-            session.mana_current = max(0, session.mana_current - drain)
-            await session.send_line(colorize(f"  {trap['effect']}  ({drain} mana drained)", TextPresets.WARNING))
-        elif trap["damage_type"] == "poison":
-            # Poison weakens stamina too
-            session.stamina_current = max(0, getattr(session, "stamina_current", 100) - dmg // 3)
-            await session.send_line(colorize(f"  {trap['effect']}", TextPresets.WARNING))
-        else:
-            await session.send_line(colorize(f"  {trap['effect']}", TextPresets.WARNING))
-
-    # Boomer destroys the box
-    if trap.get("damage_type") == "fire" and trap["dmg_max"] >= 60:
-        box["destroyed"] = True
-        box["contents"]  = []
-        await session.send_line(colorize("  The box is destroyed in the explosion!", TextPresets.WARNING))
-    elif not box.get("is_locked"):
-        box["opened"] = True
-
-    if session.current_room:
-        room_msg = trap["room_msg"].replace("{name}", session.character_name)
-        await server.world.broadcast_to_room(
-            session.current_room.id,
-            colorize(room_msg, TextPresets.WARNING),
-            exclude=session
-        )
-
-    if getattr(server, "db", None) and session.character_id:
-        _save_box_state(server, box)
-        server.db.save_character_resources(
-            session.character_id,
-            session.health_current, session.mana_current,
-            session.spirit_current,
-            getattr(session, "stamina_current", 100),
-            session.silver
-        )
+    await session.send_line(colorize("  Something hidden in the latch snaps at you!", TextPresets.WARNING))
+    _save_box_state(server, box)
 
 
 # ── PICK ──────────────────────────────────────────────────────────────────────

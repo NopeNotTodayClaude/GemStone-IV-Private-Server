@@ -62,9 +62,12 @@ FIXES (2026-03-22):
              line already contains its own closing brace before dispatching.
 """
 
+import copy
 import os
 import re
 import logging
+
+from lupa import LuaRuntime  # type: ignore
 
 log = logging.getLogger(__name__)
 
@@ -91,6 +94,24 @@ ATTACK_VERBS = {
     "spear":            ("thrusts a spear at you",            "thrusts a spear at {target}",            "puncture"),
     "handaxe":          ("swings a handaxe at you",           "swings a handaxe at {target}",           "slash"),
     "staff":            ("strikes you with a staff",          "strikes {target} with a staff",          "crush"),
+    "longbow":          ("looses an arrow at you",            "looses an arrow at {target}",            "puncture"),
+    "shortbow":         ("looses an arrow at you",            "looses an arrow at {target}",            "puncture"),
+    "crossbow":         ("fires a bolt at you",               "fires a bolt at {target}",               "puncture"),
+    "shortsword":       ("slashes a shortsword at you",       "slashes a shortsword at {target}",       "slash"),
+    "falchion":         ("sweeps a falchion at you",          "sweeps a falchion at {target}",          "slash"),
+    "waraxe":           ("hacks a waraxe at you",             "hacks a waraxe at {target}",             "slash"),
+    "warhammer":        ("hammers a warhammer into you",      "hammers a warhammer into {target}",      "crush"),
+    "club":             ("clubs you brutally",                "clubs {target} brutally",                "crush"),
+    "fang":             ("sinks curved fangs into you",       "sinks curved fangs into {target}",       "puncture"),
+    "talon":            ("slashes you with vicious talons",   "slashes {target} with vicious talons",   "slash"),
+    "horn":             ("gouges you with a horned thrust",   "gouges {target} with a horned thrust",   "puncture"),
+    "shadow_bite":      ("bites through you with chill shadow", "bites through {target} with chill shadow", "puncture"),
+    "shadow_claw":      ("rakes you with shadowy claws",      "rakes {target} with shadowy claws",      "slash"),
+    "slam_fist":        ("smashes a heavy fist into you",     "smashes a heavy fist into {target}",     "crush"),
+    "tentacle":         ("lashes you with a writhing tentacle","lashes {target} with a writhing tentacle","crush"),
+    "beak":             ("jabs you with a stabbing beak",     "jabs {target} with a stabbing beak",     "puncture"),
+    "peck":             ("pecks savagely at you",             "pecks savagely at {target}",             "puncture"),
+    "web":              ("spits webbing at you",              "spits webbing at {target}",              "crush"),
     "gaze":             ("fixes you with a paralyzing gaze",  "fixes {target} with a paralyzing gaze",  "crush"),
     "breath":           ("breathes at you",                   "breathes at {target}",                   "fire"),
     "trample":          ("tramples you underfoot",            "tramples {target} underfoot",            "crush"),
@@ -105,6 +126,325 @@ ATTACK_VERBS = {
 }
 
 DEFAULT_VERB = ("attacks you", "attacks {target}", "crush")
+
+
+def _lua_table_to_python(tbl):
+    """Recursively convert a Lua table returned by lupa into native Python values."""
+    if tbl is None:
+        return None
+    if hasattr(tbl, "items"):
+        items = list(tbl.items())
+        if items and all(isinstance(k, int) for k, _ in items):
+            return [_lua_table_to_python(v) for _, v in sorted(items, key=lambda row: row[0])]
+        return {k: _lua_table_to_python(v) for k, v in items}
+    return tbl
+
+
+def _derive_article(name: str) -> str:
+    clean = (name or "").strip()
+    if not clean:
+        return "a"
+    return "an" if clean[0].lower() in "aeiou" else "a"
+
+
+def _dedupe_int_list(values):
+    seen = set()
+    out = []
+    for value in values or []:
+        try:
+            ivalue = int(value)
+        except Exception:
+            continue
+        if ivalue in seen:
+            continue
+        seen.add(ivalue)
+        out.append(ivalue)
+    return out
+
+
+def _normalize_template(template: dict) -> dict:
+    """Ensure a template dict is runtime-safe after file/catalog merging."""
+    result = copy.deepcopy(template)
+    name = str(result.get("name", "") or "").strip()
+    level = int(result.get("level", 1) or 1)
+    result["name"] = name
+    result["article"] = str(result.get("article") or _derive_article(name))
+    result["template_id"] = str(result.get("template_id") or name.lower().replace(" ", "_").replace("'", ""))
+    result["level"] = level
+    result["hp"] = int(result.get("hp", result.get("hp_base", 40)) or 40)
+    result["hp_variance"] = int(result.get("hp_variance", 5) or 5)
+    result["ds_melee"] = int(result.get("ds_melee", 0) or 0)
+    result["ds_ranged"] = int(result.get("ds_ranged", result.get("ds_melee", 0)) or 0)
+    result["ds_bolt"] = int(result.get("ds_bolt", 0) or 0)
+    result["td"] = int(result.get("td", result.get("td_spiritual", level * 3)) or (level * 3))
+    result["td_spiritual"] = int(result.get("td_spiritual", result["td"]) or result["td"])
+    result["td_elemental"] = int(result.get("td_elemental", result["td"]) or result["td"])
+    result["udf"] = int(result.get("udf", 0) or 0)
+    result["armor_asg"] = int(result.get("armor_asg", 1) or 1)
+    result["armor_natural"] = bool(result.get("armor_natural", True))
+    result["cva"] = int(result.get("cva", 0) or 0)
+    result["body_type"] = str(result.get("body_type", "biped") or "biped")
+    result["family"] = str(result.get("family", "") or "")
+    result["classification"] = str(result.get("classification", "living") or "living")
+    result["description"] = str(result.get("description", "") or "")
+    result["skin"] = str(result.get("skin", "") or "").strip() or None
+    result["special_loot"] = list(result.get("special_loot", []) or [])
+    result["spells"] = list(result.get("spells", []) or [])
+    result["abilities"] = list(result.get("abilities", []) or [])
+    result["immune"] = list(result.get("immune", []) or [])
+    result["resist"] = list(result.get("resist", []) or [])
+    result["skills"] = list(result.get("skills", []) or [])
+    result["spawn_rooms"] = _dedupe_int_list(result.get("spawn_rooms", []))
+    result["wander_rooms"] = _dedupe_int_list(result.get("wander_rooms", []))
+    result["respawn_time"] = int(result.get("respawn_time", result.get("respawn_seconds", 300)) or 300)
+    result["max_count"] = int(result.get("max_count", 3) or 3)
+    roam_pct = result.get("roam_chance_pct", None)
+    if roam_pct is not None:
+        result["wander_chance"] = max(0.0, min(1.0, float(roam_pct) / 100.0))
+    else:
+        result["wander_chance"] = float(result.get("wander_chance", 0.2) or 0.2)
+    result["pursue_chance"] = float(result.get("pursue_chance", 0.3) or 0.3)
+    result["aggressive"] = bool(result.get("aggressive", True))
+    result["preferred_stance"] = str(result.get("preferred_stance", "") or "").strip().lower() or None
+    result["stance_profile"] = str(result.get("stance_profile", "") or "").strip().lower() or None
+    result["treasure"] = {
+        "coins": bool((result.get("treasure") or {}).get("coins", result.get("loot_coins", True))),
+        "gems": bool((result.get("treasure") or {}).get("gems", result.get("loot_gems", True))),
+        "magic": bool((result.get("treasure") or {}).get("magic", result.get("loot_magic", True))),
+        "boxes": bool((result.get("treasure") or {}).get("boxes", result.get("loot_boxes", True))),
+    }
+    attacks = list(result.get("attacks", []) or [])
+    built_attacks = []
+    for atk in attacks:
+        if not isinstance(atk, dict):
+            continue
+        atype = str(atk.get("name", atk.get("type", "attack")) or "attack")
+        aas = int(atk.get("as", result.get("as_melee", level * 5 + 20)) or (level * 5 + 20))
+        adt = str(atk.get("damage_type", "") or "")
+        vf, vt, eff_dt = _verb_for(atype, adt)
+        built_attacks.append({
+            "name": atype,
+            "as": aas,
+            "damage_type": eff_dt,
+            "verb_first": str(atk.get("verb_first", vf) or vf),
+            "verb_third": str(atk.get("verb_third", vt) or vt),
+            "roundtime": int(atk.get("roundtime", 5) or 5),
+        })
+    if not built_attacks:
+        as_melee = int(result.get("as_melee", level * 5 + 20) or (level * 5 + 20))
+        built_attacks = [{
+            "name": "attack",
+            "as": as_melee,
+            "damage_type": "crush",
+            "verb_first": "attacks you",
+            "verb_third": "attacks {target}",
+            "roundtime": 5,
+        }]
+    result["attacks"] = built_attacks
+    result["as_melee"] = int(result.get("as_melee", built_attacks[0]["as"]) or built_attacks[0]["as"])
+    result["damage_type"] = str(result.get("damage_type", built_attacks[0]["damage_type"]) or built_attacks[0]["damage_type"])
+    if not result["skills"]:
+        result["skills"] = _infer_creature_skills(result)
+    return result
+
+
+def _infer_creature_skills(result: dict) -> list:
+    """Fill generic skill metadata for creatures that have none authored."""
+    skills = []
+
+    def add(*names):
+        for name in names:
+            name = str(name or "").strip().lower()
+            if name and name not in skills:
+                skills.append(name)
+
+    family = str(result.get("family", "") or "").strip().lower()
+    stance_profile = str(result.get("stance_profile", "") or "").strip().lower()
+    classification = str(result.get("classification", "") or "").strip().lower()
+    has_spells = bool(result.get("spells"))
+
+    if has_spells or stance_profile == "caster":
+        add("spell_aiming", "mana_control", "arcane_lore")
+    if stance_profile == "ranged":
+        add("perception", "ambush", "tracking")
+    elif stance_profile == "skirmisher":
+        add("perception", "ambush", "survival")
+    elif stance_profile == "berserker":
+        add("physical_fitness", "combat_maneuvers")
+    elif stance_profile == "offensive":
+        add("perception", "combat_maneuvers")
+
+    if family in {
+        "feline", "canine", "bear", "wolf", "hound", "arachnid", "spider", "bird",
+        "deer", "boar", "primate", "rodent", "basilisk", "scorpion", "insect",
+        "worm", "reptilian", "lizard", "horse",
+    }:
+        add("survival", "perception")
+    if family in {"feline", "canine", "wolf", "hound", "arachnid", "spider"}:
+        add("stalking", "ambush")
+    if family in {"troll", "ogre", "giant", "krolvin", "orc", "gnoll", "grutik", "hisskra", "humanoid", "shelfae"}:
+        add("physical_fitness", "combat_maneuvers")
+    if family in {"wight", "spectre", "ghost", "wraith", "spirit", "skeleton", "zombie", "ghoul"} or classification != "living":
+        add("perception", "spiritual_lore")
+    if not skills:
+        add("perception", "physical_fitness")
+    return skills
+
+
+def _merge_template(base: dict, override: dict) -> dict:
+    merged = copy.deepcopy(base or {})
+    for key, value in (override or {}).items():
+        if key in {"base_template", "spawn_from", "roam_from"}:
+            continue
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            new_dict = copy.deepcopy(merged.get(key) or {})
+            new_dict.update(copy.deepcopy(value))
+            merged[key] = new_dict
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def _scale_numeric(value, ratio: float, minimum: int = None) -> int:
+    try:
+        scaled = int(round(float(value) * float(ratio)))
+    except Exception:
+        scaled = int(value or 0)
+    if minimum is not None:
+        scaled = max(int(minimum), scaled)
+    return scaled
+
+
+def _scale_catalog_template(base: dict, merged: dict, override: dict) -> dict:
+    """
+    Scale inherited numeric combat fields when a catalog entry clones a base
+    template from a different level. Explicit override values always win.
+    """
+    if not base:
+        return merged
+    try:
+        donor_level = int(base.get("level", 1) or 1)
+        new_level = int(merged.get("level", donor_level) or donor_level)
+    except Exception:
+        return merged
+    if donor_level <= 0 or donor_level == new_level:
+        return merged
+
+    ratio = max(0.40, min(3.50, float(new_level) / float(donor_level)))
+    scaled = copy.deepcopy(merged)
+    explicit = set((override or {}).keys())
+
+    for key, minimum in (
+        ("hp", 10),
+        ("hp_variance", 1),
+        ("as_melee", 5),
+        ("ds_melee", 0),
+        ("ds_ranged", 0),
+        ("ds_bolt", 0),
+        ("td", 0),
+        ("td_spiritual", 0),
+        ("td_elemental", 0),
+        ("udf", 0),
+    ):
+        if key in explicit or key not in base:
+            continue
+        scaled[key] = _scale_numeric(base.get(key, 0), ratio, minimum)
+
+    if "attacks" not in explicit and isinstance(base.get("attacks"), list):
+        scaled_attacks = []
+        for atk in copy.deepcopy(base.get("attacks") or []):
+            if isinstance(atk, dict) and "as" in atk:
+                atk["as"] = _scale_numeric(atk.get("as", 0), ratio, 5)
+            scaled_attacks.append(atk)
+        scaled["attacks"] = scaled_attacks
+
+    if "spells" not in explicit and isinstance(base.get("spells"), list):
+        scaled_spells = []
+        for spell in copy.deepcopy(base.get("spells") or []):
+            if isinstance(spell, dict):
+                if "cs" in spell:
+                    spell["cs"] = _scale_numeric(spell.get("cs", 0), ratio, 1)
+                if "as" in spell and int(spell.get("as", 0) or 0) > 0:
+                    spell["as"] = _scale_numeric(spell.get("as", 0), ratio, 1)
+            scaled_spells.append(spell)
+        scaled["spells"] = scaled_spells
+
+    return scaled
+
+
+def _resolve_room_sources(source, templates: dict, key: str):
+    if not source:
+        return []
+    ids = source if isinstance(source, list) else [source]
+    rooms = []
+    seen = set()
+    for template_id in ids:
+        donor = templates.get(str(template_id or ""))
+        if not donor:
+            log.warning("Creature catalog: room source '%s' was not found", template_id)
+            continue
+        for room_id in donor.get(key, []) or []:
+            try:
+                room_id = int(room_id)
+            except Exception:
+                continue
+            if room_id in seen:
+                continue
+            seen.add(room_id)
+            rooms.append(room_id)
+    return rooms
+
+
+def _load_creature_catalog(scripts_path: str, templates: dict):
+    """Load Lua-authored creature overrides/additions from scripts/data/creature_catalog_15_35.lua."""
+    catalog_path = os.path.join(scripts_path, "data", "creature_catalog_15_35.lua")
+    if not os.path.isfile(catalog_path):
+        return templates
+    try:
+        lua = LuaRuntime(unpack_returned_tuples=True)
+        with open(catalog_path, "r", encoding="utf-8") as handle:
+            catalog_src = handle.read()
+        raw = _lua_table_to_python(lua.execute(catalog_src)) or {}
+    except Exception as exc:
+        log.error("Creature catalog loader failed for %s: %s", catalog_path, exc, exc_info=True)
+        return templates
+
+    overrides = raw.get("overrides") or {}
+    for template_id, override in overrides.items():
+        if template_id not in templates:
+            log.warning("Creature catalog override skipped for unknown template '%s'", template_id)
+            continue
+        merged = _merge_template(templates[template_id], override)
+        if override.get("spawn_from"):
+            merged["spawn_rooms"] = _resolve_room_sources(override.get("spawn_from"), templates, "spawn_rooms")
+        if override.get("roam_from") or override.get("spawn_from"):
+            merged["wander_rooms"] = _resolve_room_sources(override.get("roam_from") or override.get("spawn_from"), templates, "wander_rooms")
+        templates[template_id] = _normalize_template(merged)
+
+    for entry in raw.get("creatures") or []:
+        if not isinstance(entry, dict):
+            continue
+        template_id = str(entry.get("template_id") or "")
+        base_template = str(entry.get("base_template") or "")
+        base = templates.get(base_template, {})
+        if base_template and not base:
+            log.warning("Creature catalog base template '%s' not found for '%s'", base_template, template_id or entry.get("name"))
+        merged = _merge_template(base, entry)
+        if base_template and base:
+            merged = _scale_catalog_template(base, merged, entry)
+        if entry.get("spawn_from"):
+            merged["spawn_rooms"] = _resolve_room_sources(entry.get("spawn_from"), templates, "spawn_rooms")
+        if entry.get("roam_from") or entry.get("spawn_from"):
+            merged["wander_rooms"] = _resolve_room_sources(entry.get("roam_from") or entry.get("spawn_from"), templates, "wander_rooms")
+        normalized = _normalize_template(merged)
+        templates[normalized["template_id"]] = normalized
+
+    log.info(
+        "Creature catalog loader: applied %d overrides and %d catalog creature entries",
+        len(overrides),
+        len(raw.get("creatures") or []),
+    )
+    return templates
 
 
 def _verb_for(attack_type: str, damage_type: str = None):
@@ -525,10 +865,12 @@ def parse_mob_lua(filepath: str) -> dict:
         "ds_ranged":        int(scalars.get("ds_melee", 0)),
         "ds_bolt":          int(scalars.get("ds_bolt", 0)),
         "td":               int(scalars.get("td_spiritual", level * 3)),
+        "td_spiritual":     int(scalars.get("td_spiritual", level * 3)),
+        "td_elemental":     int(scalars.get("td_elemental", scalars.get("td_spiritual", level * 3))),
         "udf":              int(scalars.get("udf", 0)),
         "armor_asg":        int(scalars.get("armor_asg", 1)),
         "armor_natural":    bool(scalars.get("armor_natural", True)),
-        "cva":              0,
+        "cva":              int(scalars.get("cva", 0)),
         "damage_type":      built_attacks[0]["damage_type"] if built_attacks else "crush",
         "body_type":        scalars.get("body_type", "biped"),
         "family":           scalars.get("family", ""),
@@ -554,12 +896,14 @@ def parse_mob_lua(filepath: str) -> dict:
         "wander_rooms":     unique_roam,
         "respawn_time":     int(scalars.get("respawn_seconds", 300)),
         "max_count":        int(scalars.get("max_count", 3)),
-        "aggressive":       True,
+        "aggressive":       bool(scalars.get("aggressive", True)),
         "wander_chance":    wander_chance,
-        "pursue_chance":    0.3,
+        "pursue_chance":    float(scalars.get("pursue_chance", 0.3) or 0.3),
+        "preferred_stance": str(scalars.get("preferred_stance", "") or "").strip().lower() or None,
+        "stance_profile":   str(scalars.get("stance_profile", "") or "").strip().lower() or None,
     }
 
-    return template
+    return _normalize_template(template)
 
 
 # ── Directory scanner ─────────────────────────────────────────────────────────
@@ -632,6 +976,8 @@ def load_all_mob_luas(scripts_path: str) -> dict:
 
         if zone_count:
             log.info("  Loaded %d mob templates from zone '%s'", zone_count, zone_slug)
+
+    templates = _load_creature_catalog(scripts_path, templates)
 
     if merged_count:
         log.info("Lua mob loader: %d creatures merged from multiple zones", merged_count)

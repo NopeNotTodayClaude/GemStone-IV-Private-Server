@@ -24,9 +24,17 @@ class GuildEngine:
 
     _ROGUE_GUILD_ID = "rogue"
     _ROGUE_SEQUENCE_TIMEOUT = 60
-    _ENTRY_VERBS = {"lean", "look", "pull", "slap", "rub", "push", "turn", "open", "go", "out"}
+    _ENTRY_VERBS = {"lean", "look", "pull", "slap", "rub", "push", "turn", "open", "go", "out", "north"}
     _ENTRY_ALIAS_TARGETS = {"door", "panel", "guild", "alley", "out"}
     _EXIT_PANEL_SEQUENCE = ["pull hoe", "pull rake", "pull shovel", "go panel"]
+    _TV_GAELD_VAR_ROOM_ID = 3509
+    _TV_SHED_ROOM_ID = 17805
+    _TV_BASEMENT_ROOM_ID = 18348
+    _TV_LOCKSMITH_ROOM_ID = 10434
+    _TV_GUILD_ALLEY_ROOM_ID = 36780
+    _TV_LOCKMASTERY_ROOM_ID = 36781
+    _TV_COMMON_ROOM_ID = 36782
+    _TV_DRILL_ROOM_ID = 36783
 
     def __init__(self, server):
         self.server = server
@@ -890,6 +898,7 @@ class GuildEngine:
     async def on_character_enter_room(self, session, *, from_room=None, to_room=None):
         if not getattr(session, "character_id", None):
             return None
+        await self.handle_room_entry(session)
         active = self.get_character_bounty(session.character_id)
         if not active or str(active.get("status") or "").lower() not in ("active", "completed"):
             return None
@@ -1682,12 +1691,13 @@ class GuildEngine:
                 """
                 INSERT INTO character_guild_access (
                     character_id, guild_id, is_invited, password_known, invited_at,
-                    invited_by_template_id, sequence_step, sequence_room_id, sequence_started_at
-                ) VALUES (%s, %s, 1, 1, NOW(), %s, 0, NULL, NULL)
+                    invited_by_template_id, sequence_step, sequence_room_id, sequence_started_at, member_access_at
+                ) VALUES (%s, %s, 1, 1, NOW(), %s, 0, NULL, NULL, NOW())
                 ON DUPLICATE KEY UPDATE
                     is_invited = 1,
                     password_known = 1,
                     invited_by_template_id = COALESCE(VALUES(invited_by_template_id), invited_by_template_id),
+                    member_access_at = COALESCE(member_access_at, NOW()),
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 (character_id, guild_id, actor_template_id),
@@ -1699,6 +1709,52 @@ class GuildEngine:
             return False
         finally:
             conn.close()
+
+    def _update_access_flags(self, character_id: int, guild_id: str, **flags):
+        if not flags:
+            return False
+        conn = self._get_conn()
+        if not conn:
+            return False
+        try:
+            columns = []
+            values = []
+            for key, value in flags.items():
+                columns.append(f"{key} = %s")
+                values.append(value)
+            values.extend([character_id, guild_id])
+            cur = conn.cursor()
+            cur.execute(
+                f"""
+                UPDATE character_guild_access
+                SET {", ".join(columns)}, updated_at = CURRENT_TIMESTAMP
+                WHERE character_id = %s AND guild_id = %s
+                """,
+                tuple(values),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            log.error("GuildEngine._update_access_flags failed for %s/%s: %s", character_id, guild_id, e)
+            return False
+        finally:
+            conn.close()
+
+    def mark_entry_proved(self, character_id: int, guild_id: str):
+        self.ensure_access_row(character_id, guild_id)
+        return self._update_access_flags(character_id, guild_id, entry_proved_at=datetime.utcnow(), password_known=1)
+
+    def unlock_member_access(self, character_id: int, guild_id: str):
+        self.ensure_access_row(character_id, guild_id)
+        return self._update_access_flags(character_id, guild_id, member_access_at=datetime.utcnow(), password_known=1, is_invited=1)
+
+    def note_shind_guidance(self, character_id: int, guild_id: str, *, minutes: int = 30):
+        self.ensure_access_row(character_id, guild_id)
+        return self._update_access_flags(
+            character_id,
+            guild_id,
+            shind_unlock_until=datetime.utcnow() + timedelta(minutes=max(1, int(minutes or 30))),
+        )
 
     def share_password(self, character_id: int, guild_id: str, *, actor_character_id=None, actor_template_id=None):
         conn = self._get_conn()
@@ -1805,12 +1861,20 @@ class GuildEngine:
             )
         )
         await session.send_line(colorize("Unfolding it, you read:", TextPresets.SYSTEM))
-        await session.send_line(
-            colorize(
-                f'  "Your work has drawn the attention of the Rogue Guild.  When you are ready, seek the hidden entry{city_hint}, LEAN close, and use the sequence {password_text}."',
-                TextPresets.ITEM_NAME,
+        if city_name == "Ta'Vaalor":
+            invite_text = (
+                '  "Your work has drawn the attention of the Rogue Guild.  '
+                'When you are ready, seek the shed on Gaeld Var.  '
+                'If the trail goes cold on you, Shind the locksmith on Amaranth Court can point you back toward the right doorway.  '
+                'Once inside the shed, LOOK TOOL and work the hidden panel.  '
+                f'In the basement beyond, LEAN by the inner door, use the sequence {password_text}, and then OPEN DOOR."'
             )
-        )
+        else:
+            invite_text = (
+                f'  "Your work has drawn the attention of the Rogue Guild.  '
+                f'When you are ready, seek the hidden entry{city_hint}, LEAN close, and use the sequence {password_text}."'
+            )
+        await session.send_line(colorize(invite_text, TextPresets.ITEM_NAME))
         await session.send_line(colorize("The note bears no signature.", TextPresets.SYSTEM))
         await session.send_line("")
 
@@ -1844,8 +1908,68 @@ class GuildEngine:
         ):
             return False
 
+        ok, _err, quest = self.start_specific_quest(session, "rogue_entry")
+        if ok and quest:
+            await self.prepare_started_quest(session, quest)
         await self._send_rogue_invite_notice(session, access_point)
         return True
+
+    def start_specific_quest(self, session, quest_key: str):
+        if not getattr(session, "character_id", None):
+            return False, "The quest ledger cannot identify you right now.", None
+        rows = self.get_quest_journal(session.character_id, quest_key=quest_key)
+        if rows:
+            status = (rows[0].get("status") or "").lower()
+            if status == "active":
+                return True, None, rows[0]
+            if status == "complete":
+                return False, "That quest is already complete.", rows[0]
+
+        conn = self._get_conn()
+        if not conn:
+            return False, "The quest ledger is unavailable right now.", None
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                """
+                SELECT id, min_level, max_level
+                FROM quest_definitions
+                WHERE key_name = %s
+                LIMIT 1
+                """,
+                (quest_key,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return False, "That quest does not exist.", None
+            level = int(getattr(session, "level", 0) or 0)
+            if level < int(row.get("min_level") or 1) or level > int(row.get("max_level") or 100):
+                return False, "You are not eligible for that quest yet.", None
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO character_quests (
+                    character_id, quest_id, status, stage, progress_count, target_count, quest_data, started_at, completed_at
+                ) VALUES (%s, %s, 'active', 1, 0, 1, JSON_OBJECT(), NOW(), NULL)
+                ON DUPLICATE KEY UPDATE
+                    status = 'active',
+                    stage = 1,
+                    progress_count = 0,
+                    target_count = 1,
+                    quest_data = JSON_OBJECT(),
+                    started_at = NOW(),
+                    completed_at = NULL
+                """,
+                (session.character_id, int(row["id"])),
+            )
+            conn.commit()
+        except Exception as e:
+            log.error("GuildEngine.start_specific_quest failed for %s/%s: %s", session.character_id, quest_key, e)
+            return False, "The quest ledger refuses to assign that work right now.", None
+        finally:
+            conn.close()
+        rows = self.get_quest_journal(session.character_id, quest_key=quest_key)
+        return (True, None, rows[0]) if rows else (False, "That quest could not be loaded.", None)
 
     def normalize_skill_name(self, guild_id: str, raw_skill: str):
         query = (raw_skill or "").strip().lower()
@@ -3048,6 +3172,14 @@ class GuildEngine:
                                 )
                             )
         await self._record_quest_event(session, event_name)
+        if (event_name or "").lower() == "guild_checkin_rogue":
+            active_orientation = self.get_active_quest(session.character_id, self._ROGUE_GUILD_ID)
+            orientation_rows = self.get_quest_journal(session.character_id, quest_key="rogue_orientation")
+            if not active_orientation and (not orientation_rows or (orientation_rows[0].get("status") or "").lower() != "complete"):
+                ok, _err, quest = self.start_specific_quest(session, "rogue_orientation")
+                if ok and quest:
+                    await self.prepare_started_quest(session, quest)
+                    await self.handle_room_entry(session)
 
     def _recompute_and_apply_rank(self, cur, character_id: int, guild_id: str):
         cur.execute(
@@ -3245,15 +3377,264 @@ class GuildEngine:
         if not getattr(session, "character_id", None) or not getattr(session, "current_room", None):
             return False
 
+        if await self._handle_tavaalor_member_chute(session, cmd_l, args):
+            return True
+
         access_point = self._get_access_point_for_room(session.current_room.id, self._ROGUE_GUILD_ID)
         if not access_point:
             return False
+
+        if self._is_tavaalor_access_point(access_point):
+            if session.current_room.id == self._TV_SHED_ROOM_ID:
+                return await self._handle_tavaalor_shed_entry(session, access_point, cmd_l, args)
+            if session.current_room.id == self._TV_BASEMENT_ROOM_ID:
+                return await self._handle_tavaalor_basement(session, access_point, cmd_l, args)
 
         if session.current_room.id == int(access_point["entry_room_id"]):
             return await self._handle_rogue_entry(session, access_point, cmd_l, args)
         if session.current_room.id == int(access_point["target_room_id"]):
             return await self._handle_rogue_exit(session, access_point, cmd_l, args)
         return False
+
+    def _is_tavaalor_access_point(self, access_point) -> bool:
+        return (
+            str(access_point.get("guild_id") or "").lower() == self._ROGUE_GUILD_ID
+            and int(access_point.get("entry_room_id") or 0) == self._TV_SHED_ROOM_ID
+            and int(access_point.get("target_room_id") or 0) == self._TV_BASEMENT_ROOM_ID
+        )
+
+    async def _handle_tavaalor_member_chute(self, session, cmd_l: str, args: str):
+        room_id = int(getattr(getattr(session, "current_room", None), "id", 0) or 0)
+        target = (args or "").strip().lower()
+        if cmd_l != "go" or target != "chute":
+            return False
+
+        membership = getattr(session, "guild_membership", None) or {}
+        access = self.get_access_row(session.character_id, self._ROGUE_GUILD_ID) or {}
+        is_member = str(membership.get("guild_id") or "").lower() == self._ROGUE_GUILD_ID
+        member_access = bool(access.get("member_access_at"))
+
+        if room_id == self._TV_LOCKSMITH_ROOM_ID:
+            if not is_member and not member_access:
+                await session.send_line("You find no obvious way into the rogue guild from here.  Members use the chute only after the guild has formally taken them in.")
+                return True
+            return await self._move_special(session, self._TV_GUILD_ALLEY_ROOM_ID, "chute")
+
+        if room_id == self._TV_GUILD_ALLEY_ROOM_ID:
+            return await self._move_special(session, self._TV_LOCKSMITH_ROOM_ID, "chute")
+        return False
+
+    async def _handle_tavaalor_shed_entry(self, session, access_point, cmd_l: str, args: str):
+        args_l = (args or "").strip().lower()
+        membership = getattr(session, "guild_membership", None) or {}
+        access = self.get_access_row(session.character_id, self._ROGUE_GUILD_ID) or {}
+        is_member = str(membership.get("guild_id") or "").lower() == self._ROGUE_GUILD_ID
+        guided_until = access.get("shind_unlock_until")
+        has_guidance = isinstance(guided_until, datetime) and guided_until >= datetime.utcnow()
+        if not is_member and not access.get("is_invited") and not has_guidance:
+            if cmd_l in {"look", "pull", "go"}:
+                await session.send_line("The shed looks ordinary enough, but nothing about it yields to you.")
+                return True
+            return False
+        if cmd_l == "look" and args_l in {"tool", "tools"}:
+            self._set_sequence_state(
+                session.character_id,
+                self._ROGUE_GUILD_ID,
+                step=0,
+                room_id=session.current_room.id,
+                started_at=datetime.utcnow(),
+            )
+            await session.send_line("You study the mismatched tools leaning along the shed wall and note the wear on the hidden panel beside them.")
+            return True
+        if cmd_l == "pull" and args_l in {"hoe", "rake", "shovel"}:
+            return await self._handle_tavaalor_tool_sequence_step(session, f"pull {args_l}", access_point)
+        if cmd_l == "go" and args_l == "panel":
+            return await self._handle_tavaalor_tool_sequence_step(session, "go panel", access_point)
+        if cmd_l in {"lean", "slap", "rub", "push", "turn"}:
+            await session.send_line("The shed door is not the real test.  The tools inside matter more.")
+            return True
+        return False
+
+    async def _handle_tavaalor_tool_sequence_step(self, session, token: str, access_point):
+        access = self.get_access_row(session.character_id, self._ROGUE_GUILD_ID) or {}
+        started_at = access.get("sequence_started_at")
+        step = int(access.get("sequence_step") or 0)
+        room_id = int(access.get("sequence_room_id") or 0)
+
+        if room_id != session.current_room.id or not started_at or not isinstance(started_at, datetime):
+            await session.send_line("You need to LOOK TOOL first if you want to read the shed puzzle properly.")
+            return True
+        if datetime.utcnow() - started_at > timedelta(seconds=self._ROGUE_SEQUENCE_TIMEOUT):
+            self._set_sequence_state(session.character_id, self._ROGUE_GUILD_ID, step=0, room_id=None, started_at=None)
+            await session.send_line("You lose the rhythm of the shed puzzle and the hidden panel settles back into place.")
+            return True
+
+        expected = self._EXIT_PANEL_SEQUENCE[step] if step < len(self._EXIT_PANEL_SEQUENCE) else None
+        if token != expected:
+            self._set_sequence_state(
+                session.character_id,
+                self._ROGUE_GUILD_ID,
+                step=0,
+                room_id=session.current_room.id,
+                started_at=datetime.utcnow(),
+            )
+            await session.send_line("The tools clatter softly and the hidden catch slips away.  You will need to begin again from LOOK TOOL.")
+            return True
+
+        new_step = step + 1
+        if new_step >= len(self._EXIT_PANEL_SEQUENCE):
+            self._set_sequence_state(session.character_id, self._ROGUE_GUILD_ID, step=0, room_id=None, started_at=None)
+            self.mark_entry_proved(session.character_id, self._ROGUE_GUILD_ID)
+            await session.send_line("The wall panel shifts inward, revealing a narrow route below the shed.")
+            moved = await self._move_special(session, int(access_point["target_room_id"]), "panel")
+            if moved:
+                await self.record_event(session, "rogue_shed_entry_used")
+            return moved
+
+        self._set_sequence_state(
+            session.character_id,
+            self._ROGUE_GUILD_ID,
+            step=new_step,
+            room_id=session.current_room.id,
+            started_at=started_at,
+        )
+        await session.send_line(colorize("  One of the tools gives under your hand, confirming the sequence so far.", TextPresets.SYSTEM))
+        return True
+
+    async def _handle_tavaalor_basement(self, session, access_point, cmd_l: str, args: str):
+        args_l = (args or "").strip().lower()
+        membership = getattr(session, "guild_membership", None) or {}
+        access = self.get_access_row(session.character_id, self._ROGUE_GUILD_ID) or {}
+        is_member = str(membership.get("guild_id") or "").lower() == self._ROGUE_GUILD_ID
+        if cmd_l == "lean":
+            if not access.get("is_invited") and not is_member:
+                await session.send_line("You wait by the inner door, but without the guild's leave it remains dead and silent.")
+                return True
+            if not access.get("entry_proved_at") and not is_member:
+                await session.send_line("The guild has not yet seen you work your way through the shed properly.")
+                return True
+            self._set_sequence_state(
+                session.character_id,
+                self._ROGUE_GUILD_ID,
+                step=0,
+                room_id=session.current_room.id,
+                started_at=datetime.utcnow(),
+            )
+            await session.send_line(colorize("  You lean near the inner door.  Somewhere behind it, a concealed latch answers.", TextPresets.SYSTEM))
+            return True
+
+        if cmd_l in {"pull", "slap", "rub", "push", "turn"}:
+            return await self._handle_tavaalor_inner_door_sequence_step(session, access_point, cmd_l)
+
+        if cmd_l in {"open", "go"} and args_l in {"door", "panel", "guild", "alley"}:
+            return await self._handle_tavaalor_open_inner_door(session, access_point)
+
+        if cmd_l == "north" or (cmd_l == "go" and args_l == "north"):
+            await session.send_line("The way north is the inner door itself.  LEAN by it first, work the sequence, and then OPEN DOOR.")
+            return True
+
+        if cmd_l in {"out", "go"} and args_l in {"", "out"}:
+            await session.send_line("There is no easy way back to the shed from here.  The inner door or the tunnel are your choices.")
+            return True
+        return False
+
+    async def _handle_tavaalor_inner_door_sequence_step(self, session, access_point, cmd_l: str):
+        access = self.get_access_row(session.character_id, self._ROGUE_GUILD_ID) or {}
+        membership = getattr(session, "guild_membership", None) or {}
+        if str(membership.get("guild_id") or "").lower() != self._ROGUE_GUILD_ID and not access.get("is_invited"):
+            await session.send_line("Nothing answers your touch.")
+            return True
+        if str(membership.get("guild_id") or "").lower() != self._ROGUE_GUILD_ID and not access.get("password_known"):
+            await session.send_line("You do not know the proper sequence for the inner door.")
+            return True
+
+        seq = self._parse_sequence(access_point)
+        started_at = access.get("sequence_started_at")
+        step = int(access.get("sequence_step") or 0)
+        room_id = int(access.get("sequence_room_id") or 0)
+        if room_id != session.current_room.id or not started_at or not isinstance(started_at, datetime):
+            await session.send_line("You need to LEAN by the door before trying the sequence.")
+            return True
+        if datetime.utcnow() - started_at > timedelta(seconds=self._ROGUE_SEQUENCE_TIMEOUT):
+            self._set_sequence_state(session.character_id, self._ROGUE_GUILD_ID, step=0, room_id=None, started_at=None)
+            await session.send_line("You take too long and the inner latch falls still again.")
+            return True
+
+        if step >= len(seq):
+            await session.send_line("The door is already loosened.  OPEN DOOR before the latch settles again.")
+            return True
+
+        expected = seq[step]
+        if cmd_l != expected:
+            self._set_sequence_state(
+                session.character_id,
+                self._ROGUE_GUILD_ID,
+                step=0,
+                room_id=session.current_room.id,
+                started_at=datetime.utcnow(),
+            )
+            await session.send_line(colorize("  The inner mechanism hardens at once.  You will need to start again from LEAN.", TextPresets.WARNING))
+            return True
+
+        new_step = step + 1
+        if new_step >= len(seq):
+            self._set_sequence_state(
+                session.character_id,
+                self._ROGUE_GUILD_ID,
+                step=new_step,
+                room_id=session.current_room.id,
+                started_at=started_at,
+            )
+            await session.send_line(colorize("  The hidden latch gives.  You can OPEN DOOR now.", TextPresets.COMBAT_HIT))
+            return True
+
+        self._set_sequence_state(
+            session.character_id,
+            self._ROGUE_GUILD_ID,
+            step=new_step,
+            room_id=session.current_room.id,
+            started_at=started_at,
+        )
+        await session.send_line(colorize("  The inner lock yields another fraction beneath your hands.", TextPresets.SYSTEM))
+        return True
+
+    async def _handle_tavaalor_open_inner_door(self, session, access_point):
+        access = self.get_access_row(session.character_id, self._ROGUE_GUILD_ID) or {}
+        started_at = access.get("sequence_started_at")
+        step = int(access.get("sequence_step") or 0)
+        room_id = int(access.get("sequence_room_id") or 0)
+        seq = self._parse_sequence(access_point)
+        if room_id != session.current_room.id or not started_at or not isinstance(started_at, datetime) or step < len(seq):
+            await session.send_line("The inner door refuses to budge.  You will need the proper pass sequence first.")
+            return True
+        if datetime.utcnow() - started_at > timedelta(seconds=self._ROGUE_SEQUENCE_TIMEOUT):
+            self._set_sequence_state(session.character_id, self._ROGUE_GUILD_ID, step=0, room_id=None, started_at=None)
+            await session.send_line("The latch slips shut again before you can work the door.")
+            return True
+        self._set_sequence_state(session.character_id, self._ROGUE_GUILD_ID, step=0, room_id=None, started_at=None)
+        self.unlock_member_access(session.character_id, self._ROGUE_GUILD_ID)
+        await session.send_line(colorize("  The inner door swings open just enough to admit you into the guild proper.", TextPresets.COMBAT_HIT))
+        moved = await self._move_special(session, self._TV_GUILD_ALLEY_ROOM_ID, "door")
+        if moved:
+            await self.record_event(session, "rogue_inner_door_used")
+        return moved
+
+    async def handle_room_entry(self, session):
+        if not getattr(session, "character_id", None):
+            return
+        membership = getattr(session, "guild_membership", None) or {}
+        if str(membership.get("guild_id") or "").lower() != self._ROGUE_GUILD_ID:
+            return
+        room_id = int(getattr(getattr(session, "current_room", None), "id", 0) or 0)
+        room_events = {
+            self._TV_GUILD_ALLEY_ROOM_ID: "rogue_enter_alley",
+            self._TV_LOCKMASTERY_ROOM_ID: "rogue_meet_lockmaster",
+            self._TV_COMMON_ROOM_ID: "rogue_meet_bruiser",
+            self._TV_DRILL_ROOM_ID: "rogue_meet_drillmaster",
+        }
+        event_name = room_events.get(room_id)
+        if event_name:
+            await self.record_event(session, event_name)
 
     async def _handle_rogue_entry(self, session, access_point, cmd_l: str, args: str):
         if cmd_l == "lean":

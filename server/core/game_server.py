@@ -38,6 +38,7 @@ from server.core.commands.player.party import PartyManager
 from server.core.engine.guild_engine import GuildEngine
 from server.core.engine.tracking.trail_tracker import TrailTracker
 from server.core.engine.pets.pet_manager import PetManager
+from server.core.engine.traps import TrapManager
 from server.core.commands.player.training import _try_load_lua_skills
 from server.core.commands.player.inventory import restore_inventory_state
 from server.core.scripting.loaders.ambush_loader import load_ambush_cfg
@@ -85,6 +86,7 @@ class GameServer:
         self.guild = GuildEngine(self)
         self.tracking = TrailTracker(self)
         self.pets = PetManager(self)
+        self.traps = TrapManager(self)
         self.perception_cfg  = {}                           # Loaded from globals/perception.lua after Lua init
 
         self._tcp_server  = None
@@ -187,6 +189,9 @@ class GameServer:
         # Status effect engine (Lua-backed definitions)
         await self.status.initialize()
         log.info("StatusManager ready (%d effect defs loaded)", len(self.status._defs))
+
+        await self.traps.initialize()
+        log.info("Trap system ready (%d trap defs loaded)", len(self.traps._defs))
 
         await self.pets.initialize()
         log.info("Pet system ready")

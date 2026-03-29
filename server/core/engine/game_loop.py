@@ -117,6 +117,12 @@ class GameLoop:
             except Exception as e:
                 log.error("Pet tick error: %s", e, exc_info=True)
 
+        if hasattr(self.server, "traps"):
+            try:
+                await self.server.traps.tick(self.tick_count)
+            except Exception as e:
+                log.error("Trap tick error: %s", e, exc_info=True)
+
         # Passive health/mana/stamina regeneration (every ~60 seconds, matching GS4 regen cadence)
         if self.tick_count % 600 == 0:
             try:

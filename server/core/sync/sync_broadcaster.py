@@ -230,6 +230,8 @@ def build_snapshot(session, server) -> dict:
         _append_synth_effect(status_effects, active_ids, "sneaking", "Sneaking", "STATE")
     if getattr(session, "in_combat", False):
         _append_synth_effect(status_effects, active_ids, "in_combat", "In Combat", "STATE")
+    if getattr(session, "is_dead", False):
+        _append_synth_effect(status_effects, active_ids, "dead", "Dead", "STATE")
 
     events = getattr(server, "events", None)
     if events:

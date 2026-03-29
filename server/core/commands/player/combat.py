@@ -1385,7 +1385,7 @@ async def cmd_search(session, cmd, args, server):
             loot_creature.searched = True
             creature_searched = True
 
-            loot = generate_treasure(db, loot_creature) if (generate_treasure and db) else None
+            loot = generate_treasure(db, loot_creature, server=server) if (generate_treasure and db) else None
             if loot:
                 if loot.get("coins", 0) > 0:
                     session.silver += loot["coins"]
@@ -1467,7 +1467,7 @@ async def cmd_search(session, cmd, args, server):
                             found_items.append(f"  You find {fmt_item_name(gem['name'])}!")
 
                 if treasure.get("boxes") and random.random() < 0.3:
-                    box = generate_box(db, c_level) if db else _fallback_box(c_level)
+                    box = generate_box(db, c_level, server=server) if db else _fallback_box(c_level)
                     if box:
                         if db and not box.get("item_id"):
                             box["item_id"] = db.get_or_create_item(

@@ -38,6 +38,7 @@ SPELL_CIRCLE_MODULES = [
     ("spells/major_mental",    "Major Mental",     13),
     ("spells/savant",          "Savant Base",      14),
     ("spells/arcane",          "Arcane",           15),
+    ("spells/pet_companions",  "Pet Companions",   15),
 ]
 
 

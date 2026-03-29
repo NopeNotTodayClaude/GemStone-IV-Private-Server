@@ -32,7 +32,7 @@ local Config = {}
 Config.lumnis = {
     -- Days of week to activate (1=Monday ... 6=Saturday, 7=Sunday  per Lua os.date %w: 0=Sun,6=Sat)
     -- We handle this in Python with datetime.weekday(): 5=Sat, 6=Sun
-    active_days      = { 5, 6 },   -- Saturday=5, Sunday=6
+    active_days      = { 5 },      -- Saturday only
 
     -- Start hour (0-23, server local time). Midnight = 0.
     start_hour       = 0,
