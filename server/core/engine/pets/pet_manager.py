@@ -1018,6 +1018,7 @@ class PetManager:
             },
             "species_for_sale": species_out,
             "treats": self.cfg.get("treats") or [],
+            "item_delivery": self._pet_item_delivery_status(session),
             "pet_slots": self.cfg.get("pet_slots") or [],
             "pets": pets_out,
         }
@@ -1137,9 +1138,11 @@ class PetManager:
         template = self.server.db.get_item_template_by_short_name(treat.get("item_short_name"))
         if not template:
             return False, "The requested pet item template does not exist."
-        inv_id = self.server.db.add_item_to_inventory(session.character_id, int(template["id"]), quantity=quantity)
-        if not inv_id:
-            return False, "The menagerie could not hand over that item."
+        from server.core.commands.player.inventory import restore_inventory_state
+        restore_inventory_state(self.server, session)
+        ok, location, fail_msg = self._deliver_pet_shop_item(session, template, quantity)
+        if not ok:
+            return False, fail_msg or "You do not have room to receive that pet item."
         session.silver = max(0, int(session.silver or 0) - total_cost)
         self.server.db.save_character_resources(
             session.character_id,
@@ -1147,9 +1150,8 @@ class PetManager:
             session.spirit_current, session.stamina_current,
             session.silver,
         )
-        from server.core.commands.player.inventory import restore_inventory_state
         restore_inventory_state(self.server, session)
-        return True, f"Purchased {quantity}x {treat.get('label')}."
+        return True, f"Purchased {quantity}x {treat.get('label')} and placed {'it' if quantity == 1 else 'them'} in your {location}."
 
     def set_active_pet_from_shop(self, session, pet_id: int) -> tuple[bool, str]:
         if not getattr(session, "current_room", None) or not self.is_pet_shop_room(session.current_room.id):
@@ -1237,6 +1239,137 @@ class PetManager:
             if any(query == name or query in name for name in names if name):
                 return row
         return None
+
+    def _pet_item_delivery_status(self, session) -> dict:
+        from server.core.commands.player.inventory import _find_best_stow_container, restore_inventory_state
+
+        restore_inventory_state(self.server, session)
+        template = None
+        treats = self.cfg.get("treats") or []
+        if treats:
+            template = self.server.db.get_item_template_by_short_name((treats[0] or {}).get("item_short_name"))
+        if not template:
+            return {"available": False, "location": None, "reason": "No valid pet item templates are configured."}
+
+        existing_loc = self._find_existing_pet_stack_location(session, int(template.get("id") or 0))
+        if existing_loc:
+            return {"available": True, "location": existing_loc, "reason": ""}
+
+        best_cont = _find_best_stow_container(session, self.server, self._template_to_item_dict(template), allow_special_sheath=False)
+        if best_cont:
+            return {
+                "available": True,
+                "location": best_cont.get("short_name") or best_cont.get("noun") or "container",
+                "reason": "",
+            }
+        return {
+            "available": False,
+            "location": None,
+            "reason": "No room for pet items. Wear or empty a backpack, cloak, or other container first.",
+        }
+
+    def _find_existing_pet_stack_location(self, session, item_id: int) -> Optional[str]:
+        if not item_id:
+            return None
+        worn = {}
+        for item in getattr(session, "inventory", []) or []:
+            inv_id = int(item.get("inv_id") or 0)
+            slot = str(item.get("slot") or "")
+            if inv_id and slot and slot not in {"right_hand", "left_hand"} and not item.get("container_id"):
+                worn[inv_id] = item
+
+        preferred = []
+        for item in getattr(session, "inventory", []) or []:
+            if int(item.get("item_id") or 0) != int(item_id):
+                continue
+            cont_id = int(item.get("container_id") or 0)
+            if not cont_id or cont_id not in worn:
+                continue
+            cont = worn[cont_id]
+            noun = str(cont.get("noun") or "").lower()
+            slot = str(cont.get("slot") or "").lower()
+            score = 2
+            if noun == "backpack":
+                score = 0
+            elif noun in {"cloak", "cape"} or slot == "shoulders":
+                score = 1
+            preferred.append((score, cont.get("short_name") or cont.get("noun") or "container"))
+        if not preferred:
+            return None
+        preferred.sort(key=lambda row: (row[0], row[1]))
+        return preferred[0][1]
+
+    def _template_to_item_dict(self, template: dict) -> dict:
+        return {
+            "item_id": int(template.get("id") or 0),
+            "id": int(template.get("id") or 0),
+            "name": template.get("name"),
+            "short_name": template.get("short_name"),
+            "noun": template.get("noun"),
+            "article": template.get("article"),
+            "item_type": template.get("item_type"),
+            "container_capacity": template.get("container_capacity"),
+            "quantity": 1,
+        }
+
+    def _deliver_pet_shop_item(self, session, template: dict, quantity: int) -> tuple[bool, Optional[str], Optional[str]]:
+        from server.core.commands.player.inventory import _find_best_stow_container
+
+        item_id = int(template.get("id") or 0)
+        is_stackable = bool(template.get("is_stackable"))
+
+        # If this item already stacks in a worn container, add to that stack instead of creating a loose row.
+        if is_stackable:
+            worn = {}
+            for item in getattr(session, "inventory", []) or []:
+                inv_id = int(item.get("inv_id") or 0)
+                slot = str(item.get("slot") or "")
+                if inv_id and slot and slot not in {"right_hand", "left_hand"} and not item.get("container_id"):
+                    worn[inv_id] = item
+            candidates = []
+            for item in getattr(session, "inventory", []) or []:
+                if int(item.get("item_id") or 0) != item_id:
+                    continue
+                cont_id = int(item.get("container_id") or 0)
+                cont = worn.get(cont_id)
+                if not cont:
+                    continue
+                noun = str(cont.get("noun") or "").lower()
+                slot = str(cont.get("slot") or "").lower()
+                score = 2
+                if noun == "backpack":
+                    score = 0
+                elif noun in {"cloak", "cape"} or slot == "shoulders":
+                    score = 1
+                candidates.append((score, item, cont))
+            if candidates:
+                candidates.sort(key=lambda row: row[0])
+                _, stack_row, cont = candidates[0]
+                self.server.db.execute_update(
+                    "UPDATE character_inventory SET quantity = quantity + %s WHERE id = %s",
+                    (int(quantity), int(stack_row.get("inv_id"))),
+                )
+                return True, cont.get("short_name") or cont.get("noun") or "container", None
+
+        best_cont = _find_best_stow_container(
+            session,
+            self.server,
+            self._template_to_item_dict(template),
+            allow_special_sheath=False,
+        )
+        if not best_cont or not best_cont.get("inv_id"):
+            return False, None, "No room for pet items. Wear or empty a backpack, cloak, or other container first."
+
+        inv_id = self.server.db.insert_inventory_item_instance(
+            session.character_id,
+            item_id,
+            slot=None,
+            quantity=int(quantity),
+            container_id=int(best_cont.get("inv_id")),
+        )
+        if not inv_id:
+            return False, None, "The menagerie could not hand over that item."
+        return True, best_cont.get("short_name") or best_cont.get("noun") or "container", None
 
     def _find_inventory_item(self, session, short_name: str) -> Optional[dict]:
         wanted = (short_name or "").strip().lower()

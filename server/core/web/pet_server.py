@@ -473,8 +473,13 @@ function renderHeader(){
     setHero('', '', 'Select a pet card to preview it here.');
   }
   $('#shopkeeper').textContent = (shop.shopkeeper.full_name || 'Virelle') + ' — ' + (shop.shopkeeper.title || 'Moonwhisker keeper');
+  const delivery = state.item_delivery || {};
+  const deliveryLine = delivery.available
+    ? '<div class="muted" style="margin-top:8px">Pet items will be delivered to your '+escapeHtml(delivery.location || 'container')+'.</div>'
+    : '<div class="muted" style="margin-top:8px;color:#f85149">Pet item delivery blocked: '+escapeHtml(delivery.reason || 'No storage space available.')+'</div>';
   $('#summary').innerHTML = '<div class="row"><strong>'+c.name+'</strong><span class="price">'+c.silver.toLocaleString()+' silver</span></div>'
-    + '<div class="muted" style="margin-top:8px">Quest state: '+c.progress.quest_state+' • First pet claimed: '+(c.progress.first_pet_claimed?'yes':'no')+'</div>';
+    + '<div class="muted" style="margin-top:8px">Quest state: '+c.progress.quest_state+' • First pet claimed: '+(c.progress.first_pet_claimed?'yes':'no')+'</div>'
+    + deliveryLine;
 }
 function renderSale(){
   const root = $('#sale'); root.innerHTML = '<div class="grid"></div>'; const g=root.firstChild;
@@ -497,12 +502,19 @@ function renderSale(){
 }
 function renderItems(){
   const root = $('#items'); root.innerHTML = '<div class="grid"></div>'; const g=root.firstChild;
+  const delivery = state.item_delivery || {};
   state.treats.forEach(item => {
     const card = el('div','item-card');
+    const disabledAttr = delivery.available ? '' : ' disabled';
+    const deliveryText = delivery.available
+      ? '<div class="muted" style="margin-top:10px">Delivers to your '+escapeHtml(delivery.location || 'container')+'.</div>'
+      : '<div class="muted" style="margin-top:10px;color:#f85149">'+escapeHtml(delivery.reason || 'No storage space available.')+'</div>';
     card.innerHTML = '<h3>'+item.label+'</h3><div class="muted">Training treat tier '+item.tier+'. Field-usable every two real-world hours per pet.</div>'
+      + deliveryText
       + '<div class="row" style="justify-content:space-between;margin-top:12px"><span class="price">'+item.price.toLocaleString()+' silver</span>'
-      + '<button class="btn">Buy</button></div>';
+      + '<button class="btn"'+disabledAttr+'>Buy</button></div>';
     card.querySelector('button').onclick = async () => {
+      if(!delivery.available){ say(delivery.reason || 'No storage space available for pet items.'); return; }
       try{
         const result = await api('/api/pets/buy-item',{treat_key:item.key,quantity:1});
         state = result.state; renderAll(); say(result.message,true);

@@ -32,6 +32,7 @@ PICK CONDITION SYSTEM:
 
 import logging
 import random
+import re
 import time as _time
 from server.core.protocol.colors import (
     colorize, TextPresets, item_name as fmt_item_name, roundtime_msg
@@ -391,6 +392,55 @@ def _save_box_state(server, box: dict, **overrides):
     server.db.save_item_extra_data(inv_id, extra)
 
 
+# ── Detect-state cache ──────────────────────────────────────────────────────────
+# The box dict is the primary source of truth for trap_detected, but we also
+# keep a session-level cache so the state survives if the dict is ever swapped
+# (e.g. when an inline item is promoted to a DB-backed item with a new inv_id).
+
+def _box_cache_key(session, box: dict):
+    """Stable identifier for this box in the session detect cache."""
+    inv_id = box.get("inv_id")
+    if inv_id:
+        return ("inv", int(inv_id))
+    # Fallback: which hand is holding this exact dict?
+    for slot in ("right_hand", "left_hand"):
+        if getattr(session, slot, None) is box:
+            return ("slot", slot)
+    return None
+
+
+def _get_detect_cache(session) -> dict:
+    if not hasattr(session, "_trap_detect_cache"):
+        session._trap_detect_cache = {}
+    return session._trap_detect_cache
+
+
+def _set_detected(session, box: dict):
+    """Mark trap as detected — sets the box dict AND the session cache."""
+    box["trap_detected"] = True
+    key = _box_cache_key(session, box)
+    if key is not None:
+        _get_detect_cache(session)[key] = True
+
+
+def _is_detected(session, box: dict) -> bool:
+    """True if this box's trap has been detected in the current session."""
+    if box.get("trap_detected"):
+        return True
+    key = _box_cache_key(session, box)
+    if key is not None and _get_detect_cache(session).get(key):
+        box["trap_detected"] = True   # re-sync dict from cache
+        return True
+    return False
+
+
+def _clear_detected(session, box: dict):
+    """Remove a box from the detect cache (called after disarm or trap fire)."""
+    key = _box_cache_key(session, box)
+    if key is not None:
+        _get_detect_cache(session).pop(key, None)
+
+
 def _bend_pick(server, session, lockpick: dict, endroll: int) -> bool:
     """
     Hidden bend roll after a failed pick.
@@ -547,7 +597,7 @@ async def cmd_detect(session, cmd, args, server):
         box["trap_checked"] = True
         trap = TRAP_DEFS.get(trap_type, TRAP_DEFS["needle"])
 
-        if box.get("trap_detected"):
+        if _is_detected(session, box):
             _save_box_state(server, box)
             await session.send_line(colorize(f"  Trap: {trap['examine']}", TextPresets.WARNING))
             await session.send_line(colorize("  Use DISARM to neutralize it.", TextPresets.SYSTEM))
@@ -564,7 +614,7 @@ async def cmd_detect(session, cmd, args, server):
             endroll   = -999 if d100 == 1 else (dis_skill + int_bonus) - trap_diff + d100
 
             if endroll >= 0:
-                box["trap_detected"] = True
+                _set_detected(session, box)
                 _save_box_state(server, box, trapped=True, trap_detected=True, trap_disarmed=False)
                 await session.send_line(colorize(f"  Trap: {trap['examine']}", TextPresets.WARNING))
                 await session.send_line(colorize("  Use DISARM to neutralize it.", TextPresets.SYSTEM))
@@ -620,23 +670,23 @@ async def cmd_disarm(session, cmd, args, server):
         await session.send_line(roundtime_msg(3))
         return
 
-    # Must detect first
-    if not box.get("trap_detected"):
+    # ── Detection-state check (GS4: DISARM can be attempted blind, but at penalty) ──
+    _blind_penalty = 0
+    if not _is_detected(session, box):
         if box.get("trap_checked"):
-            await session.send_line(
-                colorize(
-                    f"  You examine {disp} closely, but still haven't located the trap.  Try DETECT again.",
-                    TextPresets.WARNING
-                )
-            )
+            # Searched but failed to find — allow with stiff penalty, warn player
+            _blind_penalty = 40
+            await session.send_line(colorize(
+                f"  You haven't located the trap on {disp} — working blind.  (-{_blind_penalty} penalty)",
+                TextPresets.WARNING
+            ))
         else:
-            await session.send_line(
-                colorize(
-                    f"  You haven't examined {disp} for traps yet.  Use DETECT first.",
-                    TextPresets.WARNING
-                )
-            )
-        return
+            # Never examined — allow but at maximum penalty, heavy warning
+            _blind_penalty = 60
+            await session.send_line(colorize(
+                f"  You attempt to disarm {disp} without examining it first — working completely blind.  (-{_blind_penalty} penalty)",
+                TextPresets.WARNING
+            ))
 
     trap = TRAP_DEFS.get(trap_type, TRAP_DEFS["needle"])
     focus_bonus = _lockmastery_focus_bonus(session, consume=True)
@@ -720,6 +770,7 @@ async def cmd_disarm(session, cmd, args, server):
         + tool_bonus
         - no_tool_penalty
         + focus_bonus
+        - _blind_penalty
     )
     dex_bonus  = _stat_bonus(getattr(session, "stat_dexterity", 50))
     trap_diff  = box.get("trap_difficulty", session.level * 12) + trap["diff_bonus"]
@@ -737,6 +788,7 @@ async def cmd_disarm(session, cmd, args, server):
         f"  Skill: {effective}"
         + (f" (tools: +{tool_bonus})" if tool_bonus else "")
         + (f" (no tool: -{no_tool_penalty})" if no_tool_penalty else "")
+        + (f" (blind: -{_blind_penalty})" if _blind_penalty else "")
         + f"  -  Trap: {trap_diff}"
         + f"  +  d100: {d100}"
         + f"  =  {'FUMBLE' if fumble else endroll}"
@@ -749,6 +801,7 @@ async def cmd_disarm(session, cmd, args, server):
         # ── Success ──────────────────────────────────────────────────────
         box["trapped"]       = False
         box["trap_disarmed"] = True
+        _clear_detected(session, box)
         _save_box_state(server, box, trapped=False, trap_disarmed=True, trap_detected=True)
 
         await session.send_line(colorize(roll_math, TextPresets.COMBAT_HIT))
@@ -807,6 +860,7 @@ async def _trigger_trap(session, server, box: dict, trap: dict):
     box["trapped"] = False
     box["trap_disarmed"] = True
     box["trap_detected"] = True
+    _clear_detected(session, box)
     dmg = random.randint(trap["dmg_min"], trap["dmg_max"])
     try:
         from server.core.engine.magic_effects import has_effect

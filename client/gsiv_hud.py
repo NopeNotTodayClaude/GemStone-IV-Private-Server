@@ -5299,19 +5299,27 @@ class HUDApp:
                         tag_name = self._new_inline_tag("npc")
                         marker_tag = self._new_inline_tag("npcm")
                         kind = str(npc_info.get("kind") or "").strip().lower()
-                        link_fg, link_font = self._npc_style(kind, "default", marker=False)
-                        marker_fg, marker_font = self._npc_style(kind, "default", marker=True)
-                        self._text.tag_configure(
-                            tag_name,
-                            underline=False,
-                            foreground=link_fg,
-                            font=link_font,
-                        )
-                        self._text.tag_configure(
-                            marker_tag,
-                            foreground=marker_fg,
-                            font=marker_font,
-                        )
+                        if kind in {"pet", "sprite", "player"}:
+                            link_fg, link_font = self._npc_style(kind, "default", marker=False)
+                            marker_fg, marker_font = self._npc_style(kind, "default", marker=True)
+                            self._text.tag_configure(
+                                tag_name,
+                                underline=False,
+                                foreground=link_fg,
+                                font=link_font,
+                            )
+                            self._text.tag_configure(
+                                marker_tag,
+                                foreground=marker_fg,
+                                font=marker_font,
+                            )
+                        else:
+                            # Preserve the original ANSI-rendered room color for ordinary NPCs.
+                            self._text.tag_configure(
+                                tag_name,
+                                underline=False,
+                            )
+                            self._text.tag_configure(marker_tag)
                         self._bind_npc_tags(tag_name, marker_tag, npc_info)
                         self._text.tag_add(tag_name, match_at, match_end)
 
