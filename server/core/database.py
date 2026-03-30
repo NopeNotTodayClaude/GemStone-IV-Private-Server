@@ -1745,10 +1745,10 @@ class Database:
         conn = self._get_conn()
         try:
             cur = conn.cursor()
-            snapshot = {
+            snapshot = _json_safe_snapshot({
                 key: value for key, value in dict(item_snapshot or {}).items()
                 if key not in {"inv_id", "slot", "container_id", "ground_id", "created_at", "expires_at"}
-            }
+            })
             item_value = max(0, int(snapshot.get("value") or 0))
             ttl_seconds = 3600 if item_value >= 5000 else 1800
             expires_at = datetime.datetime.fromtimestamp(time.time() + ttl_seconds)
@@ -2271,6 +2271,255 @@ class Database:
         except Exception as e:
             log.error("Failed to execute update: %s", e)
             return 0
+        finally:
+            conn.close()
+
+    def load_character_hotbar_slots(self, character_id):
+        """Load saved hotbar slot assignments for a character."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute("""
+                SELECT slot_index, category_key, action_key
+                FROM character_hotbar_slots
+                WHERE character_id = %s
+                ORDER BY slot_index
+            """, (character_id,))
+            return {
+                int(row["slot_index"]): {
+                    "category_key": str(row["category_key"] or "").strip(),
+                    "action_key": str(row["action_key"] or "").strip(),
+                }
+                for row in (cur.fetchall() or [])
+                if 1 <= int(row.get("slot_index", 0) or 0) <= 9
+            }
+        except Exception as e:
+            log.error("Failed to load hotbar slots for char %s: %s", character_id, e)
+            return {}
+        finally:
+            conn.close()
+
+    def save_character_hotbar_slot(self, character_id, slot_index, category_key, action_key):
+        """Persist one hotbar slot assignment."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO character_hotbar_slots (character_id, slot_index, category_key, action_key)
+                VALUES (%s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    category_key = VALUES(category_key),
+                    action_key = VALUES(action_key)
+            """, (character_id, slot_index, category_key, action_key))
+            conn.commit()
+            return True
+        except Exception as e:
+            log.error("Failed to save hotbar slot %s for char %s: %s", slot_index, character_id, e)
+            return False
+        finally:
+            conn.close()
+
+    def clear_character_hotbar_slot(self, character_id, slot_index):
+        """Delete one saved hotbar slot assignment."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                DELETE FROM character_hotbar_slots
+                WHERE character_id = %s AND slot_index = %s
+            """, (character_id, slot_index))
+            conn.commit()
+            return True
+        except Exception as e:
+            log.error("Failed to clear hotbar slot %s for char %s: %s", slot_index, character_id, e)
+            return False
+        finally:
+            conn.close()
+
+    def load_character_spell_ranks(self, character_id):
+        """Load native spell circle ranks for a character."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute("""
+                SELECT circle_id, ranks
+                FROM character_spell_ranks
+                WHERE character_id = %s
+            """, (character_id,))
+            return {
+                int(row["circle_id"]): int(row["ranks"] or 0)
+                for row in (cur.fetchall() or [])
+            }
+        except Exception as e:
+            log.error("Failed to load spell ranks for char %s: %s", character_id, e)
+            return {}
+        finally:
+            conn.close()
+
+    def load_character_spellbook(self, character_id):
+        """Load castable native spells for a character from current circle ranks."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute("""
+                SELECT s.spell_number, s.mnemonic, s.name, s.circle_id, s.rank,
+                       s.mana_cost, s.spell_type, s.activation_verbs
+                FROM character_spell_ranks csr
+                JOIN spells s
+                  ON s.circle_id = csr.circle_id
+                 AND s.rank <= csr.ranks
+                WHERE csr.character_id = %s
+                ORDER BY s.circle_id, s.spell_number
+            """, (character_id,))
+            return cur.fetchall() or []
+        except Exception as e:
+            log.error("Failed to load spellbook for char %s: %s", character_id, e)
+            return []
+        finally:
+            conn.close()
+
+    def load_character_combat_maneuvers(self, character_id):
+        """Load learned combat maneuver ranks keyed by mnemonic."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                """
+                SELECT cm.mnemonic, ccm.current_rank
+                FROM character_combat_maneuvers ccm
+                JOIN combat_maneuvers cm ON cm.id = ccm.maneuver_id
+                WHERE ccm.character_id = %s
+                """,
+                (character_id,),
+            )
+            return {
+                str(row["mnemonic"]).strip().lower(): int(row["current_rank"] or 0)
+                for row in (cur.fetchall() or [])
+                if str(row.get("mnemonic") or "").strip()
+            }
+        except Exception as e:
+            log.error("Failed to load combat maneuvers for char %s: %s", character_id, e)
+            return {}
+        finally:
+            conn.close()
+
+    def save_character_combat_maneuver_rank(self, character_id, mnemonic, rank):
+        """Upsert one learned combat maneuver rank for a character."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM combat_maneuvers WHERE mnemonic = %s LIMIT 1", (str(mnemonic).strip().lower(),))
+            row = cur.fetchone()
+            if not row:
+                return False
+            maneuver_id = int(row[0])
+            cur.execute(
+                """
+                INSERT INTO character_combat_maneuvers (character_id, maneuver_id, current_rank)
+                VALUES (%s, %s, %s)
+                ON DUPLICATE KEY UPDATE current_rank = VALUES(current_rank)
+                """,
+                (character_id, maneuver_id, int(rank or 0)),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            log.error("Failed to save combat maneuver %s for char %s: %s", mnemonic, character_id, e)
+            return False
+        finally:
+            conn.close()
+
+    def remove_character_combat_maneuver(self, character_id, mnemonic):
+        """Delete one learned combat maneuver for a character."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                DELETE ccm
+                FROM character_combat_maneuvers ccm
+                JOIN combat_maneuvers cm ON cm.id = ccm.maneuver_id
+                WHERE ccm.character_id = %s AND cm.mnemonic = %s
+                """,
+                (character_id, str(mnemonic).strip().lower()),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            log.error("Failed to remove combat maneuver %s for char %s: %s", mnemonic, character_id, e)
+            return False
+        finally:
+            conn.close()
+
+    def touch_character_combat_maneuver_used(self, character_id, mnemonic):
+        """Update last-used timestamp for a learned maneuver when present."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE character_combat_maneuvers ccm
+                JOIN combat_maneuvers cm ON cm.id = ccm.maneuver_id
+                SET ccm.last_used_at = CURRENT_TIMESTAMP
+                WHERE ccm.character_id = %s AND cm.mnemonic = %s
+                """,
+                (character_id, str(mnemonic).strip().lower()),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            log.error("Failed to touch combat maneuver %s for char %s: %s", mnemonic, character_id, e)
+            return False
+        finally:
+            conn.close()
+
+    def load_character_combat_maneuver_settings(self, character_id):
+        """Load maneuver settings JSON for a character."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                """
+                SELECT settings_json
+                FROM character_combat_maneuver_settings
+                WHERE character_id = %s
+                LIMIT 1
+                """,
+                (character_id,),
+            )
+            row = cur.fetchone() or {}
+            raw = row.get("settings_json")
+            if not raw:
+                return {}
+            try:
+                data = json.loads(raw)
+            except Exception:
+                return {}
+            return data if isinstance(data, dict) else {}
+        except Exception as e:
+            log.error("Failed to load combat maneuver settings for char %s: %s", character_id, e)
+            return {}
+        finally:
+            conn.close()
+
+    def save_character_combat_maneuver_settings(self, character_id, settings):
+        """Persist maneuver settings JSON for a character."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO character_combat_maneuver_settings (character_id, settings_json)
+                VALUES (%s, %s)
+                ON DUPLICATE KEY UPDATE settings_json = VALUES(settings_json)
+                """,
+                (character_id, json.dumps(settings or {}, separators=(",", ":"), sort_keys=True)),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            log.error("Failed to save combat maneuver settings for char %s: %s", character_id, e)
+            return False
         finally:
             conn.close()
     # =========================================================

@@ -938,15 +938,28 @@ STATUS_ICON_IMAGE_MAP = {
     "poisoned": "3.png",
     "major_poison": "3.png",
     "disease": "20.png",
+    "wounded": "31.png",
     "mind_rot": "31.png",
+    "staggered": "19.png",
     "prone": "13.png",
     "blinded": "67.png",
     "slowed": "33.png",
+    "clumsy": "33.png",
+    "crippled": "37.png",
+    "dazed": "19.png",
+    "disoriented": "19.png",
     "groggy": "19.png",
+    "confused": "19.png",
+    "demoralized": "22.png",
+    "feeble": "44.png",
+    "overexerted": "33.png",
+    "vulnerable": "62.png",
+    "weakened_armament": "44.png",
     "fear": "22.png",
     "sheer_fear": "63.png",
     "terrified": "63.png",
     "horrified": "18.png",
+    "silenced": "67.png",
     "sleeping": "2.png",
     "resting": "14.png",
     "sitting": "11.png",
@@ -957,20 +970,36 @@ STATUS_ICON_IMAGE_MAP = {
     "sleeping": "2.png",
     "calmed": "57.png",
     "quickness": "32.png",
+    "evasiveness": "60.png",
+    "evade_bonus": "60.png",
     "defensive_posture": "62.png",
+    "ds_bonus": "62.png",
+    "fortified_stance": "62.png",
     "forceful_blows": "46.png",
+    "frenzy": "46.png",
     "slashing_strikes": "65.png",
+    "parry_bonus": "65.png",
     "concussive_blows": "44.png",
+    "enhance_dexterity": "58.png",
+    "avoid_engagement_bonus": "57.png",
+    "pinned": "64.png",
+    "frenzied": "46.png",
+    "pressed": "54.png",
+    "disengaged": "57.png",
     "recent_block": "50.png",
     "recent_parry": "65.png",
     "recent_evade": "60.png",
     "counter": "72.png",
     "empowered": "58.png",
+    "enhance": "58.png",
+    "inner_mind": "57.png",
     "shrouded": "49.png",
     "in_combat": "54.png",
+    "exited_combat": "14.png",
     "lumnis": "196.png",
     "bonus_xp": "196.png",
     "floofer_glow": "14.png",
+    "roundtime": "11.png",
 }
 
 # Effects to never show in the status bar (internal state, not player-facing)
@@ -2183,6 +2212,8 @@ class HUDApp:
         self._room_npcs: List[dict] = []
         self._npc_link_seq: int = 0
         self._room_start_index: str = "1.0"
+        self._hotbar_state: dict = {"slots": [], "catalog": {"categories": []}}
+        self._hotbar_buttons: Dict[int, tk.Button] = {}
 
         # Embedded status effect bar (toolbar strip)
         self._fx_icon_frame: "Optional[tk.Frame]" = None
@@ -2440,6 +2471,31 @@ class HUDApp:
                             padx=6, pady=2, font=("Georgia", 9),
                             command=lambda st=stance: self._set_stance(st))
             btn.pack(side="left", padx=1)
+
+        # ── Hotbar row (above stance bar) ───────────────────────────────────
+        hotbar_frame = tk.Frame(text_frame, bg="#0d1117")
+        hotbar_frame.pack(fill="x", side="bottom", pady=(1, 0))
+        self._hotbar_frame = hotbar_frame
+        for slot in range(1, 10):
+            btn = tk.Button(
+                hotbar_frame,
+                text=str(slot),
+                fg=TEXT_DIM,
+                bg="#141a22",
+                activebackground="#24314a",
+                activeforeground=TEXT_MAIN,
+                relief="flat",
+                bd=0,
+                padx=6,
+                pady=3,
+                width=10,
+                font=("Georgia", 8, "bold"),
+                cursor="hand2",
+                command=lambda s=slot: self._execute_hotbar_slot(s),
+            )
+            btn.pack(side="left", padx=1)
+            btn.bind("<Button-3>", lambda event, s=slot: self._show_hotbar_menu(event, s))
+            self._hotbar_buttons[slot] = btn
 
         # Panels registered via DockManager above — no separate right_vpaned needed
 
@@ -2805,6 +2861,9 @@ class HUDApp:
         try:
             if stype == "sync_state":
                 self._apply_sync_state(payload)
+            elif stype == "sync_event":
+                if isinstance(payload, dict) and payload.get("type") == "hotbar_notice":
+                    self._sys(str(payload.get("message") or "Hotbar update failed."))
             elif stype == "sync_closed":
                 self._sync_connected = False
             elif stype == "sync_error":
@@ -2829,11 +2888,15 @@ class HUDApp:
                 room_id = int(room_info.get("id"))
             except (TypeError, ValueError):
                 room_id = None
-            if room_id is not None:
-                try:
-                    self._update_room(room_id)
-                except Exception:
-                    pass
+        if room_id is not None:
+            try:
+                self._update_room(room_id)
+            except Exception:
+                pass
+
+        hotbar = snap.get("hotbar")
+        if isinstance(hotbar, dict):
+            self._apply_hotbar_state(hotbar)
 
         # ── Vitals ──────────────────────────────────────────────────────────
         v = snap.get("vitals", {})
@@ -3154,6 +3217,117 @@ class HUDApp:
             w.bind("<Leave>",  lambda e: self._hide_fx_tooltip())
 
         return cell
+
+    def _apply_hotbar_state(self, hotbar: dict):
+        self._hotbar_state = hotbar or {"slots": [], "catalog": {"categories": []}}
+        slot_map = {
+            int(row.get("slot", 0) or 0): row
+            for row in (self._hotbar_state.get("slots") or [])
+            if 1 <= int(row.get("slot", 0) or 0) <= 9
+        }
+        for slot, btn in self._hotbar_buttons.items():
+            row = slot_map.get(slot) or {}
+            label = str(row.get("short_label") or row.get("label") or "").strip()
+            enabled = bool(row.get("enabled"))
+            assigned = bool(row.get("assigned"))
+            btn.config(
+                text=self._hotbar_button_text(slot, label),
+                fg=(TEXT_MAIN if enabled else (ACCENT_YEL if assigned else TEXT_DIM)),
+                bg=("#1a2740" if enabled else ("#2a2414" if assigned else "#141a22")),
+            )
+
+    def _hotbar_button_text(self, slot: int, label: str) -> str:
+        if not label:
+            return str(slot)
+        clipped = label if len(label) <= 9 else (label[:8] + "…")
+        return f"{slot} {clipped}"
+
+    def _send_sync_event(self, payload: dict) -> bool:
+        if not self._sync or not self._sync_connected:
+            self._sys("Hotbar requires an active sync connection.")
+            return False
+        if not self._sync.send_event(payload):
+            self._sys("Hotbar action could not reach the server.")
+            return False
+        return True
+
+    def _execute_hotbar_slot(self, slot: int):
+        slot_map = {
+            int(row.get("slot", 0) or 0): row
+            for row in (self._hotbar_state.get("slots") or [])
+            if 1 <= int(row.get("slot", 0) or 0) <= 9
+        }
+        slot_info = slot_map.get(int(slot)) or {}
+        targeting = str(slot_info.get("targeting") or "").strip().lower()
+
+        target_name = ""
+        if targeting.startswith("current_target"):
+            if not self._current_target and self._room_enemies:
+                self._set_target_entry(self._room_enemies[0], fg=ACCENT_RED)
+            target_name = str(self._current_target or "").strip()
+
+        payload = {"type": "hotbar_execute", "slot": int(slot)}
+        if target_name:
+            payload["target"] = target_name
+        self._send_sync_event(payload)
+
+    def _show_hotbar_menu(self, event, slot: int):
+        state = self._hotbar_state or {}
+        catalog = (state.get("catalog") or {}).get("categories") or []
+        slot_map = {
+            int(row.get("slot", 0) or 0): row
+            for row in (state.get("slots") or [])
+            if 1 <= int(row.get("slot", 0) or 0) <= 9
+        }
+        slot_info = slot_map.get(slot) or {}
+
+        menu = tk.Menu(self.root, tearoff=0, bg="#1a1e26", fg=TEXT_MAIN,
+                       font=(self._game_font, 10),
+                       activebackground="#2a3a5a",
+                       activeforeground=TEXT_MAIN,
+                       relief="flat", bd=1)
+        menu.add_command(label=f"Hotbar {slot}", state="disabled")
+        menu.add_separator()
+
+        for category in catalog:
+            actions = category.get("actions") or []
+            if not actions:
+                continue
+            submenu = tk.Menu(menu, tearoff=0, bg="#1a1e26", fg=TEXT_MAIN,
+                              font=(self._game_font, 10),
+                              activebackground="#2a3a5a",
+                              activeforeground=TEXT_MAIN,
+                              relief="flat", bd=1)
+            for action in actions:
+                label = str(action.get("label") or "").strip()
+                if not label:
+                    continue
+                submenu.add_command(
+                    label=label,
+                    command=lambda c=category.get("key"), a=action.get("key"): self._assign_hotbar_slot(slot, c, a),
+                )
+            if submenu.index("end") is not None:
+                menu.add_cascade(label=str(category.get("label") or "Actions"), menu=submenu)
+
+        if slot_info.get("assigned"):
+            menu.add_separator()
+            menu.add_command(label="Clear Slot", command=lambda: self._clear_hotbar_slot(slot))
+
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _assign_hotbar_slot(self, slot: int, category_key: str, action_key: str):
+        self._send_sync_event({
+            "type": "hotbar_assign",
+            "slot": int(slot),
+            "category": str(category_key or ""),
+            "action_key": str(action_key or ""),
+        })
+
+    def _clear_hotbar_slot(self, slot: int):
+        self._send_sync_event({"type": "hotbar_clear", "slot": int(slot)})
 
     def _render_fx_bar(self, effects: list):
         """

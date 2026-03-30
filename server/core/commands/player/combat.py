@@ -34,6 +34,7 @@ from server.core.engine.skinning import (
     resolve_skinning,
 )
 from server.core.scripting.loaders.body_types_loader import get_aimable, resolve_aim
+from server.core.scripting.lua_bindings.combat_maneuver_api import handle_cman_command
 
 log = logging.getLogger(__name__)
 
@@ -438,6 +439,7 @@ def _apply_status(server, target, effect_id: str, duration: float):
 
 async def cmd_sweep(session, cmd, args, server):
     """SWEEP <target> - Rogue guild maneuver that knocks a foe prone."""
+    return await handle_cman_command(session, "sweep", args, server)
     status = getattr(server, "status", None)
     if status and status.has(session, "stunned"):
         await session.send_line("You are stunned!  Try STUNMAN ATTACK or STUNMAN STAND if you have the training for it.")
@@ -494,6 +496,7 @@ async def cmd_sweep(session, cmd, args, server):
 
 async def cmd_subdue(session, cmd, args, server):
     """SUBDUE <target> - Rogue guild setup maneuver from hiding."""
+    return await handle_cman_command(session, "subdue", args, server)
     status = getattr(server, "status", None)
     if status and status.has(session, "stunned"):
         await session.send_line("You are stunned!  Try STUNMAN ATTACK if you have the training for it.")
@@ -2145,6 +2148,7 @@ async def cmd_feint(session, cmd, args, server):
     """FEINT <target> â€” Temporarily halves a creature's DS on your next attack.
     GS4: Uses Combat Maneuvers skill. Costs 3s RT. Debuff lasts 15 seconds.
     """
+    return await handle_cman_command(session, "feint", args, server)
     if not args:
         if session.target and not session.target.is_dead:
             creature = session.target

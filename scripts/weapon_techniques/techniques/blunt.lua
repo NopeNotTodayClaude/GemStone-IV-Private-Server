@@ -194,7 +194,7 @@ function Blunt.pummel(ctx)
         end
     end
 
-    table.insert(round_msgs, (tech.msg_final or "Your pummel assault concludes!"):gsub("{target}", target_name))
+    table.insert(round_msgs, ((tech.msg_final or "Your pummel assault concludes!"):gsub("{target}", target_name)))
 
     local effects = {}
     if any_success then

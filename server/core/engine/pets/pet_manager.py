@@ -705,6 +705,21 @@ class PetManager:
         if not ok:
             return
 
+        pet_name = str(pet.get("pet_name") or "Your companion")
+        await session.send_line(colorize(
+            f"  {pet_name} gathers a soft restorative glow around you.",
+            TextPresets.EXPERIENCE,
+        ))
+        if session.current_room:
+            await self.server.world.broadcast_to_room(
+                session.current_room.id,
+                colorize(
+                    f"{pet_name} gathers a soft restorative glow around {session.character_name}.",
+                    TextPresets.EXPERIENCE,
+                ),
+                exclude=session,
+            )
+
         self.server.status.apply(
             session,
             "floofer_glow",
@@ -1441,7 +1456,13 @@ class PetManager:
             return None
 
         scored = []
-        for item in getattr(session, "inventory", []) or []:
+        candidates = []
+        for hand_item in (getattr(session, "right_hand", None), getattr(session, "left_hand", None)):
+            if hand_item:
+                candidates.append(hand_item)
+        candidates.extend(getattr(session, "inventory", []) or [])
+
+        for item in candidates:
             fields = [
                 self._normalize_item_query(item.get("short_name") or ""),
                 self._normalize_item_query(item.get("name") or ""),

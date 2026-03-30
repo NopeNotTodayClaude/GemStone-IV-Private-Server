@@ -50,10 +50,29 @@ _CAT_TO_SKILL_KEY = {
     "twohanded": "two_handed_weapons",
 }
 
+_SKILL_KEY_TO_ID = {
+    "edged_weapons": 5,
+    "blunt_weapons": 6,
+    "two_handed_weapons": 7,
+    "ranged_weapons": 8,
+    "polearm_weapons": 10,
+    "brawling": 11,
+    "multi_opponent_combat": 12,
+    "combat_maneuvers": 4,
+    "dodging": 14,
+}
+
 
 def _get_skill_ranks(session, skill_key: str) -> int:
     skills = getattr(session, 'skills', {}) or {}
-    d = skills.get(skill_key) or skills.get(skill_key.replace('_', ' '))
+    normalized = str(skill_key or '').strip().lower()
+    skill_id = _SKILL_KEY_TO_ID.get(normalized)
+    d = (
+        skills.get(normalized)
+        or skills.get(normalized.replace('_', ' '))
+        or (skills.get(skill_id) if skill_id is not None else None)
+        or (skills.get(str(skill_id)) if skill_id is not None else None)
+    )
     if isinstance(d, dict):
         return int(d.get('ranks', 0))
     return int(d or 0)
@@ -108,10 +127,19 @@ def _session_to_entity(session) -> dict:
     skills = getattr(session, 'skills', {}) or {}
 
     def _ranks(key):
-        d = skills.get(key) or skills.get(key.replace('_', ' ')) or {}
+        normalized = str(key or '').strip().lower()
+        skill_id = _SKILL_KEY_TO_ID.get(normalized)
+        d = (
+            skills.get(normalized)
+            or skills.get(normalized.replace('_', ' '))
+            or (skills.get(skill_id) if skill_id is not None else None)
+            or (skills.get(str(skill_id)) if skill_id is not None else None)
+            or {}
+        )
         return int(d.get('ranks', 0)) if isinstance(d, dict) else int(d or 0)
 
     stats = getattr(session, 'stats', {}) or {}
+    profession_name = _resolve_profession_name(session, getattr(session, "server", None))
 
     return {
         'skill_ranks': {
@@ -137,7 +165,7 @@ def _session_to_entity(session) -> dict:
         'race_id':             int(getattr(session, 'race_id', 0) or 0),
         'level':               int(getattr(session, 'level', 1) or 1),
         'stance':              getattr(session, 'stance', 'neutral') or 'neutral',
-        'profession_name':     getattr(session, 'profession_name', None) or getattr(session, 'profession', '') or '',
+        'profession_name':     profession_name,
         'stamina':             int(getattr(session, 'stamina_current', 0) or 0),
         'smr_off_bonus':       int(getattr(session, 'smr_off_bonus', 0) or 0),
         'smr_def_bonus':       int(getattr(session, 'smr_def_bonus', 0) or 0),
@@ -1177,7 +1205,7 @@ async def check_and_grant_techniques(session, skill_name: str,
         # Persist to DB
         try:
             db = server.db
-            db.execute_query("""
+            db.execute_update("""
                 INSERT INTO character_weapon_techniques (character_id, technique_id, current_rank)
                 SELECT %s, wt.id, %s
                 FROM weapon_techniques wt
@@ -1193,14 +1221,39 @@ async def check_and_grant_techniques(session, skill_name: str,
 
         if is_new:
             messages.append(
-                colorize(f"You have learned the {name} weapon technique!", TextPresets.HIGHLIGHT)
+                colorize(f"You have learned the {name} weapon technique!", TextPresets.LEVEL_UP)
             )
         else:
             messages.append(
-                colorize(f"Your {name} technique has improved to rank {new_rank}!", TextPresets.HIGHLIGHT)
+                colorize(f"Your {name} technique has improved to rank {new_rank}!", TextPresets.LEVEL_UP)
             )
 
     return messages
+
+
+async def reconcile_techniques_for_session(session, server, notify: bool = False) -> List[str]:
+    """
+    Backfill weapon techniques from the character's current trained weapon skills.
+    This is used on session load so previously qualified techniques are not missed
+    just because the auto-grant path was broken when the ranks were trained.
+    """
+    skill_names = (
+        "edged_weapons",
+        "blunt_weapons",
+        "two_handed_weapons",
+        "ranged_weapons",
+        "polearm_weapons",
+        "brawling",
+    )
+    all_messages: List[str] = []
+    for skill_name in skill_names:
+        ranks = _get_skill_ranks(session, skill_name)
+        if ranks <= 0:
+            continue
+        messages = await check_and_grant_techniques(session, skill_name, ranks, server)
+        if notify and messages:
+            all_messages.extend(messages)
+    return all_messages
 
 
 # ── Session loader ────────────────────────────────────────────────────────────
@@ -1211,13 +1264,23 @@ def load_techniques_for_session(session, db):
     Call this during session login / character load.
     """
     try:
-        rows = db.fetch_all("""
-            SELECT wt.mnemonic, cwt.current_rank
-            FROM character_weapon_techniques cwt
-            JOIN weapon_techniques wt ON wt.id = cwt.technique_id
-            WHERE cwt.character_id = %s
-        """, (session.character_id,))
-        session.weapon_techniques = {row['mnemonic']: row['current_rank'] for row in (rows or [])}
+        conn = db._get_conn()
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute("""
+                SELECT wt.mnemonic, cwt.current_rank
+                FROM character_weapon_techniques cwt
+                JOIN weapon_techniques wt ON wt.id = cwt.technique_id
+                WHERE cwt.character_id = %s
+            """, (session.character_id,))
+            rows = cur.fetchall()
+        finally:
+            conn.close()
+        session.weapon_techniques = {
+            str(row.get('mnemonic') or ''): int(row.get('current_rank') or 0)
+            for row in (rows or [])
+            if row.get('mnemonic')
+        }
     except Exception as e:
         log.error("load_techniques_for_session error: %s", e)
         session.weapon_techniques = {}

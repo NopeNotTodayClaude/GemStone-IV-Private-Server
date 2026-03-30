@@ -183,6 +183,18 @@ class LuaManager:
         from server.core.scripting.loaders.traps_loader import load_traps
         return self._load_once("traps", lambda: load_traps(self._engine))
 
+    def get_weapon_techniques(self) -> Optional[dict]:
+        from server.core.scripting.loaders.weapon_techniques_loader import load_weapon_techniques
+        return self._load_once("weapon_techniques", lambda: load_weapon_techniques(self._engine))
+
+    def get_combat_maneuvers(self) -> Optional[dict]:
+        from server.core.scripting.loaders.combat_maneuvers_loader import load_combat_maneuvers
+        return self._load_once("combat_maneuvers", lambda: load_combat_maneuvers(self._engine))
+
+    def get_hotbar_actions(self) -> Optional[dict]:
+        from server.core.scripting.loaders.hotbar_actions_loader import load_hotbar_actions
+        return self._load_once("hotbar_actions", lambda: load_hotbar_actions(self._engine))
+
     # ── Spell seeding ─────────────────────────────────────────────────────────
 
     async def seed_spells(self) -> dict:

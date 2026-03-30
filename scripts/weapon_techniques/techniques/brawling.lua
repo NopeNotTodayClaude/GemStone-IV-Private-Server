@@ -216,7 +216,7 @@ function Brawling.fury(ctx)
         end
     end
 
-    table.insert(round_msgs, tech.msg_final:gsub("{target}", target_name))
+    table.insert(round_msgs, (tech.msg_final:gsub("{target}", target_name)))
 
     local effects = {}
     if any_success then

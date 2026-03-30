@@ -128,21 +128,24 @@ class SyncServer:
         # Push an immediate snapshot so the client doesn't have to wait 1s
         await self._push_immediate(character_id)
 
-        # Keep the connection alive — server pushes, client does not send
-        # We still need to detect client disconnects
+        # Keep the connection alive. The client mainly receives pushes, but
+        # hotbar actions are sent back over the same socket as NDJSON events.
         try:
             while True:
-                # Wait for any data (client shouldn't send anything after auth)
-                # A zero-length read means disconnect
                 try:
-                    data = await asyncio.wait_for(reader.read(64), timeout=30.0)
+                    raw = await asyncio.wait_for(reader.readline(), timeout=30.0)
                 except asyncio.TimeoutError:
-                    # Normal idle case: sync clients are receive-only after auth.
-                    # Keep the connection alive and continue serving push updates.
                     continue
-                if not data:
+                if not raw:
                     break
-                # Ignore any unexpected client data silently
+                try:
+                    msg = json.loads(raw.strip())
+                except Exception:
+                    continue
+                try:
+                    await self._handle_client_event(character_id, msg)
+                except Exception as e:
+                    log.debug("SyncServer: client event error for character_id=%d: %s", character_id, e)
         except asyncio.CancelledError:
             pass
         except (ConnectionResetError, BrokenPipeError):
@@ -262,6 +265,58 @@ class SyncServer:
                     return
         except Exception as e:
             log.exception("SyncServer: immediate push failed: %s", e)
+
+    def _get_session(self, character_id: int):
+        try:
+            for session in self._server.sessions.playing():
+                if int(getattr(session, "character_id", 0) or 0) == int(character_id):
+                    return session
+        except Exception:
+            return None
+        return None
+
+    async def _handle_client_event(self, character_id: int, msg: dict):
+        event_type = str(msg.get("type") or "").strip().lower()
+        if not event_type:
+            return
+
+        session = self._get_session(character_id)
+        if not session:
+            return
+
+        hotbar = getattr(self._server, "hotbar", None)
+        broadcaster = getattr(self._server, "sync_broadcaster", None)
+
+        if event_type == "hotbar_execute" and hotbar:
+            slot = int(msg.get("slot", 0) or 0)
+            target_name = str(msg.get("target") or "").strip()
+            ok, notice = await hotbar.execute_slot(session, slot, target_name=target_name)
+            if notice:
+                await session.send_line(notice)
+                await session.send_prompt()
+            if broadcaster:
+                await broadcaster.broadcast_session(session)
+            return
+
+        if event_type == "hotbar_assign" and hotbar:
+            slot = int(msg.get("slot", 0) or 0)
+            category_key = str(msg.get("category") or "").strip()
+            action_key = str(msg.get("action_key") or "").strip()
+            ok, notice = await hotbar.assign_slot(session, slot, category_key, action_key)
+            if not ok and notice:
+                await self.send_event(character_id, {"type": "hotbar_notice", "message": notice})
+            if broadcaster:
+                await broadcaster.broadcast_session(session)
+            return
+
+        if event_type == "hotbar_clear" and hotbar:
+            slot = int(msg.get("slot", 0) or 0)
+            ok, notice = await hotbar.clear_slot(session, slot)
+            if not ok and notice:
+                await self.send_event(character_id, {"type": "hotbar_notice", "message": notice})
+            if broadcaster:
+                await broadcaster.broadcast_session(session)
+            return
 
     # ── Token cache management (called by game_server at login/logout) ────────
 

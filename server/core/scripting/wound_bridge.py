@@ -108,8 +108,9 @@ class WoundBridge:
         # Use rt.eval("{}") to create Lua tables — lupa has no rt.table() method.
         rt = self._lua_engine._lua
 
+        sanitized_wounds = self._sanitize_wounds_dict(wounds_dict)
         lua_tbl = rt.eval("{}")
-        for loc, entry in (wounds_dict or {}).items():
+        for loc, entry in sanitized_wounds.items():
             e = rt.eval("{}")
             e['wound_rank']  = int(entry.get('wound_rank',  0))
             e['scar_rank']   = int(entry.get('scar_rank',   0))
@@ -214,11 +215,12 @@ class WoundBridge:
     # Session wound accessors
     # ──────────────────────────────────────────────────────────────────
 
-    @staticmethod
-    def get_wounds(session) -> dict:
+    def get_wounds(self, session) -> dict:
         """Return session.wounds, initialising to empty dict if absent."""
         if not hasattr(session, 'wounds') or session.wounds is None:
             session.wounds = {}
+        else:
+            session.wounds = self._sanitize_wounds_dict(session.wounds)
         return session.wounds
 
     def _normalize_location_key(self, location: str) -> str:
@@ -254,6 +256,35 @@ class WoundBridge:
             'bandaged': bandaged,
         }
 
+    def _sanitize_wounds_dict(self, wounds_dict: dict) -> dict:
+        if not isinstance(wounds_dict, dict):
+            return {}
+
+        cleaned = {}
+        for loc, entry in wounds_dict.items():
+            norm_loc = self._normalize_location_key(loc)
+            if not norm_loc:
+                continue
+
+            sanitized = self._sanitize_wound_entry(entry)
+            if sanitized is None:
+                continue
+
+            existing = cleaned.get(norm_loc)
+            if existing:
+                sanitized = self._sanitize_wound_entry({
+                    'wound_rank': max(int(existing.get('wound_rank', 0) or 0), sanitized['wound_rank']),
+                    'scar_rank': max(int(existing.get('scar_rank', 0) or 0), sanitized['scar_rank']),
+                    'is_bleeding': bool(existing.get('is_bleeding')) or sanitized['is_bleeding'],
+                    'bandaged': bool(existing.get('bandaged')) or sanitized['bandaged'],
+                })
+                if sanitized is None:
+                    continue
+
+            cleaned[norm_loc] = sanitized
+
+        return cleaned
+
     def _clear_fully_recovered_minor_wound(self, session, entry: dict) -> Optional[dict]:
         """
         Preserve the legacy behavior where trivial wounds disappear once the
@@ -278,9 +309,8 @@ class WoundBridge:
 
         return cleaned
 
-    @staticmethod
-    def _set_wounds(session, wounds_dict: dict):
-        session.wounds = wounds_dict
+    def _set_wounds(self, session, wounds_dict: dict):
+        session.wounds = self._sanitize_wounds_dict(wounds_dict)
 
     def sync_session_state(self, session):
         """Mirror canonical wound data into legacy injury/status state."""

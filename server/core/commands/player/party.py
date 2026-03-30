@@ -191,6 +191,7 @@ async def party_follow_move(mover_session, from_room, to_room, direction, server
 
     from server.core.commands.player.movement import _move_player
 
+    moved_sessions = [mover_session]
     for follower in followers:
         try:
             # Notify the follower what's happening
@@ -202,9 +203,20 @@ async def party_follow_move(mover_session, from_room, to_room, direction, server
             )
             await _move_player(follower, from_room, to_room, direction, server,
                                sneaking=False)
+            moved_sessions.append(follower)
         except Exception as e:
             log.error("party_follow_move: error moving %s: %s",
                       getattr(follower, 'character_name', '?'), e)
+
+    # Party-dragged members do not generate a fresh sync snapshot until the
+    # next 1-second sync tick. Push immediately so companion visibility stays
+    # in lockstep for the mover and every dragged member.
+    broadcaster = getattr(server, "sync_broadcaster", None)
+    if broadcaster and moved_sessions:
+        try:
+            await broadcaster.broadcast_sessions(moved_sessions)
+        except Exception as e:
+            log.error("party_follow_move: sync refresh failed: %s", e)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -85,6 +85,20 @@ class SyncClient:
         with self._lock:
             return self._running
 
+    def send_event(self, payload: dict) -> bool:
+        """Send one post-auth sync event to the server."""
+        with self._lock:
+            sock = self._sock
+            running = self._running
+        if not running or not sock:
+            return False
+        try:
+            line = json.dumps(payload, separators=(",", ":")) + "\n"
+            sock.sendall(line.encode("utf-8"))
+            return True
+        except OSError:
+            return False
+
     # ── Internal ─────────────────────────────────────────────────────────────
 
     def _run(self):

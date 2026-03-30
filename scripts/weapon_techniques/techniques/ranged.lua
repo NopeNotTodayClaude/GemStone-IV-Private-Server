@@ -192,7 +192,7 @@ function Ranged.barrage(ctx)
         end
     end
 
-    table.insert(round_msgs, (tech.msg_final or "You lower your bow as your barrage concludes!"):gsub("{target}", target_name))
+    table.insert(round_msgs, ((tech.msg_final or "You lower your bow as your barrage concludes!"):gsub("{target}", target_name)))
 
     local effects = {}
     if any_success then

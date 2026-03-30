@@ -339,6 +339,13 @@ def build_snapshot(session, server) -> dict:
         pass
 
     room = getattr(session, "current_room", None)
+    hotbar = {}
+    try:
+        hotbar_mgr = getattr(server, "hotbar", None)
+        if hotbar_mgr:
+            hotbar = hotbar_mgr.build_sync_state(session)
+    except Exception:
+        log.exception("Failed building hotbar sync state for %s", getattr(session, "character_name", "unknown"))
 
     return {
         "type":           "state",
@@ -368,6 +375,7 @@ def build_snapshot(session, server) -> dict:
         "aimed_location": getattr(session, "aimed_location", None),
         "right_hand":     _item_noun(getattr(session, "right_hand", None)),
         "left_hand":      _item_noun(getattr(session, "left_hand",  None)),
+        "hotbar":         hotbar,
     }
 
 
@@ -930,6 +938,36 @@ class SyncBroadcaster:
 
     def __init__(self, server):
         self._server = server
+
+    async def broadcast_session(self, session):
+        """Push a fresh snapshot to one connected sync client."""
+        sync_srv = getattr(self._server, "sync_server", None)
+        if not sync_srv:
+            return
+        if not session or session.state != "playing" or not session.character_id:
+            return
+        if not sync_srv.is_connected(session.character_id):
+            return
+        snapshot = _json_safe(build_snapshot(session, self._server))
+        line = json.dumps(snapshot, separators=(",", ":")) + "\n"
+        await sync_srv.send(session.character_id, line)
+
+    async def broadcast_sessions(self, sessions):
+        """Push fresh snapshots to a sequence of sessions."""
+        seen_ids = set()
+        for session in sessions or []:
+            char_id = getattr(session, "character_id", None)
+            if not char_id or char_id in seen_ids:
+                continue
+            seen_ids.add(char_id)
+            try:
+                await self.broadcast_session(session)
+            except Exception as e:
+                log.exception(
+                    "SyncBroadcaster: error pushing immediate snapshot to %s: %s",
+                    getattr(session, "character_name", "unknown"),
+                    e,
+                )
 
     async def broadcast_all(self):
         """Push a fresh snapshot to every connected sync client."""

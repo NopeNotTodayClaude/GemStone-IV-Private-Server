@@ -39,10 +39,18 @@ from server.core.engine.guild_engine import GuildEngine
 from server.core.engine.tracking.trail_tracker import TrailTracker
 from server.core.engine.pets.pet_manager import PetManager
 from server.core.engine.traps import TrapManager
+from server.core.engine.hotbar_manager import HotbarManager
 from server.core.commands.player.training import _try_load_lua_skills
 from server.core.commands.player.inventory import restore_inventory_state
 from server.core.scripting.loaders.ambush_loader import load_ambush_cfg
 from server.core.scripting.loaders.perception_loader import load_perception_cfg
+from server.core.scripting.loaders.weapon_techniques_loader import sync_weapon_techniques
+from server.core.scripting.loaders.combat_maneuvers_loader import sync_combat_maneuvers
+from server.core.scripting.lua_bindings.weapon_api import (
+    load_techniques_for_session,
+    reconcile_techniques_for_session,
+)
+from server.core.scripting.lua_bindings.combat_maneuver_api import load_combat_maneuvers_for_session
 
 log = logging.getLogger(__name__)
 
@@ -87,6 +95,7 @@ class GameServer:
         self.tracking = TrailTracker(self)
         self.pets = PetManager(self)
         self.traps = TrapManager(self)
+        self.hotbar = HotbarManager(self)
         self.perception_cfg  = {}                           # Loaded from globals/perception.lua after Lua init
 
         self._tcp_server  = None
@@ -125,6 +134,18 @@ class GameServer:
             log.warning("Lua engine unavailable — falling back to hardcoded Python data.")
 
         _try_load_lua_skills(self)
+        try:
+            defs = self.lua.get_weapon_techniques() or {}
+            synced = sync_weapon_techniques(self.db, defs) if self.db and defs else 0
+            log.info("Weapon techniques synced from Lua (%d defs)", synced)
+        except Exception as _wt_err:
+            log.error("Weapon technique sync failed: %s", _wt_err, exc_info=True)
+        try:
+            defs = self.lua.get_combat_maneuvers() or {}
+            synced = sync_combat_maneuvers(self.db, defs) if self.db and defs else 0
+            log.info("Combat maneuvers synced from Lua (%d defs)", synced)
+        except Exception as _cman_err:
+            log.error("Combat maneuver sync failed: %s", _cman_err, exc_info=True)
 
         # Load perception system config from Lua (scripts/globals/perception.lua)
         # Loaded before wound_bridge so all subsystems can reference it via server.perception_cfg
@@ -493,6 +514,10 @@ class GameServer:
         # Load inventory from DB
         if self.db and session.character_id:
             restore_inventory_state(self, session)
+            load_techniques_for_session(session, self.db)
+            await reconcile_techniques_for_session(session, self, notify=False)
+            load_combat_maneuvers_for_session(session, self.db)
+            self.hotbar.load_for_session(session)
             if getattr(self, "wound_bridge", None):
                 await self.wound_bridge.load_wounds(session)
 
@@ -585,6 +610,10 @@ class GameServer:
         # Load inventory from DB
         if self.db and session.character_id:
             restore_inventory_state(self, session)
+            load_techniques_for_session(session, self.db)
+            await reconcile_techniques_for_session(session, self, notify=False)
+            load_combat_maneuvers_for_session(session, self.db)
+            self.hotbar.load_for_session(session)
 
         # Generate real-time sync token
         if self.db and session.character_id:

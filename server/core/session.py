@@ -109,6 +109,13 @@ class Session:
         self.guild_membership = None
         self.guild_skills = {}
         self.guild_tasks = []
+        self.combat_maneuvers = {}
+        self.combat_maneuver_settings = {}
+        self.combat_maneuver_bonuses = []
+        self.combat_maneuver_attack_context = None
+        self.combat_maneuver_last_attack = None
+        self.reaction_triggers = {}
+        self.hotbar_slots = {}
 
         # Appearance
         self.height = 70
@@ -138,6 +145,8 @@ class Session:
         # Spell state
         self.prepared_spell = None
         self.active_spells = {}
+        self.spell_ranks = {}
+        self.spellbook = []
 
         # Status
         self.position = "standing"
@@ -239,6 +248,7 @@ class Session:
 
         self.health_current  = _int("health_current", 100)
         self.health_max      = _int("health_max", 100)
+        self._combat_maneuver_base_health_max = self.health_max
         self.mana_current    = _int("mana_current", 0)
         self.mana_max        = _int("mana_max", 0)
         self.spirit_current  = _int("spirit_current", 10)
@@ -288,6 +298,15 @@ class Session:
         self.guild_membership = char_data.get("guild_membership")
         self.guild_skills = char_data.get("guild_skills", {})
         self.guild_tasks = char_data.get("guild_tasks", [])
+        self.combat_maneuvers = {}
+        self.combat_maneuver_settings = {}
+        self.combat_maneuver_bonuses = []
+        self.combat_maneuver_attack_context = None
+        self.combat_maneuver_last_attack = None
+        self.reaction_triggers = {}
+        self.hotbar_slots = {}
+        self.spell_ranks = {}
+        self.spellbook = []
         self.starting_room_id = _int("starting_room_id", _int("current_room_id", 221))
 
         # Load tutorial state from database (0/1 -> bool for tutorial_complete)

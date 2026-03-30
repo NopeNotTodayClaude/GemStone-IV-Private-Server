@@ -229,7 +229,7 @@ function Edged.flurry(ctx)
         end
     end
 
-    table.insert(round_msgs, (tech.msg_final or "With a final flourish you step back from "..target_name.."!"):gsub("{target}", target_name))
+    table.insert(round_msgs, ((tech.msg_final or "With a final flourish you step back from "..target_name.."!"):gsub("{target}", target_name)))
 
     local effects = {}
     if any_success then

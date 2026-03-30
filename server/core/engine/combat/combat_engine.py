@@ -39,6 +39,13 @@ from server.core.scripting.loaders.body_types_loader import (
 from server.core.engine.combat.material_combat import (
     resolve_flare, get_crit_phantom, resolve_armor_flare
 )
+from server.core.scripting.lua_bindings.weapon_api import set_reaction_trigger
+from server.core.scripting.lua_bindings.combat_maneuver_api import (
+    consume_on_attack_bonuses,
+    get_passive_combat_mods,
+    get_temp_combat_bonus_totals,
+    maybe_auto_stand_before_attack,
+)
 
 log = logging.getLogger(__name__)
 
@@ -659,9 +666,13 @@ class CombatEngine:
             return await self._ucs_punch_attack(session, creature)
 
         weapon_name = _get_weapon_name(weapon)
+        cman_ctx = dict(getattr(session, "combat_maneuver_attack_context", None) or {})
+        session.combat_maneuver_attack_context = None
+        session.combat_maneuver_last_attack = None
 
         # Calculate player AS
         player_as = self._calc_player_as(session)
+        player_as += int(cman_ctx.get("as_bonus", 0) or 0)
 
         # Calculate creature DS (feint debuff lowers it temporarily)
         creature_ds = creature.get_melee_ds()
@@ -669,6 +680,9 @@ class CombatEngine:
         feint_until = getattr(creature, "_feint_until", 0)
         if feint_until > _ft.time():
             creature_ds = creature_ds // 2  # feint halves creature DS for one attack
+        ebp_reduce_pct = int(cman_ctx.get("ebp_reduce_pct", 0) or 0)
+        if ebp_reduce_pct > 0:
+            creature_ds = max(0, int(creature_ds * (1.0 - (ebp_reduce_pct / 100.0))))
 
         ambush_profile = None
         if is_ambush:
@@ -677,7 +691,12 @@ class CombatEngine:
             player_as += ambush_profile["as_bonus"]
 
         # Roll
-        d100 = random.randint(1, 100)
+        roll_floor = int(cman_ctx.get("roll_floor", 0) or 0)
+        roll_sides = int(cman_ctx.get("roll_sides", 0) or 0)
+        if roll_floor > 0 and roll_sides > 0:
+            d100 = roll_floor + random.randint(1, max(1, roll_sides))
+        else:
+            d100 = random.randint(1, 100)
         endroll = None
 
         # Determine hit location — respects session.aimed_location and does aim roll
@@ -692,6 +711,7 @@ class CombatEngine:
         )
         damage_type = profile["damage_type"]
         weapon_df = profile["df"]
+        weapon_df *= float(cman_ctx.get("df_mult", 1.0) or 1.0)
         avd = profile["avd"]
         endroll = d100 + player_as - creature_ds + avd
 
@@ -732,11 +752,19 @@ class CombatEngine:
                 rt = 5
             if is_ambush:
                 rt = max(3, rt - (ambush_profile["rt_reduction"] if ambush_profile else 1))
+            rt += int(cman_ctx.get("roundtime_modifier", 0) or 0)
             rt += encumbrance_rt_penalty(session)
             rt = apply_roundtime_effects(rt, self.server, session)
             rt = max(3, min(rt, 12))
             session.set_roundtime(rt)
             await session.send_line(roundtime_msg(rt))
+            session.combat_maneuver_last_attack = {
+                "hit": False,
+                "damage": 0,
+                "endroll": endroll,
+                "killed": False,
+            }
+            consume_on_attack_bonuses(session)
 
             _enter_combat(self.server, session, creature)
             if off_weapon:
@@ -762,6 +790,7 @@ class CombatEngine:
         crit_phantom  = get_crit_phantom(weapon, self.server.lua)
         if ambush_profile:
             crit_phantom += ambush_profile["crit_phantom"]
+        crit_phantom += int(cman_ctx.get("crit_phantom", 0) or 0)
         adj_raw       = raw_damage + crit_phantom
         crit_divisor  = max(1, int(CRIT_DIVISORS.get(creature.armor_asg, 5) * LOCATION_CRIT_DIV_MULT.get(location, 1.0)))
         crit_rank_max = min(9, adj_raw // crit_divisor)
@@ -938,6 +967,12 @@ class CombatEngine:
             f"  Hit for {actual_damage} points of damage to the {location}.{chr(10) + crit_obs if crit_obs else ''}",
             exclude=session
         )
+        if cman_ctx.get("force_target_stance"):
+            order = ["defensive", "guarded", "neutral", "forward", "advance", "offensive"]
+            current = str(getattr(creature, "stance", "neutral") or "neutral").lower()
+            if current not in order:
+                current = "neutral"
+            creature.stance = order[min(len(order) - 1, order.index(current) + 1)]
 
         # Check death
         killed = False
@@ -990,12 +1025,21 @@ class CombatEngine:
             rt = weapon.get('weapon_speed', 5) if weapon else 5
         if is_ambush:
             rt = max(3, rt - (ambush_profile["rt_reduction"] if ambush_profile else 1))
+        rt += int(cman_ctx.get("roundtime_modifier", 0) or 0)
         # Encumbrance adds to RT (stacks on top of weapon speed)
         rt += encumbrance_rt_penalty(session)
         rt = apply_roundtime_effects(rt, self.server, session)
         rt = max(3, min(rt, 12))   # floor 3, cap 12
         session.set_roundtime(rt)
         await session.send_line(roundtime_msg(rt))
+        session.combat_maneuver_last_attack = {
+            "hit": True,
+            "damage": actual_damage,
+            "endroll": endroll,
+            "killed": killed,
+            "location": location,
+        }
+        consume_on_attack_bonuses(session)
 
         # Enter / refresh combat state
         if not killed:
@@ -1075,6 +1119,13 @@ class CombatEngine:
             session.target    = creature
             creature.in_combat = True
             creature.target   = session
+            session.combat_maneuver_last_attack = {
+                "hit": False,
+                "damage": 0,
+                "endroll": endroll,
+                "killed": False,
+            }
+            consume_on_attack_bonuses(session)
             return False
 
         # Hit — UCS damage uses punch DF by armor group (wiki table)
@@ -1173,6 +1224,14 @@ class CombatEngine:
 
         session.set_roundtime(3)   # punch base RT per wiki
         await session.send_line(roundtime_msg(3))
+        session.combat_maneuver_last_attack = {
+            "hit": True,
+            "damage": actual_damage,
+            "endroll": endroll,
+            "killed": killed,
+            "location": location,
+        }
+        consume_on_attack_bonuses(session)
         return killed
 
     # ================================================================
@@ -1348,6 +1407,8 @@ class CombatEngine:
         """Resolve a creature attack against a player."""
         if not creature.can_act():
             return
+        if maybe_auto_stand_before_attack(session, self.server):
+            await session.send_line(colorize("  Combat Mobility snaps you back to your feet!", TextPresets.SYSTEM))
 
         # Dead players are untouchable — drop aggro and bail
         if getattr(session, "is_dead", False):
@@ -1421,6 +1482,7 @@ class CombatEngine:
         # Shield block
         if shield_blocked:
             shield_name = player_shield.get('short_name') or 'shield'
+            set_reaction_trigger(session, "recent_block")
             await session.send_line(swing_line)
             await session.send_line(colorize(roll_line, TextPresets.COMBAT_MISS))
             await session.send_line(colorize(
@@ -1445,12 +1507,15 @@ class CombatEngine:
             if block_ds >= parry_ds and block_ds >= evade_ds and block_ds > 0:
                 shield = _get_player_shield(session)
                 sname  = shield.get("short_name", "shield") if shield else "shield"
+                set_reaction_trigger(session, "recent_block")
                 await session.send_line(colorize(f"  You raise your {sname} and deflect the blow!", TextPresets.SYSTEM))
             elif parry_ds >= evade_ds and parry_ds > 0 and weapon_equipped:
                 weapon, _ = _get_player_weapon(session)
                 wname = weapon.get("short_name", "weapon") if weapon else "weapon"
+                set_reaction_trigger(session, "recent_parry")
                 await session.send_line(colorize(f"  You parry with your {wname}!", TextPresets.SYSTEM))
             elif evade_ds > 0:
+                set_reaction_trigger(session, "recent_evade")
                 dodge_msgs = [
                     "  You dodge out of the way!",
                     "  You sidestep the attack!",
@@ -1692,7 +1757,17 @@ class CombatEngine:
         weapon, _ = _get_player_weapon(session)
 
         buffs = _buff_totals(session, self.server)
-        str_bonus = ((session.stat_strength + int(buffs.get("strength_bonus", 0) or 0) - int(buffs.get("strength_penalty", 0) or 0)) - 50) // 2
+        cman_passive = get_passive_combat_mods(session, self.server)
+        cman_temp = get_temp_combat_bonus_totals(session)
+        str_bonus = (
+            (
+                session.stat_strength
+                + int(buffs.get("strength_bonus", 0) or 0)
+                + int(cman_temp.get("strength_bonus", 0) or 0)
+                - int(buffs.get("strength_penalty", 0) or 0)
+            )
+            - 50
+        ) // 2
         cm_bonus  = _sr(session, SKILL_COMBAT_MANEUVERS) // 2
 
         if weapon:
@@ -1709,6 +1784,8 @@ class CombatEngine:
         raw_as = str_bonus + skill_bonus + cm_bonus + enchant + attack_bonus
         raw_as += int(buffs.get("as_bonus", 0) or 0)
         raw_as -= int(buffs.get("as_penalty", 0) or 0)
+        raw_as += int(cman_passive.get("as_bonus", 0) or 0)
+        raw_as += int(cman_temp.get("as_bonus", 0) or 0)
 
         # Action penalty from armor — Armor Use ranks reduce it
         # GS4: full penalty at 0 Armor Use ranks, 0 penalty at sufficient ranks
@@ -1754,12 +1831,14 @@ class CombatEngine:
 
         UAF is NOT affected by stance (stance affects MM instead).
         """
+        cman_temp = get_temp_combat_bonus_totals(session)
         brawling_ranks = _sr(session, SKILL_BRAWLING)
         cm_ranks       = _sr(session, SKILL_COMBAT_MANEUVERS)
-        str_bonus      = (getattr(session, 'stat_strength',  50) - 50) // 2
-        agi_bonus      = (getattr(session, 'stat_agility',   50) - 50) // 2
+        str_bonus      = ((getattr(session, 'stat_strength',  50) + int(cman_temp.get("strength_bonus", 0) or 0)) - 50) // 2
+        agi_bonus      = ((getattr(session, 'stat_agility',   50) + int(cman_temp.get("agility_bonus", 0) or 0)) - 50) // 2
 
         uaf = (brawling_ranks * 2) + (cm_ranks // 2) + (str_bonus // 2) + (agi_bonus // 2)
+        uaf += int(cman_temp.get("as_bonus", 0) or 0)
 
         # Glove enchant bonus (worn UCS hand equipment)
         for item in getattr(session, 'inventory', []):
@@ -1793,10 +1872,12 @@ class CombatEngine:
     def _calc_player_ds_breakdown(self, session):
         """GS4 canonical DS breakdown → (total, evade_ds, parry_ds, block_ds)."""
         buffs = _buff_totals(session, self.server)
+        cman_passive = get_passive_combat_mods(session, self.server)
+        cman_temp = get_temp_combat_bonus_totals(session)
         str_bonus = ((session.stat_strength + int(buffs.get("strength_bonus", 0) or 0) - int(buffs.get("strength_penalty", 0) or 0)) - 50) // 2
-        dex_bonus = (session.stat_dexterity - 50) // 2
-        agi_bonus = (session.stat_agility   - 50) // 2
-        int_bonus = (session.stat_intuition - 50) // 2
+        dex_bonus = ((session.stat_dexterity + int(cman_temp.get("dexterity_bonus", 0) or 0)) - 50) // 2
+        agi_bonus = ((session.stat_agility + int(cman_temp.get("agility_bonus", 0) or 0)) - 50) // 2
+        int_bonus = ((session.stat_intuition + int(cman_temp.get("intuition_bonus", 0) or 0)) - 50) // 2
 
         def_pct = {
             "offensive": 0.0, "advance": 0.2, "forward": 0.4,
@@ -1839,6 +1920,17 @@ class CombatEngine:
 
         evade_stance = 0.75 + (def_pct * 0.25)
         evade_ds = int((int(int(evade_base * hindrance) * s_factor) - s_penalty) * evade_stance)
+        evade_ds += int(cman_passive.get("ds_bonus", 0) or 0) // 3
+        evade_ds += int(cman_temp.get("ds_bonus", 0) or 0) // 3
+        evade_ds = int(
+            evade_ds * (
+                1.0
+                + (
+                    int(cman_passive.get("evade_pct_bonus", 0) or 0)
+                    + int(cman_temp.get("evade_pct_bonus", 0) or 0)
+                ) / 100.0
+            )
+        )
         evade_ds = max(0, evade_ds)
 
         # ── Parry DS ──────────────────────────────────────────────────────
@@ -1867,6 +1959,15 @@ class CombatEngine:
             if brawl > 0:
                 p_base   = brawl + int(str_bonus / 4) + int(dex_bonus / 4)
                 parry_ds = int(p_base * ohw_mod.get(stance, 0.50)) + parry_bonus.get(stance, 30)
+        parry_ds = int(
+            parry_ds * (
+                1.0
+                + (
+                    int(cman_passive.get("parry_pct_bonus", 0) or 0)
+                    + int(cman_temp.get("parry_pct_bonus", 0) or 0)
+                ) / 100.0
+            )
+        )
 
         # ── Block DS ──────────────────────────────────────────────────────
         block_ds = 0
@@ -1879,6 +1980,15 @@ class CombatEngine:
             sh_enc       = _calc_effective_enchant(session.level, shield.get("enchant_bonus", 0) or 0)
             block_ds     = int(int(block_base * block_stance) * (1.0 + size_mod)) + size_bonus + sh_enc
             block_ds     = max(0, block_ds)
+        block_ds = int(
+            block_ds * (
+                1.0
+                + (
+                    int(cman_passive.get("block_pct_bonus", 0) or 0)
+                    + int(cman_temp.get("block_pct_bonus", 0) or 0)
+                ) / 100.0
+            )
+        )
 
         # ── Generic DS (status + MOC) ──────────────────────────────────────
         generic_ds = 0
@@ -1914,6 +2024,8 @@ class CombatEngine:
         total = evade_ds + parry_ds + block_ds + generic_ds
         total += int(buffs.get("ds", 0) or 0)
         total -= int(buffs.get("ds_penalty", 0) or 0)
+        total += int(cman_passive.get("ds_bonus", 0) or 0)
+        total += int(cman_temp.get("ds_bonus", 0) or 0)
         total = int(total * getattr(session, "death_stat_mult", 1.0))
 
         # Encumbrance DS penalty (applies after death_stat_mult)

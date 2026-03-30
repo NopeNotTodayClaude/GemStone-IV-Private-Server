@@ -319,11 +319,14 @@ class StatusManager:
         as_mod = ds_mod = evade_pct = parry_pct = block_pct = 0
         for se in self.get_all_active(entity):
             cm = self._defs.get(se.effect_id, {}).get("combat_mods", {})
-            as_mod     += cm.get("as",         0)
-            ds_mod     += cm.get("ds",         0)
-            evade_pct  += cm.get("evade_pct",  0)
-            parry_pct  += cm.get("parry_pct",  0)
-            block_pct  += cm.get("block_pct",  0)
+            scale = float(getattr(se, "magnitude", 1.0) or 1.0)
+            stacks = max(1, int(getattr(se, "stacks", 1) or 1))
+            factor = scale * stacks
+            as_mod     += int((cm.get("as", 0) or 0) * factor)
+            ds_mod     += int((cm.get("ds", 0) or 0) * factor)
+            evade_pct  += int((cm.get("evade_pct", 0) or 0) * factor)
+            parry_pct  += int((cm.get("parry_pct", 0) or 0) * factor)
+            block_pct  += int((cm.get("block_pct", 0) or 0) * factor)
         return as_mod, ds_mod, evade_pct, parry_pct, block_pct
 
     # ── Action blocking ───────────────────────────────────────────────────────

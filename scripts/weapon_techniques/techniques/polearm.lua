@@ -147,7 +147,7 @@ function Polearm.gthrusts(ctx)
         end
     end
 
-    table.insert(round_msgs, (tech.msg_final or "With a final thrust you settle into a guarded stance!"):gsub("{target}", target_name))
+    table.insert(round_msgs, ((tech.msg_final or "With a final thrust you settle into a guarded stance!"):gsub("{target}", target_name)))
 
     local effects = {
         -- Fortified Stance on completion (whether success or not)

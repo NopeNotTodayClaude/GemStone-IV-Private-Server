@@ -15,6 +15,7 @@ import time
 import uuid
 import asyncio
 import logging
+from typing import Any
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -22,6 +23,419 @@ log = logging.getLogger(__name__)
 
 WEB_PORT  = 8765
 TOKEN_TTL = 600  # 10 minutes
+
+
+_WT_CATEGORY_LABELS = {
+    'brawling': 'Brawling',
+    'blunt': 'Blunt Weapons',
+    'edged': 'Edged Weapons',
+    'polearm': 'Polearm Weapons',
+    'ranged': 'Ranged Weapons',
+    'twohanded': 'Two-Handed Weapons',
+}
+
+_WT_GEAR_LABELS = {
+    'both_hands': 'Both hands committed',
+    'right_hand': 'Right-hand weapon',
+}
+
+
+def _wt_profession_key(session, server) -> str:
+    explicit = getattr(session, 'profession_name', None) or getattr(session, 'profession', None)
+    if explicit:
+        return str(explicit).strip().lower()
+    lua = getattr(server, 'lua', None)
+    if not lua:
+        return ''
+    try:
+        professions = (lua.get_professions() or {}).get('professions', [])
+        prof_id = int(getattr(session, 'profession_id', 0) or 0)
+        for row in professions:
+            if int(row.get('id', 0) or 0) == prof_id:
+                name = str(row.get('name') or '').strip().lower()
+                if name:
+                    return name
+    except Exception:
+        pass
+    return ''
+
+
+def _wt_compute_max_rank(skill_ranks: int, thresholds: list[int]) -> int:
+    max_rank = 0
+    for idx, threshold in enumerate(thresholds or [], start=1):
+        if skill_ranks >= int(threshold or 0):
+            max_rank = idx
+    return max_rank
+
+
+def _wt_normalize_category(raw: str) -> str:
+    key = str(raw or '').strip().lower().replace('-', '_').replace(' ', '_')
+    if key in ('two_handed', 'twohanded_weapons', 'two_handed_weapons'):
+        return 'twohanded'
+    if key in ('blunt_weapons',):
+        return 'blunt'
+    if key in ('edged_weapons',):
+        return 'edged'
+    if key in ('polearm_weapons',):
+        return 'polearm'
+    if key in ('ranged_weapons',):
+        return 'ranged'
+    return key
+
+
+def _wt_current_weapon_categories(session) -> set[str]:
+    categories: set[str] = set()
+    hands = [getattr(session, 'right_hand', None), getattr(session, 'left_hand', None)]
+    has_non_brawling_weapon = False
+    for item in hands:
+        if not item or item.get('item_type') != 'weapon':
+            continue
+        category = _wt_normalize_category(item.get('weapon_category') or item.get('weapon_type') or '')
+        if not category:
+            continue
+        categories.add(category)
+        if category != 'brawling':
+            has_non_brawling_weapon = True
+    if not has_non_brawling_weapon:
+        categories.add('brawling')
+    return categories
+
+
+def _wt_command_syntax(tech: dict[str, Any]) -> str:
+    mnemonic = str(tech.get('mnemonic') or '').strip().lower()
+    kind = str(tech.get('type') or '').strip().lower()
+    limbs = tech.get('valid_limbs') or []
+    if kind == 'aoe':
+        return f"WEAPON {mnemonic}"
+    if limbs:
+        return f"WEAPON {mnemonic} <target> <limb>"
+    return f"WEAPON {mnemonic} <target>"
+
+
+def _wt_unlock_reason(learned_rank: int, skill_ranks: int, min_ranks: int, profession_ok: bool, loadout_ok: bool, loadout_msg: str) -> str:
+    if not profession_ok:
+        return "Your profession cannot learn this technique."
+    if learned_rank > 0:
+        return ""
+    if skill_ranks < min_ranks:
+        needed = max(0, min_ranks - skill_ranks)
+        return f"Need {needed} more weapon-skill rank{'s' if needed != 1 else ''} to unlock rank 1."
+    if not loadout_ok and loadout_msg:
+        return loadout_msg
+    return "Your current training qualifies for this technique, but it has not been granted yet."
+
+
+def _wt_room_targets(session, server) -> list[str]:
+    room = getattr(session, 'current_room', None)
+    room_id = getattr(room, 'id', None) if room else None
+    if room_id is None:
+        return []
+    targets = []
+    try:
+        creatures = getattr(server, 'creatures', None)
+        if creatures:
+            for creature in creatures.get_creatures_in_room(int(room_id)) or []:
+                if getattr(creature, 'is_alive', True):
+                    name = getattr(creature, 'full_name', None) or getattr(creature, 'name', None)
+                    if name:
+                        targets.append(str(name))
+    except Exception:
+        pass
+    deduped = []
+    seen = set()
+    for target in targets:
+        key = target.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(target)
+    return deduped
+
+
+def _build_weapon_state(session, server) -> dict[str, Any]:
+    lua = getattr(server, 'lua', None)
+    if not lua or not lua.engine:
+        return {'error': 'Weapon technique system unavailable.'}
+
+    from server.core.scripting.lua_bindings.weapon_api import (
+        _get_skill_ranks,
+        _normalize_weapon_skill_key,
+        _validate_technique_loadout,
+    )
+
+    try:
+        defs_lua = lua.engine.require("weapon_techniques/definitions")
+        defs = lua.engine.lua_to_python(defs_lua) if defs_lua else {}
+    except Exception as e:
+        log.error("Training weapon tab: Lua definitions load failed: %s", e, exc_info=True)
+        return {'error': 'Could not load weapon techniques.'}
+
+    profession_key = _wt_profession_key(session, server)
+    learned = dict(getattr(session, 'weapon_techniques', {}) or {})
+    cooldowns = dict(getattr(session, 'technique_cooldowns', {}) or {})
+    now = int(time.time())
+    current_categories = _wt_current_weapon_categories(session)
+    techniques = []
+
+    for mnemonic, tech in (defs or {}).items():
+        if not isinstance(tech, dict):
+            continue
+        if str(mnemonic).startswith('_'):
+            continue
+        canonical = str(tech.get('mnemonic') or mnemonic).strip().lower()
+        if canonical != str(mnemonic).strip().lower():
+            continue
+
+        category_key = str(tech.get('category') or '').strip().lower()
+        skill_key = _normalize_weapon_skill_key(str(tech.get('weapon_skill') or category_key).strip().lower())
+        thresholds = [int(x or 0) for x in (tech.get('rank_thresholds') or [])]
+        if not thresholds:
+            thresholds = [int(tech.get('min_ranks', 0) or 0), 35, 60, 85, 110]
+        skill_ranks = _get_skill_ranks(session, skill_key)
+        max_rank = _wt_compute_max_rank(skill_ranks, thresholds)
+        learned_rank = int(learned.get(canonical, 0) or 0)
+        available_to = [str(v).strip().lower() for v in (tech.get('available_to') or [])]
+        profession_ok = profession_key in available_to if available_to else True
+        loadout_ok, loadout_msg = _validate_technique_loadout(session, tech)
+        cooldown_remaining = max(0, int(cooldowns.get(canonical, 0) or 0) - now)
+        min_ranks = int((thresholds[0] if thresholds else tech.get('min_ranks', 0)) or 0)
+
+        if not profession_ok:
+            availability = 'profession_locked'
+        elif learned_rank > 0:
+            availability = 'learned'
+        elif skill_ranks >= min_ranks:
+            availability = 'available'
+        else:
+            availability = 'locked'
+
+        techniques.append({
+            'mnemonic': canonical,
+            'name': str(tech.get('name') or canonical).strip(),
+            'category': category_key,
+            'category_label': _WT_CATEGORY_LABELS.get(category_key, category_key.title()),
+            'type': str(tech.get('type') or '').strip().lower(),
+            'weapon_skill': skill_key,
+            'weapon_skill_label': skill_key.replace('_', ' ').title(),
+            'description': str(tech.get('description') or '').strip(),
+            'mechanics_notes': str(tech.get('mechanics_notes') or '').strip(),
+            'stamina_cost': int(tech.get('stamina_cost', 0) or 0),
+            'cooldown': int(tech.get('cooldown', 0) or 0),
+            'cooldown_remaining': cooldown_remaining,
+            'base_rt': int(tech.get('base_rt', 0) or 0),
+            'rt_mod': int(tech.get('rt_mod', 0) or 0),
+            'reaction_trigger': str(tech.get('reaction_trigger') or '').strip(),
+            'gear_requirement': str(tech.get('offensive_gear') or '').strip().lower(),
+            'gear_requirement_label': _WT_GEAR_LABELS.get(str(tech.get('offensive_gear') or '').strip().lower(), ''),
+            'available_to': available_to,
+            'profession_ok': profession_ok,
+            'skill_ranks': skill_ranks,
+            'min_ranks': min_ranks,
+            'rank_thresholds': thresholds,
+            'learned_rank': learned_rank,
+            'max_rank': max_rank,
+            'availability': availability,
+            'loadout_ok': bool(loadout_ok),
+            'loadout_message': str(loadout_msg or ''),
+            'valid_limbs': [str(v) for v in (tech.get('valid_limbs') or [])],
+            'is_aoe': str(tech.get('type') or '').strip().lower() == 'aoe',
+            'requires_target': str(tech.get('type') or '').strip().lower() != 'aoe',
+            'command_syntax': _wt_command_syntax({'mnemonic': canonical, 'type': tech.get('type'), 'valid_limbs': tech.get('valid_limbs') or []}),
+            'unlock_reason': _wt_unlock_reason(learned_rank, skill_ranks, min_ranks, profession_ok, loadout_ok, loadout_msg),
+            'current_weapon_match': category_key in current_categories,
+        })
+
+    type_order = {'setup': 0, 'assault': 1, 'reaction': 2, 'aoe': 3, 'concentration': 4}
+    techniques.sort(key=lambda row: (row['category_label'], type_order.get(row['type'], 9), row['min_ranks'], row['name']))
+
+    ready_now = [
+        row for row in techniques
+        if row['current_weapon_match']
+        and row['profession_ok']
+        and row['learned_rank'] > 0
+        and row['loadout_ok']
+        and row['cooldown_remaining'] <= 0
+    ]
+    unlock_path = [
+        row for row in techniques
+        if row['current_weapon_match']
+        and row['profession_ok']
+        and row['learned_rank'] == 0
+    ]
+
+    assault_state = dict(getattr(session, 'weapon_assault_state', {}) or {})
+    active_assault = {
+        'active': bool(assault_state),
+        'mnemonic': str(assault_state.get('mnemonic') or ''),
+        'target': str(assault_state.get('target_name') or ''),
+    }
+
+    return {
+        'stamina': int(getattr(session, 'stamina_current', getattr(session, 'stamina', 0)) or 0),
+        'roundtime': int(session.get_roundtime()) if hasattr(session, 'get_roundtime') else 0,
+        'targets': _wt_room_targets(session, server),
+        'active_assault': active_assault,
+        'current_categories': sorted(current_categories),
+        'ready_now': ready_now,
+        'unlock_path': unlock_path,
+    }
+
+
+def _cm_category_label(meta: dict[str, Any]) -> str:
+    raw = str(meta.get('raw_category') or '').strip()
+    if raw:
+        return raw
+    category = str(meta.get('category') or 'general').strip().replace('_', ' ')
+    return category.title()
+
+
+def _cm_unlock_reason(meta: dict[str, Any], direct_rank: int, max_rank: int, next_cost: int, free_points: int, profession_ok: bool) -> str:
+    if meta.get('is_guild_skill'):
+        return 'Guild-trained maneuver.'
+    if not meta.get('is_learnable', True):
+        return 'Not directly trainable.'
+    if not profession_ok:
+        return 'Profession locked.'
+    if direct_rank >= max_rank:
+        return 'Mastered.'
+    if next_cost <= 0:
+        return 'No additional ranks available.'
+    if next_cost > free_points:
+        needed = next_cost - free_points
+        return f'Need {needed} more CMAN point{"s" if needed != 1 else ""}.'
+    return f'Rank {direct_rank + 1} is available now.'
+
+
+def _cm_passive_summary(session, server) -> list[str]:
+    from server.core.scripting.lua_bindings.combat_maneuver_api import get_passive_combat_mods
+
+    passive = get_passive_combat_mods(session, server)
+    lines = []
+    if int(passive.get('as_bonus', 0) or 0):
+        lines.append(f"+{int(passive['as_bonus'])} AS")
+    if int(passive.get('ds_bonus', 0) or 0):
+        lines.append(f"+{int(passive['ds_bonus'])} DS")
+    if int(passive.get('td_bonus', 0) or 0):
+        lines.append(f"+{int(passive['td_bonus'])} TD")
+    if int(passive.get('smr_def_bonus', 0) or 0):
+        lines.append(f"+{int(passive['smr_def_bonus'])} SMR defense")
+    if int(passive.get('hp_bonus', 0) or 0):
+        lines.append(f"+{int(passive['hp_bonus'])} max HP")
+    if int(passive.get('evade_pct_bonus', 0) or 0):
+        lines.append(f"+{int(passive['evade_pct_bonus'])}% evade")
+    if int(passive.get('parry_pct_bonus', 0) or 0):
+        lines.append(f"+{int(passive['parry_pct_bonus'])}% parry")
+    if int(passive.get('block_pct_bonus', 0) or 0):
+        lines.append(f"+{int(passive['block_pct_bonus'])}% block")
+    if passive.get('auto_stand'):
+        lines.append('Combat Mobility active')
+    return lines
+
+
+def _build_cman_state(session, server) -> dict[str, Any]:
+    from server.core.scripting.lua_bindings.combat_maneuver_api import (
+        _available_cman_points,
+        _combat_defs,
+        _effective_maneuver_rank,
+        _profession_allowed,
+        _spent_cman_points,
+    )
+
+    defs = _combat_defs(server)
+    if not defs:
+        return {'error': 'Combat maneuver system unavailable.'}
+
+    learned = dict(getattr(session, 'combat_maneuvers', {}) or {})
+    free_points = int(_available_cman_points(session, server) or 0)
+    spent_points = int(_spent_cman_points(session, server) or 0)
+    total_points = free_points + spent_points
+    maneuvers = []
+
+    for mnemonic, meta in (defs or {}).items():
+        if str(mnemonic).startswith('_') or not isinstance(meta, dict):
+            continue
+        canonical = str(meta.get('mnemonic') or mnemonic).strip().lower()
+        if canonical != str(mnemonic).strip().lower():
+            continue
+
+        direct_rank = int(learned.get(canonical, 0) or 0)
+        effective_rank = int(_effective_maneuver_rank(session, canonical, meta) or 0)
+        max_rank = int(meta.get('max_rank', 1) or 1)
+        costs = [int(v or 0) for v in (meta.get('rank_costs') or [])]
+        next_cost = costs[direct_rank] if direct_rank < len(costs) else 0
+        profession_ok = bool(_profession_allowed(session, server, meta))
+        is_guild_skill = bool(meta.get('is_guild_skill'))
+        is_learnable = bool(meta.get('is_learnable', True))
+
+        if is_guild_skill:
+            availability = 'guild'
+        elif not is_learnable:
+            availability = 'special'
+        elif not profession_ok:
+            availability = 'profession_locked'
+        elif direct_rank >= max_rank:
+            availability = 'mastered'
+        elif next_cost > 0 and next_cost <= free_points:
+            availability = 'available'
+        else:
+            availability = 'locked'
+
+        maneuvers.append({
+            'mnemonic': canonical,
+            'name': str(meta.get('name') or canonical.title()).strip(),
+            'type': str(meta.get('type') or '').strip().lower(),
+            'type_label': str(meta.get('raw_type') or str(meta.get('type') or '').replace('_', ' ').title()).strip(),
+            'category': str(meta.get('category') or '').strip().lower(),
+            'category_label': _cm_category_label(meta),
+            'description': str(meta.get('description') or '').strip(),
+            'mechanics': str(meta.get('mechanics') or '').strip(),
+            'requirements': str(meta.get('requirements') or '').strip(),
+            'targeting': str(meta.get('targeting') or 'none').strip().lower(),
+            'targeting_label': str(meta.get('targeting') or 'none').strip().replace('_', ' ').title(),
+            'roundtime': str(meta.get('roundtime') or '').strip(),
+            'stamina': str(meta.get('stamina') or '').strip(),
+            'direct_rank': direct_rank,
+            'effective_rank': effective_rank,
+            'max_rank': max_rank,
+            'rank_costs': costs,
+            'next_cost': int(next_cost or 0),
+            'is_guild_skill': is_guild_skill,
+            'is_learnable': is_learnable,
+            'profession_ok': profession_ok,
+            'availability': availability,
+            'can_learn': bool(
+                not is_guild_skill
+                and is_learnable
+                and profession_ok
+                and direct_rank < max_rank
+                and next_cost > 0
+                and next_cost <= free_points
+            ),
+            'can_unlearn': bool(not is_guild_skill and direct_rank > 0),
+            'status_text': _cm_unlock_reason(meta, direct_rank, max_rank, next_cost, free_points, profession_ok),
+        })
+
+    category_order = {'general': 0, 'warrior_guild': 1, 'rogue_guild': 2}
+    type_order = {'passive': 0, 'buff': 1, 'martial_stance': 2, 'setup': 3, 'attack': 4, 'aoe': 5, 'concentration': 6}
+    maneuvers.sort(
+        key=lambda row: (
+            category_order.get(row['category'], 9),
+            row['category_label'],
+            type_order.get(row['type'], 9),
+            row['name'],
+        )
+    )
+
+    return {
+        'free_points': free_points,
+        'spent_points': spent_points,
+        'total_points': total_points,
+        'trained_count': sum(1 for row in maneuvers if int(row.get('direct_rank', 0) or 0) > 0),
+        'available_count': sum(1 for row in maneuvers if row.get('can_learn')),
+        'granted_count': sum(1 for row in maneuvers if int(row.get('effective_rank', 0) or 0) > 0),
+        'passive_summary': _cm_passive_summary(session, server),
+        'maneuvers': maneuvers,
+    }
 
 
 # ── Request Handler ────────────────────────────────────────────────────────────
@@ -40,6 +454,10 @@ class TrainingRequestHandler(BaseHTTPRequestHandler):
             self._serve_train_page(params)
         elif parsed.path == '/api/character':
             self._serve_character_data(params)
+        elif parsed.path == '/api/weapon':
+            self._serve_weapon_data(params)
+        elif parsed.path == '/api/cman':
+            self._serve_cman_data(params)
         else:
             self._send_html('<h1 style="color:#c94040">404</h1>', 404)
 
@@ -60,6 +478,10 @@ class TrainingRequestHandler(BaseHTTPRequestHandler):
             self._handle_fixstats(data)
         elif parsed.path == '/api/refund':
             self._handle_refund(data)
+        elif parsed.path == '/api/weapon_action':
+            self._handle_weapon_action(data)
+        elif parsed.path == '/api/cman_action':
+            self._handle_cman_action(data)
         else:
             self._send_html('<h1>404</h1>', 404)
 
@@ -149,6 +571,121 @@ class TrainingRequestHandler(BaseHTTPRequestHandler):
             'convert_rate':      CONVERT_RATE,
             'ptp_loaned':        getattr(session, 'ptp_loaned', 0),
             'mtp_loaned':        getattr(session, 'mtp_loaned', 0),
+        })
+
+    def _serve_weapon_data(self, params):
+        token = self._token_from_params(params)
+        session, err = self._resolve_token(token)
+        if not session:
+            self._json_error(err, 401)
+            return
+        payload = _build_weapon_state(session, TrainingRequestHandler.server_ref)
+        self._json_response(payload)
+
+    def _serve_cman_data(self, params):
+        token = self._token_from_params(params)
+        session, err = self._resolve_token(token)
+        if not session:
+            self._json_error(err, 401)
+            return
+        payload = _build_cman_state(session, TrainingRequestHandler.server_ref)
+        self._json_response(payload)
+
+    def _handle_weapon_action(self, data):
+        token_str = data.get('token')
+        session, err = self._resolve_token(token_str)
+        if not session:
+            self._json_error(err, 401)
+            return
+
+        action = str(data.get('action') or '').strip().lower()
+        server = TrainingRequestHandler.server_ref
+
+        if action == 'stop_assault':
+            from server.core.scripting.lua_bindings.weapon_api import stop_active_weapon_assault
+            stopped, message = stop_active_weapon_assault(session)
+            if server._loop and message:
+                async def _notify():
+                    await session.send_line(message)
+                    await session.send_prompt()
+                asyncio.run_coroutine_threadsafe(_notify(), server._loop).result(timeout=5)
+            self._json_response({
+                'success': bool(stopped),
+                'message': message or ("You are not committed to an assault right now." if not stopped else "You stop your assault."),
+                'state': _build_weapon_state(session, server),
+            })
+            return
+
+        if action != 'execute':
+            self._json_error('Unknown weapon action.')
+            return
+
+        mnemonic = str(data.get('mnemonic') or '').strip().lower()
+        target = str(data.get('target') or '').strip()
+        limb = str(data.get('limb') or '').strip().lower()
+        if not mnemonic:
+            self._json_error('No technique selected.')
+            return
+
+        from server.core.scripting.lua_bindings.weapon_api import execute_technique
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                execute_technique(session, mnemonic, target, server, limb=limb),
+                server._loop,
+            )
+            message = future.result(timeout=20) or ''
+            if server._loop and message:
+                async def _notify():
+                    await session.send_line(message)
+                    await session.send_prompt()
+                asyncio.run_coroutine_threadsafe(_notify(), server._loop).result(timeout=5)
+            self._json_response({
+                'success': True,
+                'message': message or 'Technique executed.',
+                'state': _build_weapon_state(session, server),
+            })
+        except Exception as e:
+            log.error("Training weapon action error [%s]: %s", mnemonic, e, exc_info=True)
+            self._json_error(f'Weapon technique failed: {e}')
+
+    def _handle_cman_action(self, data):
+        token_str = data.get('token')
+        session, err = self._resolve_token(token_str)
+        if not session:
+            self._json_error(err, 401)
+            return
+
+        action = str(data.get('action') or '').strip().lower()
+        mnemonic = str(data.get('mnemonic') or '').strip().lower()
+        if not mnemonic:
+            self._json_error('No combat maneuver selected.')
+            return
+
+        server = TrainingRequestHandler.server_ref
+        from server.core.scripting.lua_bindings.combat_maneuver_api import (
+            learn_combat_maneuver_rank,
+            unlearn_combat_maneuver_rank,
+        )
+
+        if action == 'learn':
+            success, message = learn_combat_maneuver_rank(session, server, mnemonic)
+        elif action == 'unlearn':
+            success, message = unlearn_combat_maneuver_rank(session, server, mnemonic)
+        else:
+            self._json_error('Unknown combat maneuver action.')
+            return
+
+        if success and server._loop and message:
+            async def _notify():
+                await session.send_line(message)
+                await session.send_prompt()
+            asyncio.run_coroutine_threadsafe(_notify(), server._loop).result(timeout=5)
+
+        self._json_response({
+            'success': bool(success),
+            'message': message,
+            'state': _build_cman_state(session, server),
         })
 
     def _handle_save(self, data):
@@ -539,6 +1076,9 @@ class TrainingRequestHandler(BaseHTTPRequestHandler):
         body = html.encode('utf-8')
         self.send_response(status)
         self.send_header('Content-Type',   'text/html; charset=utf-8')
+        self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+        self.send_header('Pragma', 'no-cache')
+        self.send_header('Expires', '0')
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -547,6 +1087,9 @@ class TrainingRequestHandler(BaseHTTPRequestHandler):
         body = json.dumps(data).encode('utf-8')
         self.send_response(status)
         self.send_header('Content-Type',   'application/json')
+        self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+        self.send_header('Pragma', 'no-cache')
+        self.send_header('Expires', '0')
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -711,6 +1254,11 @@ header{background:var(--surface);border-bottom:1px solid var(--border);padding:0
 .save-btn:hover:not(:disabled){background:var(--gold);color:var(--bg)}
 .save-btn:disabled{opacity:0.3;cursor:not-allowed}
 main{max-width:920px;margin:0 auto;padding:2rem 1.5rem 5rem;}
+.top-tabs{display:flex;gap:0.6rem;margin-bottom:1.35rem;}
+.top-tab{font-family:'Cinzel',serif;font-size:0.8rem;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;background:var(--surface2);color:var(--parchment2);border:1px solid var(--border);padding:0.55rem 1rem;cursor:pointer;transition:all 0.15s;}
+.top-tab:hover{border-color:var(--border-hi);color:var(--parchment);}
+.top-tab.active{background:#231b10;color:var(--gold);border-color:var(--gold-dim);}
+.tab-panel{display:block}
 .cat{margin-bottom:2.5rem}
 .cat-title{font-family:'Cinzel',serif;font-size:0.78rem;font-weight:600;letter-spacing:0.14em;color:var(--gold-dim);text-transform:uppercase;border-bottom:1px solid var(--border);padding-bottom:0.35rem;margin-bottom:0.5rem;}
 .sk-head{display:grid;grid-template-columns:1fr 70px 70px 50px 50px 90px 120px;gap:0.5rem;padding:0.2rem 0.6rem 0.35rem;font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;font-family:'Cinzel',serif;border-bottom:1px solid var(--surface3);margin-bottom:0.15rem;}
@@ -776,6 +1324,63 @@ main{max-width:920px;margin:0 auto;padding:2rem 1.5rem 5rem;}
 .tt-desc{font-size:0.95rem;color:var(--parchment2);line-height:1.55;margin-bottom:0.55rem;}
 .tt-math{font-size:0.8rem;color:var(--muted);font-style:italic;border-top:1px solid var(--border);padding-top:0.45rem;line-height:1.6;}
 .tt-math b{color:var(--gold-dim);font-style:normal;font-weight:600;}
+.wt-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0.8rem;margin-bottom:1rem;}
+.wt-box{background:var(--surface);border:1px solid var(--border);padding:0.75rem 0.9rem;}
+.wt-box-label{font-family:'Cinzel',serif;font-size:0.7rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);margin-bottom:0.35rem;}
+.wt-box-value{font-family:'Cinzel',serif;font-size:1rem;color:var(--parchment);}
+.wt-intro{padding:0.9rem 1rem;background:var(--surface);border:1px solid var(--border);margin-bottom:1rem;color:var(--parchment2);line-height:1.6;}
+.wt-section{margin-bottom:1.25rem;}
+.wt-section-title{font-family:'Cinzel',serif;font-size:0.82rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--gold-dim);border-bottom:1px solid var(--border);padding-bottom:0.35rem;margin-bottom:0.75rem;}
+.wt-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:1rem;}
+.wt-card{background:var(--surface);border:1px solid var(--border);padding:1rem;}
+.wt-card.learned{border-color:var(--gold-dim);}
+.wt-card.available{border-color:var(--green-dim);}
+.wt-card.path{border-color:#5b4a2a;}
+.wt-card.locked{opacity:0.92;}
+.wt-card-head{display:flex;justify-content:space-between;gap:1rem;align-items:flex-start;margin-bottom:0.45rem;}
+.wt-name{font-family:'Cinzel',serif;font-size:1rem;color:var(--gold);}
+.wt-mnemonic{font-family:'Cinzel',serif;font-size:0.72rem;letter-spacing:0.1em;color:var(--muted);text-transform:uppercase;margin-top:0.15rem;}
+.wt-rank{font-family:'Cinzel',serif;font-size:0.8rem;color:var(--parchment2);text-align:right;}
+.wt-tags{display:flex;gap:0.35rem;flex-wrap:wrap;margin-bottom:0.55rem;}
+.wt-tag{font-family:'Cinzel',serif;font-size:0.65rem;letter-spacing:0.08em;text-transform:uppercase;padding:0.18rem 0.45rem;border:1px solid var(--border);color:var(--parchment2);}
+.wt-tag.ok{border-color:var(--green-dim);color:var(--green);}
+.wt-tag.bad{border-color:var(--red-dim);color:var(--red);}
+.wt-desc{font-size:0.95rem;color:var(--parchment2);line-height:1.55;margin-bottom:0.65rem;}
+.wt-meta{display:grid;grid-template-columns:1fr 1fr;gap:0.35rem 0.7rem;font-size:0.83rem;color:var(--muted);margin-bottom:0.75rem;}
+.wt-meta div b{color:var(--gold-dim);font-style:normal;font-weight:600;}
+.wt-note{font-size:0.83rem;color:var(--muted);border-top:1px solid var(--border);padding-top:0.55rem;margin-top:0.55rem;}
+.wt-command{font-family:'Courier New',monospace;font-size:0.88rem;background:var(--surface2);border:1px solid var(--border);padding:0.55rem 0.65rem;color:var(--parchment);margin-top:0.7rem;}
+.wt-empty{color:var(--muted);font-style:italic;padding:1rem;background:var(--surface);border:1px solid var(--border);}
+.cm-intro{padding:0.9rem 1rem;background:var(--surface);border:1px solid var(--border);margin-bottom:1rem;color:var(--parchment2);line-height:1.6;}
+.cm-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0.8rem;margin-bottom:1rem;}
+.cm-head{display:grid;grid-template-columns:1.35fr 110px 100px 70px 80px 150px 96px;gap:0.5rem;padding:0.2rem 0.6rem 0.35rem;font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;font-family:'Cinzel',serif;border-bottom:1px solid var(--surface3);margin-bottom:0.15rem;}
+.cm-row{display:grid;grid-template-columns:1.35fr 110px 100px 70px 80px 150px 96px;align-items:center;gap:0.5rem;padding:0.45rem 0.6rem;border-radius:2px;border-left:2px solid transparent;transition:background 0.1s;cursor:default;}
+.cm-row:hover{background:var(--surface2);}
+.cm-row.learned{border-left-color:var(--gold-dim);}
+.cm-row.available{border-left-color:var(--green-dim);}
+.cm-row.locked,.cm-row.profession_locked,.cm-row.special{opacity:0.93;}
+.cm-row.guild{border-left-color:var(--blue);}
+.cm-name-wrap{min-width:0;}
+.cm-name{color:var(--parchment);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.cm-name.learned{color:var(--gold);font-weight:600;}
+.cm-sub{font-size:0.74rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:0.12rem;}
+.cm-meta{text-align:center;font-size:0.82rem;color:var(--parchment2);}
+.cm-cost{font-family:'Cinzel',serif;text-align:center;color:var(--amber);}
+.cm-rank{font-family:'Cinzel',serif;text-align:center;color:var(--parchment);}
+.cm-status{font-size:0.8rem;color:var(--muted);line-height:1.35;}
+.cm-status.available{color:var(--green);}
+.cm-status.guild{color:var(--blue);}
+.cm-status.locked,.cm-status.profession_locked,.cm-status.special{color:var(--amber);}
+.cm-status.mastered{color:var(--gold);}
+.cm-controls{display:flex;align-items:center;justify-content:flex-end;gap:0.3rem;}
+.cm-empty{color:var(--muted);font-style:italic;padding:1rem;background:var(--surface);border:1px solid var(--border);}
+@media (max-width:760px){
+  .wt-summary{grid-template-columns:repeat(2,minmax(0,1fr));}
+  .wt-meta{grid-template-columns:1fr;}
+  .cm-summary{grid-template-columns:repeat(2,minmax(0,1fr));}
+  .cm-head,.cm-row{grid-template-columns:1.3fr 90px 80px 64px 74px 120px 84px;font-size:0.74rem;}
+  .cm-status{font-size:0.74rem;}
+}
 </style>
 </head>
 <body>
@@ -854,7 +1459,7 @@ main{max-width:920px;margin:0 auto;padding:2rem 1.5rem 5rem;}
 
 <script>
 const TOKEN='TOKEN_PLACEHOLDER';
-let char=null,pending={};
+let char=null,pending={},activeTab='skills',weaponState=null,cmanState=null,cmanBusy=false;
 SKILL_INFO_PLACEHOLDER
 
 /* ── Skill bonus formula ── */
@@ -873,10 +1478,50 @@ async function load(){
     const r=await fetch('/api/character?token='+TOKEN);
     char=await r.json();
     if(char.error){mainErr(char.error);return;}
-    render();
+    try{render();}catch(e){mainErr('Training page render failed: '+(e&&e.message?e.message:String(e)));return;}
     initStatsModal();
     initConvModal();
-  }catch(e){mainErr('Could not connect to game server.');}
+  }catch(e){mainErr('Could not connect to game server. '+(e&&e.message?e.message:''));}
+}
+
+function mainErr(msg){
+  const main=document.getElementById('main');
+  if(!main)return;
+  main.innerHTML='<div style="color:var(--red);padding:1.2rem 0.2rem;font-family:Cinzel,serif;">'+msg+'</div>';
+}
+
+window.addEventListener('error',e=>{
+  const msg=(e&&e.message)?e.message:'Unknown training page error.';
+  mainErr('Training page error: '+msg);
+});
+
+async function loadWeaponData(){
+  try{
+    const r=await fetch('/api/weapon?token='+TOKEN);
+    weaponState=await r.json();
+  }catch(e){
+    weaponState={error:'Could not reach weapon technique service.'};
+  }
+}
+
+async function loadCmanData(){
+  try{
+    const r=await fetch('/api/cman?token='+TOKEN);
+    cmanState=await r.json();
+  }catch(e){
+    cmanState={error:'Could not reach combat maneuver service.'};
+  }
+}
+
+async function switchTab(tab){
+  activeTab=tab;
+  if(tab==='weapon' && !weaponState){
+    await loadWeaponData();
+  }
+  if(tab==='cman' && !cmanState){
+    await loadCmanData();
+  }
+  try{render();}catch(e){mainErr('Training page render failed: '+(e&&e.message?e.message:String(e)));}
 }
 
 /* ════════════════════════════════════════════════════
@@ -885,7 +1530,23 @@ async function load(){
 function render(){
   document.getElementById('char-badge').textContent=char.name+' \u00b7 Level '+char.level;
   refreshTP();
+  const saveBtn=document.getElementById('save-btn');
+  saveBtn.style.display=activeTab==='skills'?'inline-block':'none';
   const main=document.getElementById('main');main.innerHTML='';
+  const tabs=document.createElement('div');tabs.className='top-tabs';
+  tabs.innerHTML=
+    '<button class="top-tab'+(activeTab==='skills'?' active':'')+'" onclick="switchTab(\'skills\')">Skills</button>'+
+    '<button class="top-tab'+(activeTab==='weapon'?' active':'')+'" onclick="switchTab(\'weapon\')">Weapon Techniques</button>'+
+    '<button class="top-tab'+(activeTab==='cman'?' active':'')+'" onclick="switchTab(\'cman\')">Combat Maneuvers</button>';
+  main.appendChild(tabs);
+  const content=document.createElement('div');content.className='tab-panel';content.id='tab-panel';
+  main.appendChild(content);
+  if(activeTab==='weapon'){renderWeaponTechniques(content);return;}
+  if(activeTab==='cman'){renderCombatManeuvers(content);return;}
+  renderSkills(content);
+}
+
+function renderSkills(main){
   const preferredOrder = ['Combat', 'Magic', 'Survival', 'General', 'Lore'];
   const orderedCats = [];
   for(const cat of preferredOrder){
@@ -903,6 +1564,184 @@ function render(){
     main.appendChild(sec);
   }
 }
+
+function renderWeaponTechniques(main){
+  if(!weaponState){main.innerHTML='<div class="wt-empty">Loading weapon techniques...</div>';return;}
+  if(weaponState.error){main.innerHTML='<div class="wt-empty">'+weaponState.error+'</div>';return;}
+  const summary=document.createElement('div');summary.className='wt-summary';
+  summary.innerHTML=
+    '<div class="wt-box"><div class="wt-box-label">Current Weapon Path</div><div class="wt-box-value">'+((weaponState.current_categories||[]).join(', ')||'None')+'</div></div>'+
+    '<div class="wt-box"><div class="wt-box-label">Ready Now</div><div class="wt-box-value">'+((weaponState.ready_now||[]).length||0)+'</div></div>'+
+    '<div class="wt-box"><div class="wt-box-label">Potential Unlocks</div><div class="wt-box-value">'+((weaponState.unlock_path||[]).length||0)+'</div></div>'+
+    '<div class="wt-box"><div class="wt-box-label">Stamina / RT</div><div class="wt-box-value">'+(weaponState.stamina||0)+' / '+(weaponState.roundtime||0)+'s</div></div>';
+  main.appendChild(summary);
+
+  const intro=document.createElement('div');intro.className='wt-intro';
+  intro.innerHTML=
+    'Only techniques relevant to your current character and readied weapon are shown here. '+
+    'The command line on each card is the in-game syntax to use. '+
+    'Assault techniques can be broken off with <b>STOP ASSAULT</b>.';
+  main.appendChild(intro);
+
+  renderWeaponSection(main,'Usable Right Now',weaponState.ready_now||[],false);
+  renderWeaponSection(main,'Can Unlock On This Weapon Path',weaponState.unlock_path||[],true);
+}
+
+function renderWeaponSection(main,title,rows,isPath){
+  const sec=document.createElement('div');sec.className='wt-section';
+  sec.innerHTML='<div class="wt-section-title">'+title+'</div>';
+  if(!rows.length){
+    sec.innerHTML+='<div class="wt-empty">'+(isPath?'No additional techniques are on your current weapon path.':'No weapon techniques are usable right now with your current loadout.')+'</div>';
+    main.appendChild(sec);
+    return;
+  }
+  const grid=document.createElement('div');grid.className='wt-grid';
+  for(const tech of rows){grid.appendChild(buildWeaponCard(tech,isPath));}
+  sec.appendChild(grid);
+  main.appendChild(sec);
+}
+
+function buildWeaponCard(tech,isPath){
+  const card=document.createElement('div');
+  card.className='wt-card '+(isPath?'path':tech.availability);
+  const learnedText=tech.learned_rank>0?('Learned Rank '+tech.learned_rank+'/'+tech.max_rank):('Current Max '+tech.max_rank+'/5');
+  const nextRank=(tech.learned_rank||0)+1;
+  let nextText='';
+  if(tech.rank_thresholds && tech.rank_thresholds.length>=nextRank){
+    const nextThreshold=tech.rank_thresholds[nextRank-1];
+    if(tech.learned_rank < 5){
+      nextText='<div><b>Next unlock:</b> Rank '+nextRank+' at '+nextThreshold+' '+tech.weapon_skill_label+' ranks</div>';
+    }
+  }
+  const tags=[
+    '<span class="wt-tag">'+tech.category_label+'</span>',
+    '<span class="wt-tag">'+String(tech.type||'').toUpperCase()+'</span>',
+    '<span class="wt-tag ok">Profession OK</span>'
+  ];
+  if(isPath){
+    tags.push('<span class="wt-tag">'+(tech.max_rank>0?'Unlock Path':'Needs More Training')+'</span>');
+  }else{
+    tags.push('<span class="wt-tag ok">Usable Now</span>');
+  }
+  if(tech.learned_rank>0){
+    tags.push('<span class="wt-tag">Learned</span>');
+  }
+  card.innerHTML=
+    '<div class="wt-card-head"><div><div class="wt-name">'+tech.name+'</div><div class="wt-mnemonic">'+tech.mnemonic+'</div></div><div class="wt-rank">'+learnedText+'</div></div>'+
+    '<div class="wt-tags">'+tags.join('')+'</div>'+
+    '<div class="wt-desc">'+tech.description+'</div>'+
+    '<div class="wt-meta">'+
+      '<div><b>Weapon Skill:</b> '+tech.weapon_skill_label+' ('+tech.skill_ranks+' ranks)</div>'+
+      '<div><b>Minimum:</b> '+tech.min_ranks+' ranks</div>'+
+      '<div><b>Stamina:</b> '+tech.stamina_cost+'</div>'+
+      '<div><b>Cooldown:</b> '+tech.cooldown+'s</div>'+
+      '<div><b>Roundtime:</b> '+tech.base_rt+'s'+(tech.rt_mod?(' ('+(tech.rt_mod>0?'+':'')+tech.rt_mod+' mod)'):'')+'</div>'+
+      '<div><b>Gear:</b> '+(tech.gear_requirement_label||'Standard')+'</div>'+
+      '<div><b>Thresholds:</b> '+(tech.rank_thresholds||[]).join(', ')+'</div>'+
+      nextText+
+      (tech.reaction_trigger?'<div><b>Reaction Trigger:</b> '+tech.reaction_trigger.replaceAll('_',' ')+'</div>':'')+
+    '</div>'+
+    (isPath&&tech.unlock_reason?'<div class="wt-note"><b>Not unlocked yet:</b> '+tech.unlock_reason+'</div>':'')+
+    (tech.mechanics_notes?'<div class="wt-note"><b>Mechanics:</b> '+tech.mechanics_notes+'</div>':'')+
+    '<div class="wt-command">'+tech.command_syntax+(tech.type==='assault'?'<br>STOP ASSAULT':'')+'</div>';
+  return card;
+}
+
+function renderCombatManeuvers(main){
+  if(!cmanState){main.innerHTML='<div class="cm-empty">Loading combat maneuvers...</div>';return;}
+  if(cmanState.error){main.innerHTML='<div class="cm-empty">'+cmanState.error+'</div>';return;}
+
+  const summary=document.createElement('div');summary.className='cm-summary';
+  summary.innerHTML=
+    '<div class="wt-box"><div class="wt-box-label">Free CMAN Points</div><div class="wt-box-value">'+(cmanState.free_points||0)+'</div></div>'+
+    '<div class="wt-box"><div class="wt-box-label">Spent / Total</div><div class="wt-box-value">'+(cmanState.spent_points||0)+' / '+(cmanState.total_points||0)+'</div></div>'+
+    '<div class="wt-box"><div class="wt-box-label">Directly Trained</div><div class="wt-box-value">'+(cmanState.trained_count||0)+'</div></div>'+
+    '<div class="wt-box"><div class="wt-box-label">Available To Learn</div><div class="wt-box-value">'+(cmanState.available_count||0)+'</div></div>';
+  main.appendChild(summary);
+
+  const intro=document.createElement('div');intro.className='cm-intro';
+  const passive=(cmanState.passive_summary||[]).length?(cmanState.passive_summary||[]).join(' • '):'No passive bonuses active from your current direct maneuver training.';
+  intro.innerHTML=
+    'Combat maneuver training spends points from your <b>Combat Maneuvers</b> skill ranks. '+
+    'Guild maneuvers are shown here for reference but cannot be adjusted from this tab. '+
+    '<br><span style="color:var(--muted)">Current passive effects: '+passive+'</span>';
+  main.appendChild(intro);
+
+  const groups={};
+  for(const row of (cmanState.maneuvers||[])){
+    if(row.availability==='profession_locked')continue;
+    const key=row.category_label||'General';
+    if(!groups[key])groups[key]=[];
+    groups[key].push(row);
+  }
+
+  for(const [label,rows] of Object.entries(groups)){
+    const sec=document.createElement('div');sec.className='cat';
+    sec.innerHTML='<div class="cat-title">'+label+'</div><div class="cm-head"><span>Maneuver</span><span style="text-align:center">Type</span><span style="text-align:center">Target</span><span style="text-align:center">Cost</span><span style="text-align:center">Rank</span><span>Status</span><span></span></div>';
+    for(const row of rows){sec.appendChild(buildCmanRow(row));}
+    main.appendChild(sec);
+  }
+}
+
+function buildCmanRow(row){
+  const el=document.createElement('div');
+  el.className='cm-row '+(row.availability||'locked')+((row.direct_rank||0)>0?' learned':'');
+  const tooltipParts=[row.description||'',row.requirements?('Requirements: '+row.requirements):'',row.mechanics?('Mechanics: '+row.mechanics):''].filter(Boolean);
+  if(tooltipParts.length)el.title=tooltipParts.join('\n\n');
+
+  const costText=row.is_guild_skill?'Guild':(row.next_cost>0?row.next_cost:'\u2014');
+  const statusClass=row.availability||'locked';
+  const statusText=row.status_text||'\u2014';
+  el.innerHTML=
+    '<div class="cm-name-wrap"><div class="cm-name'+((row.effective_rank||0)>0?' learned':'')+'">'+row.name+'</div><div class="cm-sub">'+row.mnemonic+' \u00b7 '+(row.stamina||'0')+' stamina \u00b7 '+(row.roundtime||'n/a')+'</div></div>'+
+    '<div class="cm-meta">'+(row.type_label||'\u2014')+'</div>'+
+    '<div class="cm-meta">'+(row.targeting_label||'\u2014')+'</div>'+
+    '<div class="cm-cost">'+costText+'</div>'+
+    '<div class="cm-rank">'+(row.effective_rank||0)+' / '+(row.max_rank||0)+'</div>'+
+    '<div class="cm-status '+statusClass+'">'+statusText+'</div>'+
+    '<div class="cm-controls"></div>';
+
+  const controls=el.querySelector('.cm-controls');
+  const minus=document.createElement('button');
+  minus.className='btn minus';
+  minus.textContent='\u2212';
+  minus.title='Unlearn rank';
+  minus.disabled=cmanBusy||!row.can_unlearn;
+  minus.onclick=()=>doCmanAction(row.mnemonic,'unlearn');
+
+  const plus=document.createElement('button');
+  plus.className='btn plus';
+  plus.textContent='+';
+  plus.title=row.is_guild_skill?'Guild-trained maneuver':'Learn next rank';
+  plus.disabled=cmanBusy||!row.can_learn;
+  plus.onclick=()=>doCmanAction(row.mnemonic,'learn');
+
+  controls.appendChild(minus);
+  controls.appendChild(plus);
+  return el;
+}
+
+async function doCmanAction(mnemonic,action){
+  if(cmanBusy)return;
+  cmanBusy=true;
+  try{render();}catch(e){}
+  try{
+    const res=await fetch('/api/cman_action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:TOKEN,mnemonic,action})});
+    const result=await res.json();
+    if(result.state)cmanState=result.state;
+    if(!result.success){
+      showSkillModal('Combat Maneuver', '<span style="color:var(--red)">'+(result.message||result.error||'Combat maneuver update failed.')+'</span>', true);
+    }else if(result.message){
+      showSkillModal('Combat Maneuver Updated', result.message, false);
+    }
+  }catch(e){
+    showSkillModal('Combat Maneuver', '<span style="color:var(--red)">Could not reach combat maneuver service.</span>', true);
+  }finally{
+    cmanBusy=false;
+    try{render();}catch(e){}
+  }
+}
+
 function mkRow(id,sk){
   const cur=pending[id]!==undefined?pending[id]:sk.ranks;
   const changed=cur!==sk.ranks,empty=cur===0;

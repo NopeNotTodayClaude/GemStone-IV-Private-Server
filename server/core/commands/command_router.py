@@ -52,6 +52,7 @@ from server.core.commands.player.training import cmd_train
 from server.core.commands.player.spellcasting import cmd_prepare, cmd_cast, cmd_incant, cmd_release, cmd_send
 from server.core.commands.player.fixstat_convert import cmd_fixstats, cmd_convert
 from server.core.commands.player.weapon_techniques import cmd_weapon, cmd_stop
+from server.core.commands.player.combat_maneuvers import cmd_cman
 from server.core.commands.player.party import cmd_party
 from server.core.commands.player.esp import cmd_esp, cmd_think, cmd_chat
 from server.core.commands.player.foraging import cmd_forage, cmd_track
@@ -251,6 +252,7 @@ class CommandRouter:
         self.register("hurl", cmd_hurl, aliases=["throw"])
         self.register("mstrike", cmd_mstrike, aliases=["mstr"])
         self.register("stop", cmd_stop, aliases=["stop assault"])
+        self.register("cman", cmd_cman, aliases=["cmlist"])
         self.register("hide", cmd_hide)
         self.register("sneak", cmd_sneak)
         self.register("stance", cmd_stance)

@@ -30,6 +30,13 @@ from server.core.scripting.lua_bindings.weapon_api import (
 log = logging.getLogger(__name__)
 
 
+def _session_can_use_weapon_verbs(session) -> bool:
+    """Weapon verbs require an active selected character, not a nonexistent auth flag."""
+    if not session:
+        return False
+    return getattr(session, "state", "") == "playing" and bool(getattr(session, "character_id", None))
+
+
 # ── Mnemonic aliases: players can type partial or alternate spellings ─────────
 _ALIASES = {
     # Twin Hammerfists
@@ -103,6 +110,8 @@ _AOE_MNEMONICS = {
     "pindown", "volley", "whirlwind",
 }
 
+_META_SUBCMDS = {"list", "help", "info"}
+
 # Valid limb targets for cripple
 _VALID_LIMBS = {
     "right arm":  "right arm",
@@ -120,6 +129,19 @@ _VALID_LIMBS = {
     "arm":        "right arm",
     "leg":        "right leg",
 }
+
+
+def _is_reaction_technique(server, mnemonic: str) -> bool:
+    lua = getattr(server, "lua", None)
+    if not lua or not lua.engine or not mnemonic:
+        return False
+    try:
+        defs = lua.engine.require("weapon_techniques/definitions")
+        tech = defs[mnemonic] if defs else None
+        tech = lua.engine.lua_to_python(tech) if tech else None
+        return isinstance(tech, dict) and str(tech.get("type") or "").lower() == "reaction"
+    except Exception:
+        return False
 
 
 def _normalize_limb(raw: str) -> str:
@@ -168,6 +190,14 @@ def _parse_weapon_args(args: str):
     # parts[1] onward = target + optional limb
     # Limb for cripple can trail a multi-word target:
     #   "cripple raider orc right leg"
+    if mnemonic == "cripple" and remainder:
+        for size in (2, 1):
+            if len(remainder) != size:
+                continue
+            limb_raw = " ".join(remainder)
+            if limb_raw.lower() in _VALID_LIMBS:
+                return (mnemonic, "", _normalize_limb(limb_raw), "")
+
     if mnemonic == "cripple" and len(remainder) >= 2:
         for size in (2, 1):
             if len(remainder) <= size:
@@ -185,7 +215,7 @@ def _parse_weapon_args(args: str):
 
 async def cmd_stop(session, cmd: str, args: str, server):
     """STOP [ASSAULT] - Interrupt an active weapon-technique assault."""
-    if not session or not getattr(session, 'authenticated', False):
+    if not _session_can_use_weapon_verbs(session):
         return
 
     raw = (args or "").strip().lower()
@@ -201,7 +231,7 @@ async def cmd_weapon(session, cmd: str, args: str, server):
     """
     Entry point: WEAPON verb.
     """
-    if not session or not getattr(session, 'authenticated', False):
+    if not _session_can_use_weapon_verbs(session):
         return
 
     # ── Dead / unconscious checks ─────────────────────────────────────────────
@@ -222,11 +252,7 @@ async def cmd_weapon(session, cmd: str, args: str, server):
         # Parse to see if it's a reaction (reactions work during self-inflicted RT)
         subcmd_peek = (args or "").strip().split()[0].lower() if args else ""
         mnemonic_peek = _ALIASES.get(subcmd_peek, subcmd_peek)
-        _REACTION_MNEMONICS = {
-            "spinkick", "clobber", "riposte", "radialsweep",
-            "reactiveshot", "overpower", "reversestrike",
-        }
-        is_reaction = mnemonic_peek in _REACTION_MNEMONICS
+        is_reaction = _is_reaction_technique(server, mnemonic_peek)
         if not is_reaction:
             await session.send_line(
                 colorize(roundtime_msg(remaining), TextPresets.SYSTEM)
@@ -235,7 +261,6 @@ async def cmd_weapon(session, cmd: str, args: str, server):
 
     # ── Parse args ────────────────────────────────────────────────────────────
     subcmd, target_name, limb, filter_word = _parse_weapon_args(args)
-
     if not subcmd:
         await session.send_line(
             "Usage: WEAPON LIST [category]  |  WEAPON HELP <technique>  |  WEAPON <technique> <target>"
@@ -243,7 +268,7 @@ async def cmd_weapon(session, cmd: str, args: str, server):
         return
 
     # ── Meta commands (list / help / info) handled fully in Lua ──────────────
-    if subcmd in ("list", "help", "info"):
+    if subcmd in _META_SUBCMDS:
         lua = getattr(server, 'lua', None)
         if not lua or not lua.engine:
             await session.send_line("Weapon technique system unavailable.")
@@ -264,7 +289,11 @@ async def cmd_weapon(session, cmd: str, args: str, server):
             result = None
 
         if result and isinstance(result, dict):
-            await session.send_line(result.get('message', ''))
+            message = str(result.get('message') or '')
+            if message:
+                await session.send(message + "\r\n")
+            else:
+                await session.send_line("No weapon technique information was returned.")
         else:
             await session.send_line("Unable to retrieve weapon technique information.")
         return
@@ -274,10 +303,22 @@ async def cmd_weapon(session, cmd: str, args: str, server):
         if not target_name:
             target_name = "__room__"
 
-    # ── Non-AoE: require a target ─────────────────────────────────────────────
+    # ── Non-AoE: default to current combat target when no explicit target was given ──
     elif not target_name:
-        await session.send_line(f"Use: WEAPON {subcmd} <target>")
-        return
+        current_target = getattr(session, "target", None)
+        if current_target and not getattr(current_target, "is_dead", False):
+            target_name = str(getattr(current_target, "name", "") or "").strip()
+        else:
+            if subcmd == "cripple":
+                await session.send_line("Use: WEAPON cripple [target] [limb], or set a current target first.")
+            else:
+                await session.send_line(f"Use: WEAPON {subcmd} [target], or set a current target first.")
+            return
+
+    # ── Offensive use from hiding reveals you, matching the normal combat path ──
+    if getattr(session, "hidden", False):
+        session.hidden = False
+        session.sneaking = False
 
     # ── Execute ───────────────────────────────────────────────────────────────
     message = await execute_technique(session, subcmd, target_name, server, limb=limb)
@@ -286,11 +327,13 @@ async def cmd_weapon(session, cmd: str, args: str, server):
 
 
 def _build_minimal_player_snap(session, server) -> dict:
-    """Build a minimal player snapshot for list/help queries (no need for full combat data)."""
-    from server.core.scripting.lua_bindings.weapon_api import _session_to_entity
-    snap = _session_to_entity(session)
-    snap['weapon_techniques'] = getattr(session, 'weapon_techniques', {}) or {}
-    return snap
+    """Build a minimal Lua-safe player snapshot for list/help/info queries."""
+    return {
+        'profession_name': getattr(session, 'profession_name', None) or getattr(session, 'profession', '') or '',
+        'profession': getattr(session, 'profession', '') or '',
+        'level': int(getattr(session, 'level', 1) or 1),
+        'weapon_techniques': dict(getattr(session, 'weapon_techniques', {}) or {}),
+    }
 
 
 # ── Auto-grant hook — called from training.py ─────────────────────────────────

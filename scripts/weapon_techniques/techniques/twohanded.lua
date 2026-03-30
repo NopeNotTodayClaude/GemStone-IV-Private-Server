@@ -143,7 +143,7 @@ function TwoHanded.thrash(ctx)
         end
     end
 
-    table.insert(round_msgs, (tech.msg_final or "With a final, explosive breath, you pull your weapon back to a ready position."):gsub("{target}", target_name))
+    table.insert(round_msgs, ((tech.msg_final or "With a final, explosive breath, you pull your weapon back to a ready position."):gsub("{target}", target_name)))
 
     local effects = {}
     if any_success then

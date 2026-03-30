@@ -13,6 +13,8 @@ from .herbs_loader        import load_herbs
 from .misc_loader         import load_misc
 from .containers_loader   import load_containers
 from .lockpicks_loader    import load_lockpicks
+from .weapon_techniques_loader import load_weapon_techniques
+from .combat_maneuvers_loader import load_combat_maneuvers
 from .appearance_loader   import load_appearance
 from .ambush_loader       import load_ambush_cfg
 from .customize_loader    import load_customize_cfg
@@ -35,6 +37,8 @@ __all__ = [
     "load_misc",
     "load_containers",
     "load_lockpicks",
+    "load_weapon_techniques",
+    "load_combat_maneuvers",
     "load_appearance",
     "load_ambush_cfg",
     "load_customize_cfg",

@@ -452,35 +452,9 @@ class CreatureManager:
             return 0
         return max(1, min(2, (base + 3) // 4))
 
-    def _zone_party_multiplier(self, zone_ids: list[int]) -> int:
-        if not zone_ids:
-            return 1
-        mgr = getattr(self.server, "party_manager", None)
-        world = getattr(self.server, "world", None)
-        if not mgr or not world:
-            return 1
-        seen_parties = set()
-        for session in self.server.sessions.playing():
-            room = getattr(session, "current_room", None)
-            if not room or int(getattr(room, "zone_id", 0) or 0) not in zone_ids:
-                continue
-            party = mgr.get_party(session)
-            if not party or party.id in seen_parties:
-                continue
-            seen_parties.add(party.id)
-            in_zone = [
-                member for member in party.living_members()
-                if getattr(member, "current_room", None)
-                and int(getattr(member.current_room, "zone_id", 0) or 0) in zone_ids
-            ]
-            if len(in_zone) >= 2:
-                return 2
-        return 1
-
     def _desired_population_for_config(self, cfg: dict) -> int:
         base = int(cfg.get("base_max_count", cfg.get("max_count", 1)) or 1)
         desired = base + self._config_population_bump(cfg)
-        desired *= self._zone_party_multiplier(cfg.get("zone_ids") or [])
         return max(1, desired)
 
     def _alive_creatures_for_config(self, cfg: dict) -> list[Creature]:
@@ -500,7 +474,7 @@ class CreatureManager:
             deficit = desired - len(alive)
             if deficit <= 0:
                 continue
-            spawn_budget = min(deficit, 2 if self._zone_party_multiplier(cfg.get("zone_ids") or []) > 1 else 1)
+            spawn_budget = min(deficit, 1)
             candidate_rooms = []
             for room_id in cfg.get("rooms") or []:
                 room = self.server.world.get_room(room_id)
