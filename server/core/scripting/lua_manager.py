@@ -195,6 +195,10 @@ class LuaManager:
         from server.core.scripting.loaders.hotbar_actions_loader import load_hotbar_actions
         return self._load_once("hotbar_actions", lambda: load_hotbar_actions(self._engine))
 
+    def get_rogue_guild_training(self) -> Optional[dict]:
+        from server.core.scripting.loaders.rogue_guild_training_loader import load_rogue_guild_training
+        return self._load_once("rogue_guild_training", lambda: load_rogue_guild_training(self._engine))
+
     # ── Spell seeding ─────────────────────────────────────────────────────────
 
     async def seed_spells(self) -> dict:

@@ -36,7 +36,22 @@ NPC.guild_id       = "rogue"
 
 function NPC:on_player_talk(player, keyword)
     local topic = tostring(keyword or ""):lower():gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
-    if topic == "train gambits" then
+    if topic == "gambit" or topic == "gambits" or topic == "rogue gambits" then
+        return {
+            guild_action = "rogue_train_skill",
+            skill_name = "Rogue Gambits",
+            skip_quest = true,
+        }
+    end
+    if topic == "train gambits" or topic == "fieldcraft" or topic == "trial" or topic == "training" or topic == "lesson" or topic == "work" then
+        return {
+            guild_action = "rogue_train_skill",
+            skill_name = "Rogue Gambits",
+            quest_key = "rogue_fieldcraft",
+            extra_unlocks = { "rogue_skill_stunman_intro" },
+        }
+    end
+    if topic == "alcove" or topic == "drills" then
         return {
             response = "Fine.  Use the dark alcove if you want room enough to fail in private.",
             move_to_room = 30766,

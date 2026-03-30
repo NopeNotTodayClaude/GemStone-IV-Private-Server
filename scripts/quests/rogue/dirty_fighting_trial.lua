@@ -5,6 +5,23 @@ Quest.guild_id    = "rogue"
 Quest.title       = "A Knife in the Dark"
 Quest.description = "A rogue survives by ending a fight on their own terms."
 Quest.repeatable  = false
+Quest.start_npc_template_ids = {
+    "tv_rogue_bruiser",
+}
+Quest.turnin_npc_template_ids = {
+    "tv_rogue_bruiser",
+}
+Quest.start_message = "Good.  Hide first, strike second, and make sure the other fool never controls the pace.  Show me HIDE, AMBUSH, CHEAPSHOT, SUBDUE, and SWEEP in proper sequence."
+Quest.rewards = {
+    unlocks = {
+        {
+            key = "rogue_emote_coinroll",
+            type = "emote",
+            notes = "Dirty fighting flourish taught by Marn.",
+            message = "You permanently learn Marn's coinroll flourish.  You can now COINROLL.",
+        },
+    },
+}
 
 Quest.stages = {
     {

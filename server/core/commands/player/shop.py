@@ -90,10 +90,39 @@ async def _send_npc_response(session, npc, topic, server):
         from server.core.commands.player.guild import (
             get_guild_npc_response,
             get_quest_npc_response,
+            maybe_handle_guild_npc_action,
             maybe_handle_adventurer_guild_npc_response,
         )
         if await maybe_handle_adventurer_guild_npc_response(session, npc, topic, server):
             return
+        response = npc.get_talk_response(server, session, topic)
+        if isinstance(response, dict):
+            if await maybe_handle_guild_npc_action(session, npc, topic, response, server):
+                return
+            text = None
+            for field in ("response", "message", "text"):
+                value = response.get(field)
+                if isinstance(value, str) and value.strip():
+                    text = value.strip()
+                    break
+            if text:
+                await session.send_line(npc_speech(npc.display_name, f'says, "{text}"'))
+
+            target_room_id = int(response.get("move_to_room") or 0)
+            if target_room_id:
+                current_room = getattr(session, "current_room", None)
+                target_room = server.world.get_room(target_room_id) if getattr(server, "world", None) else None
+                if current_room and target_room:
+                    direction_label = str(response.get("move_verb") or response.get("direction_label") or "out").strip() or "out"
+                    await _move_player(session, current_room, target_room, direction_label, server, sneaking=False)
+                else:
+                    await session.send_line("That route leads nowhere right now.")
+            return
+
+        if response:
+            await session.send_line(npc_speech(npc.display_name, f'says, "{response}"'))
+            return
+
         guild_response = get_guild_npc_response(session, npc, topic, server)
         if guild_response:
             await session.send_line(npc_speech(npc.display_name, f'says, "{guild_response}"'))
@@ -105,32 +134,7 @@ async def _send_npc_response(session, npc, topic, server):
     except Exception:
         pass
 
-    response = npc.get_talk_response(server, session, topic)
-    if isinstance(response, dict):
-        text = None
-        for field in ("response", "message", "text"):
-            value = response.get(field)
-            if isinstance(value, str) and value.strip():
-                text = value.strip()
-                break
-        if text:
-            await session.send_line(npc_speech(npc.display_name, f'says, "{text}"'))
-
-        target_room_id = int(response.get("move_to_room") or 0)
-        if target_room_id:
-            current_room = getattr(session, "current_room", None)
-            target_room = server.world.get_room(target_room_id) if getattr(server, "world", None) else None
-            if current_room and target_room:
-                direction_label = str(response.get("move_verb") or response.get("direction_label") or "out").strip() or "out"
-                await _move_player(session, current_room, target_room, direction_label, server, sneaking=False)
-            else:
-                await session.send_line("That route leads nowhere right now.")
-        return
-
-    if response:
-        await session.send_line(npc_speech(npc.display_name, f'says, "{response}"'))
-    else:
-        await session.send_line(f"{npc.display_name} shrugs. 'I don't know much about that.'")
+    await session.send_line(f"{npc.display_name} shrugs. 'I don't know much about that.'")
 
 
 def _find_shopkeeper_for_shop(server, shop_id):

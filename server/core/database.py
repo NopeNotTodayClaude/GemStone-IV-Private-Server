@@ -2522,6 +2522,65 @@ class Database:
             return False
         finally:
             conn.close()
+
+    def load_character_unlocks(self, character_id):
+        """Load permanent character unlocks keyed by unlock_key."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                """
+                SELECT unlock_key, unlock_type, notes
+                FROM character_unlocks
+                WHERE character_id = %s
+                """,
+                (character_id,),
+            )
+            return {
+                str(row.get("unlock_key") or "").strip().lower(): {
+                    "unlock_type": str(row.get("unlock_type") or "generic").strip().lower(),
+                    "notes": str(row.get("notes") or "").strip(),
+                }
+                for row in (cur.fetchall() or [])
+                if str(row.get("unlock_key") or "").strip()
+            }
+        except Exception as e:
+            log.error("Failed to load unlocks for char %s: %s", character_id, e)
+            return {}
+        finally:
+            conn.close()
+
+    def save_character_unlock(self, character_id, unlock_key, unlock_type="generic", notes=None):
+        """Persist one permanent character unlock."""
+        key = str(unlock_key or "").strip().lower()
+        if not key:
+            return False
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO character_unlocks (character_id, unlock_key, unlock_type, notes)
+                VALUES (%s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    unlock_type = VALUES(unlock_type),
+                    notes = COALESCE(VALUES(notes), notes),
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    character_id,
+                    key,
+                    str(unlock_type or "generic").strip().lower(),
+                    str(notes or "").strip() or None,
+                ),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            log.error("Failed to save unlock %s for char %s: %s", key, character_id, e)
+            return False
+        finally:
+            conn.close()
     # =========================================================
     # REFERENCE DATA
     # =========================================================

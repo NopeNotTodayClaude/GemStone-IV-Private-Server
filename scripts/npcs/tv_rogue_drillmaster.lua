@@ -34,4 +34,35 @@ NPC.ambient_chance = 0.03
 NPC.emote_cooldown = 45
 NPC.guild_id       = "rogue"
 
+local function norm(text)
+    return tostring(text or ""):lower():gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+function NPC:on_player_talk(player, keyword)
+    local topic = norm(keyword)
+    if topic == "" then
+        return nil
+    end
+    if topic:find("gambit", 1, true) then
+        return { guild_action = "rogue_train_skill", skill_name = "Rogue Gambits", skip_quest = true }
+    end
+    if topic:find("stun", 1, true) then
+        return { guild_action = "rogue_train_skill", skill_name = "Stun Maneuvers", skip_quest = true }
+    end
+    if topic == "lesson" or topic == "teach" or topic == "training" or topic == "train" or topic == "drill" or topic == "fieldcraft" then
+        return {
+            guild_action = "rogue_train_skill",
+            skill_name = "Rogue Gambits",
+            quest_key = "rogue_fieldcraft",
+            extra_unlocks = { "rogue_skill_stunman_intro" },
+        }
+    end
+    if topic == "shadowpose" or topic == "flourish" or topic == "emote" then
+        return {
+            response = "Earn it through the fieldcraft trial.  Then the shadow pose is yours whenever you need it.",
+        }
+    end
+    return nil
+end
+
 return NPC

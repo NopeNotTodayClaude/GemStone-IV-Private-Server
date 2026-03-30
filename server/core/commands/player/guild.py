@@ -7,6 +7,7 @@ from __future__ import annotations
 import math
 from datetime import datetime, timedelta
 
+from server.core.character_unlocks import grant_unlock, has_unlock
 from server.core.protocol.colors import colorize, TextPresets, npc_speech
 
 
@@ -27,6 +28,144 @@ def _as_dt(raw):
     if isinstance(raw, datetime):
         return raw
     return None
+
+
+def _rogue_training_cfg(server):
+    lua = getattr(server, "lua", None)
+    if not lua:
+        return {}
+    data = lua.get_rogue_guild_training() or {}
+    return data if isinstance(data, dict) else {}
+
+
+def _rogue_skill_cfg(server, skill_name):
+    skills = (_rogue_training_cfg(server).get("skills") or {})
+    return skills.get(skill_name) or {}
+
+
+def _rogue_skill_effective_rank(session, server, skill_name):
+    row = (getattr(session, "guild_skills", {}) or {}).get(skill_name, {})
+    actual = int((row or {}).get("ranks", 0) or 0) if isinstance(row, dict) else int(row or 0)
+    if actual > 0:
+        return actual
+    cfg = _rogue_skill_cfg(server, skill_name)
+    intro_unlock = str(cfg.get("intro_unlock") or "").strip().lower()
+    if intro_unlock and has_unlock(session, intro_unlock):
+        return 1
+    return 0
+
+
+def _guild_skill_def_map(server, guild_id):
+    engine = getattr(server, "guild", None)
+    if engine and hasattr(engine, "get_skill_def_map"):
+        return engine.get_skill_def_map(guild_id) or {}
+    return {}
+
+
+def _next_guild_rank_row(session, server):
+    membership = getattr(session, "guild_membership", None) or {}
+    guild_id = membership.get("guild_id")
+    engine = getattr(server, "guild", None)
+    if not guild_id or not engine or not hasattr(engine, "_get_rank_definitions"):
+        return None
+    current = int(membership.get("rank_level") or 1)
+    for row in engine._get_rank_definitions(guild_id) or []:
+        if int(row.get("rank_level") or 0) > current:
+            return row
+    return None
+
+
+def _rogue_skill_unlock_summary(session, server, skill_name):
+    cfg = _rogue_skill_cfg(server, skill_name)
+    rows = list(cfg.get("rank_unlocks") or [])
+    if not rows:
+        return "", ""
+    effective = _rogue_skill_effective_rank(session, server, skill_name)
+    reached = [str(row.get("text") or "").strip() for row in rows if int(row.get("at_rank") or 0) <= effective and str(row.get("text") or "").strip()]
+    upcoming = next((row for row in rows if int(row.get("at_rank") or 0) > effective), None)
+    reached_text = reached[-1] if reached else ""
+    upcoming_text = ""
+    if upcoming:
+        upcoming_text = f"Next unlock at rank {int(upcoming.get('at_rank') or 0)}: {str(upcoming.get('text') or '').strip()}"
+    return reached_text, upcoming_text
+
+
+def _rogue_skill_status_lines(session, server, skill_name):
+    cfg = _rogue_skill_cfg(server, skill_name)
+    defs = _guild_skill_def_map(server, "rogue")
+    skill_def = defs.get(skill_name) or {}
+    row = (getattr(session, "guild_skills", {}) or {}).get(skill_name, {})
+    actual_rank = int((row or {}).get("ranks", 0) or 0) if isinstance(row, dict) else int(row or 0)
+    effective_rank = _rogue_skill_effective_rank(session, server, skill_name)
+    points = int((row or {}).get("training_points", 0) or 0) if isinstance(row, dict) else 0
+    max_rank = int(skill_def.get("max_rank") or 63)
+    points_per_rank = max(1, int(skill_def.get("points_per_rank") or 100))
+    next_need = max(0, points_per_rank - (points % points_per_rank)) if actual_rank < max_rank else 0
+    lines = []
+    summary = str(cfg.get("summary") or "").strip()
+    if summary:
+        lines.append(summary)
+    if effective_rank > actual_rank and actual_rank <= 0:
+        lines.append(f"You have been taught the introductory form of {skill_name}.  Permanent guild rank: 0.  Functional lesson rank: 1.")
+    else:
+        lines.append(f"Current {skill_name} rank: {actual_rank}.")
+    command = str(cfg.get("command") or "").strip().upper()
+    if command:
+        lines.append(f"Guild command: {command}.")
+    if actual_rank < max_rank:
+        lines.append(f"Guild points in {skill_name}: {points}.  {next_need} more points are needed for the next permanent rank.")
+    reached_text, upcoming_text = _rogue_skill_unlock_summary(session, server, skill_name)
+    if reached_text:
+        lines.append(f"Current unlock: {reached_text}")
+    if upcoming_text:
+        lines.append(upcoming_text)
+    emote_unlock = str(cfg.get("emote_unlock") or "").strip().lower()
+    emote_verb = str(cfg.get("emote_verb") or "").strip().upper()
+    if emote_unlock and emote_verb:
+        if has_unlock(session, emote_unlock):
+            lines.append(f"Guild flourish unlocked: {emote_verb}.")
+        else:
+            lines.append(f"Complete the guided {skill_name} lesson to unlock the {emote_verb} flourish permanently.")
+    help_text = str(cfg.get("training_help") or "").strip()
+    if help_text:
+        lines.append(help_text)
+    return [line for line in lines if line]
+
+
+def _rogue_training_admin_lines(session, server):
+    _refresh_guild_state(session, server)
+    membership = getattr(session, "guild_membership", None) or {}
+    lines = []
+    if not membership or membership.get("guild_id") != "rogue":
+        return ["You are not currently on the Rogue Guild rolls."]
+    lines.append(_guild_summary_line(membership))
+    next_rank = _next_guild_rank_row(session, server)
+    if next_rank:
+        lines.append(
+            f"Next rank: {next_rank.get('rank_name') or 'next rank'} needs {int(next_rank.get('min_total_skill_ranks') or 0)} total guild ranks across {int(next_rank.get('min_distinct_skills') or 0)} skill tracks."
+        )
+    current_task = ((getattr(session, "guild_tasks", []) or [None])[0])
+    if current_task:
+        lines.append(_active_task_line(current_task))
+    else:
+        lines.append("You have no active rogue guild task.  Ask the trainer for a lesson or use GLD TASK <skill>.")
+    guild_engine = getattr(server, "guild", None)
+    if guild_engine and getattr(session, "character_id", None):
+        active_quests = guild_engine.get_active_quests(session.character_id, guild_id="rogue")
+        if active_quests:
+            quest = active_quests[0]
+            objective = quest.get("objective") or quest.get("description") or quest.get("title") or "guild work"
+            lines.append(f"Active guild quest: {objective}")
+            hint = str(quest.get("hint") or "").strip()
+            if hint:
+                lines.append(f"Quest hint: {hint}")
+    for skill_name in ("Sweep", "Subdue", "Cheapshots", "Stun Maneuvers", "Rogue Gambits", "Lock Mastery"):
+        row = (getattr(session, "guild_skills", {}) or {}).get(skill_name, {})
+        actual_rank = int((row or {}).get("ranks", 0) or 0) if isinstance(row, dict) else int(row or 0)
+        effective_rank = _rogue_skill_effective_rank(session, server, skill_name)
+        marker = " [lesson taught]" if effective_rank > actual_rank and actual_rank <= 0 else ""
+        lines.append(f"{skill_name}: rank {actual_rank}{marker}")
+    return lines
 
 
 def _refresh_guild_state(session, server):
@@ -269,6 +408,11 @@ async def _cmd_rank(session, server):
         f"Your current guild rank is {rank_name} (rank level {rank_level}) in the {membership.get('guild_name', 'Unknown Guild')}."
     )
     await session.send_line(_guild_cap_line(membership, session))
+    next_rank = _next_guild_rank_row(session, server)
+    if next_rank:
+        await session.send_line(
+            f"Next rank: {next_rank.get('rank_name') or 'next rank'} requires {int(next_rank.get('min_total_skill_ranks') or 0)} total guild ranks across {int(next_rank.get('min_distinct_skills') or 0)} skill tracks."
+        )
 
 
 async def _cmd_join(session, server):
@@ -510,6 +654,13 @@ async def _cmd_checkin(session, server):
     _refresh_guild_state(session, server)
     if membership["guild_id"] == "rogue" and getattr(server, "guild", None):
         await server.guild.record_event(session, "guild_checkin_rogue")
+        active_quest = server.guild.get_active_quest(session.character_id, "rogue")
+        if active_quest:
+            objective = active_quest.get("objective") or active_quest.get("description") or active_quest.get("title") or "Continue your guild work."
+            await session.send_line(colorize(f"  Guild quest: {objective}", TextPresets.SYSTEM))
+            hint = str(active_quest.get("hint") or "").strip()
+            if hint:
+                await session.send_line(colorize(f"  Hint: {hint}", TextPresets.SYSTEM))
     due_str = next_due.strftime("%Y-%m-%d")
     await session.send_line(
         npc_speech(npc.display_name, f'says, "You are checked in.  Return again before {due_str}."')
@@ -714,15 +865,24 @@ async def _cmd_skills(session, server):
         current = skill_rows.get(skill, {})
         points = int(current.get("training_points", 0) or 0)
         ranks = int(current.get("ranks", 0) or 0)
+        effective_rank = _rogue_skill_effective_rank(session, server, skill) if guild_id == "rogue" else ranks
         ppr = max(1, int(row.get("points_per_rank") or 100))
         next_need = ppr - (points % ppr) if ranks < int(row.get("max_rank") or 63) else 0
         focus_tag = "  [focus]" if active_skill == skill else ""
         practice_tag = "  [hall drill]" if int(row.get("practice_only") or 0) else ""
+        intro_tag = "  [lesson taught]" if guild_id == "rogue" and effective_rank > ranks and ranks <= 0 else ""
         await session.send_line(
             f"  {row.get('display_name', skill)}: rank {ranks}, {points} points"
             + (f", {next_need} to next rank" if next_need > 0 else ", mastered")
             + focus_tag + practice_tag
+            + intro_tag
         )
+        if guild_id == "rogue":
+            reached_text, upcoming_text = _rogue_skill_unlock_summary(session, server, skill)
+            if reached_text:
+                await session.send_line(f"      Current unlock: {reached_text}")
+            if upcoming_text:
+                await session.send_line(f"      {upcoming_text}")
     await session.send_line(_guild_cap_line(membership, session))
 
 
@@ -1294,6 +1454,136 @@ async def _cmd_promote(session, args, server):
     await target.send_line(
         f"{session.character_name} promotes you to rank {summary['skill_rank']} in {summary['skill_name']}."
     )
+
+
+async def maybe_handle_guild_npc_action(session, npc, topic, payload, server):
+    action = str((payload or {}).get("guild_action") or "").strip().lower()
+    if not action:
+        return False
+
+    _refresh_guild_state(session, server)
+    membership = getattr(session, "guild_membership", None) or {}
+
+    if action == "rogue_skill_status":
+        skill_name = str(payload.get("skill_name") or "").strip()
+        if not skill_name:
+            return False
+        for line in _rogue_skill_status_lines(session, server, skill_name):
+            await session.send_line(npc_speech(npc.display_name, f'says, "{line}"'))
+        return True
+
+    if action == "rogue_training_admin_status":
+        for line in _rogue_training_admin_lines(session, server):
+            await session.send_line(npc_speech(npc.display_name, f'says, "{line}"'))
+        return True
+
+    if action == "rogue_rank_status":
+        if membership.get("guild_id") != "rogue":
+            await session.send_line(npc_speech(npc.display_name, 'says, "You are not currently on the Rogue Guild rolls."'))
+            return True
+        await session.send_line(npc_speech(npc.display_name, f'says, "{_guild_summary_line(membership)}"'))
+        next_rank = _next_guild_rank_row(session, server)
+        if next_rank:
+            await session.send_line(
+                npc_speech(
+                    npc.display_name,
+                    f'says, "Your next step is {next_rank.get("rank_name") or "the next rank"}: {int(next_rank.get("min_total_skill_ranks") or 0)} total guild ranks across {int(next_rank.get("min_distinct_skills") or 0)} skill tracks."'
+                )
+            )
+        else:
+            await session.send_line(npc_speech(npc.display_name, 'says, "You are already sitting at the top recorded guild rank."'))
+        return True
+
+    if action == "rogue_train_skill":
+        if membership.get("guild_id") != "rogue":
+            await session.send_line(npc_speech(npc.display_name, 'says, "You are not currently a member of the Rogue Guild."'))
+            return True
+        skill_name = str(payload.get("skill_name") or "").strip()
+        if not skill_name:
+            return False
+        cfg = _rogue_skill_cfg(server, skill_name)
+        intro_unlock = str(cfg.get("intro_unlock") or payload.get("intro_unlock") or "").strip().lower()
+        if intro_unlock and not has_unlock(session, intro_unlock):
+            grant_unlock(
+                session,
+                server,
+                intro_unlock,
+                unlock_type="rogue_skill",
+                notes=f"Taught by {getattr(npc, 'template_id', 'rogue_trainer')}.",
+            )
+            await session.send_line(
+                npc_speech(
+                    npc.display_name,
+                    f'says, "Good.  The guild is willing to count you as taught in the basics of {skill_name}.  That much stays with you."'
+                )
+            )
+
+        extra_unlocks = payload.get("extra_unlocks") or []
+        if isinstance(extra_unlocks, str):
+            extra_unlocks = [extra_unlocks]
+        for raw_unlock in extra_unlocks:
+            extra_key = str(raw_unlock or "").strip().lower()
+            if not extra_key or has_unlock(session, extra_key):
+                continue
+            grant_unlock(
+                session,
+                server,
+                extra_key,
+                unlock_type="rogue_skill",
+                notes=f"Taught by {getattr(npc, 'template_id', 'rogue_trainer')}.",
+            )
+
+        current_task = ((getattr(session, "guild_tasks", []) or [None])[0])
+        if current_task and str(current_task.get("skill_name") or "") != skill_name:
+            await session.send_line(
+                npc_speech(
+                    npc.display_name,
+                    f'says, "You already have {current_task.get("skill_name", "another")} work on your ledger.  Finish it, swap it, or abandon it before I hand you more."'
+                )
+            )
+        elif not current_task:
+            ok, error, task = server.guild.assign_task(session, "rogue", skill_name) if getattr(server, "guild", None) else (False, "The guild ledger is unavailable right now.", None)
+            if ok and task:
+                _refresh_guild_state(session, server)
+                await session.send_line(
+                    npc_speech(
+                        npc.display_name,
+                        f'says, "I have marked your ledger for {skill_name}.  Do the work, then return with GLD COMPLETE."'
+                    )
+                )
+                await session.send_line(_active_task_line(task))
+            elif error:
+                await session.send_line(npc_speech(npc.display_name, f'says, "{error}"'))
+
+        skip_quest = bool(payload.get("skip_quest"))
+        quest_key = "" if skip_quest else str(payload.get("quest_key") or cfg.get("quest_key") or "").strip().lower()
+        if quest_key and getattr(server, "guild", None):
+            existing_rows = server.guild.get_quest_journal(session.character_id, quest_key=quest_key)
+            existing = existing_rows[0] if existing_rows else None
+            existing_status = str((existing or {}).get("status") or "").lower()
+            quest = existing
+            if existing_status != "active":
+                ok, error, quest = server.guild.start_specific_quest(session, quest_key)
+                if ok and quest:
+                    await server.guild.prepare_started_quest(session, quest, actor_npc=npc)
+                    rows = server.guild.get_quest_journal(session.character_id, quest_key=quest_key)
+                    quest = rows[0] if rows else quest
+                elif error and "already complete" not in error.lower():
+                    await session.send_line(npc_speech(npc.display_name, f'says, "{error}"'))
+                    quest = None
+            if quest:
+                await session.send_line(colorize(f"  Guild quest: {quest.get('objective') or quest.get('description') or quest.get('title')}", TextPresets.SYSTEM))
+                hint = str(quest.get("hint") or "").strip()
+                if hint:
+                    await session.send_line(colorize(f"  Hint: {hint}", TextPresets.SYSTEM))
+            elif error and "already complete" not in error.lower():
+                await session.send_line(npc_speech(npc.display_name, f'says, "{error}"'))
+
+        for line in _rogue_skill_status_lines(session, server, skill_name):
+            await session.send_line(npc_speech(npc.display_name, f'says, "{line}"'))
+        return True
+
+    return False
 
 
 def get_guild_npc_response(session, npc, topic, server):

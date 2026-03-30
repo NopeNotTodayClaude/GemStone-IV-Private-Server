@@ -58,6 +58,8 @@ def load_emotes(lua_engine) -> Optional[list]:
                 "self_t":   str(entry.get("self_t",  entry["self"])),
                 "target_t": str(entry.get("target_t", entry["room"])),
                 "room_t":   str(entry.get("room_t",  entry["room"])),
+                "unlock_key": str(entry.get("unlock_key", "") or "").strip().lower(),
+                "locked_hint": str(entry.get("locked_hint", "") or "").strip(),
             })
 
         log.info("emotes_loader: loaded %d emotes from Lua", len(emotes))

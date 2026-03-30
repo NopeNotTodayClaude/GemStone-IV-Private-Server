@@ -443,7 +443,7 @@ class NPC:
             lua = getattr(server, "lua", None)
             engine = getattr(lua, "engine", None) if lua else None
             if engine and engine.available:
-                raw = engine.call_hook(self._lua_table, "on_player_talk", player, keyword or "")
+                raw = engine.call_npc_hook(self._lua_table, "on_player_talk", player, keyword or "")
                 raw = engine.lua_to_python(raw)
                 if isinstance(raw, str) and raw.strip():
                     return raw.strip()

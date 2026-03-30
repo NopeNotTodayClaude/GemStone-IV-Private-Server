@@ -13,6 +13,7 @@ import random
 import time
 from datetime import datetime, timedelta
 
+from server.core.character_unlocks import grant_unlock
 from server.core.entity.npc.npc import NPC
 from server.core.protocol.colors import colorize, TextPresets, npc_speech
 
@@ -32,7 +33,7 @@ class GuildEngine:
     _TV_BASEMENT_ROOM_ID = 18348
     _TV_LOCKSMITH_ROOM_ID = 10434
     _TV_GUILD_ENTRY_ROOM_ID = 17806
-    _TV_GUILD_CHUTE_ROOM_ID = 17826
+    _TV_GUILD_CHUTE_ROOM_ID = 17825
     _TV_LOCKMASTERY_ROOM_ID = 17827
     _TV_COMMON_ROOM_ID = 17819
     _TV_DRILL_ROOM_ID = 17822
@@ -1263,7 +1264,7 @@ class GuildEngine:
         if not room or not getattr(session, "character_id", None):
             return None, None, None
 
-        for active in self.get_active_quests(session.character_id, general_only=True):
+        for active in self.get_active_quests(session.character_id):
             stage = active.get("current_stage") or {}
             questions = stage.get("quiz_questions") or []
             if not questions:
@@ -1358,8 +1359,11 @@ class GuildEngine:
         silver = max(0, int(rewards.get("silver") or 0))
         experience = max(0, int(rewards.get("experience") or 0))
         items = rewards.get("items") or []
+        unlocks = rewards.get("unlocks") or []
         if isinstance(items, (str, int)):
             items = [items]
+        if isinstance(unlocks, (str, dict)):
+            unlocks = [unlocks]
 
         if silver:
             session.silver = int(getattr(session, "silver", 0) or 0) + silver
@@ -1391,6 +1395,26 @@ class GuildEngine:
                 if not inv_id:
                     continue
                 await session.send_line(colorize(f"  Quest reward: item #{item_id}.", TextPresets.ITEM_NAME))
+
+        for raw_unlock in unlocks:
+            if isinstance(raw_unlock, str):
+                unlock_key = raw_unlock.strip().lower()
+                unlock_type = "generic"
+                notes = None
+                message = ""
+            elif isinstance(raw_unlock, dict):
+                unlock_key = str(raw_unlock.get("key") or raw_unlock.get("unlock_key") or "").strip().lower()
+                unlock_type = str(raw_unlock.get("type") or raw_unlock.get("unlock_type") or "generic").strip().lower() or "generic"
+                notes = str(raw_unlock.get("notes") or "").strip() or None
+                message = str(raw_unlock.get("message") or raw_unlock.get("text") or "").strip()
+            else:
+                continue
+            if not unlock_key:
+                continue
+            granted = grant_unlock(session, self.server, unlock_key, unlock_type=unlock_type, notes=notes)
+            if granted:
+                label = message or f"You permanently learn {unlock_key.replace('_', ' ')}."
+                await session.send_line(colorize(f"  Quest reward: {label}", TextPresets.SYSTEM))
 
     def _resolve_item_reference(self, raw_item):
         if raw_item is None or not getattr(self.server, "db", None):
@@ -1437,6 +1461,7 @@ class GuildEngine:
         if not quest or not getattr(session, "character_id", None):
             return True, None
 
+        actor_npc = actor_npc or self._find_local_quest_npc(session, quest, phase="start")
         quest_meta = quest.get("quest_meta") or {}
         start_items = quest_meta.get("start_items") or []
         if isinstance(start_items, (str, int, dict)):
@@ -2298,7 +2323,7 @@ class GuildEngine:
         if not getattr(session, "character_id", None):
             return []
         offers = []
-        for row in self.get_general_quest_journal(session.character_id):
+        for row in self.get_quest_journal(session.character_id):
             if not (row.get("start_npc_template_ids") or []):
                 continue
             if not self._quest_matches_npc(row, npc, phase="start"):
@@ -2312,7 +2337,7 @@ class GuildEngine:
         if not getattr(session, "character_id", None):
             return []
         related = []
-        for row in self.get_active_quests(session.character_id, general_only=True):
+        for row in self.get_active_quests(session.character_id):
             if not ((row.get("start_npc_template_ids") or []) or (row.get("turnin_npc_template_ids") or [])):
                 continue
             if self._quest_matches_npc(row, npc, phase="start") or self._quest_matches_npc(row, npc, phase="turnin"):
@@ -2526,6 +2551,11 @@ class GuildEngine:
                             TextPresets.SYSTEM,
                         )
                     )
+                    hint_text = str(next_stage.get("hint") or "").strip()
+                    if hint_text:
+                        await session.send_line(
+                            colorize(f"  Hint: {hint_text}", TextPresets.SYSTEM)
+                        )
                     if next_stage.get("quiz_questions"):
                         refreshed = self.get_quest_journal(session.character_id, quest_key=active.get("key_name"))[0]
                         _, questions, npc = self._get_room_quiz_quest(session)

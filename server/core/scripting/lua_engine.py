@@ -257,6 +257,26 @@ class LuaEngine:
             log.error("Lua hook '%s' error: %s", hook, e)
             return None
 
+    def call_npc_hook(self, lua_table: Any, hook: str, *args) -> Any:
+        """
+        Call an NPC hook defined with colon syntax, e.g.:
+            function NPC:on_player_talk(player, keyword)
+
+        NPC scripts are the one subsystem that consistently expects the Lua
+        table itself as the implicit first argument, so keep that behavior in a
+        separate adapter instead of changing the generic hook contract.
+        """
+        if not self._lua or lua_table is None:
+            return None
+        try:
+            fn = getattr(lua_table, hook, None)
+            if fn is None or lupa.lua_type(fn) != "function":
+                return None
+            return fn(lua_table, *args)
+        except Exception as e:
+            log.error("Lua NPC hook '%s' error: %s", hook, e)
+            return None
+
     def execute(self, code: str) -> Any:
         """Execute arbitrary Lua code.  For testing / GM commands."""
         if not self._lua:

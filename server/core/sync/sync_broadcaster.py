@@ -534,12 +534,21 @@ def _build_npc_actions(session, server, npc) -> list[dict]:
     if has_social:
         add("Talk", f"talk to {npc_target}")
 
-    dialogue_keys = list((getattr(npc, "dialogues", {}) or {}).keys())
+    template_id = str(getattr(npc, "template_id", "") or "").strip()
+    rogue_custom_topics = _rogue_guild_topics_for_npc(template_id)
+
+    dialogue_keys = [] if rogue_custom_topics else list((getattr(npc, "dialogues", {}) or {}).keys())
     for topic in dialogue_keys[:8]:
         topic = str(topic or "").strip()
         if not topic or topic == "default":
             continue
         add(f"Ask about {topic}", f"ask {npc_target} about {topic}")
+
+    for entry in rogue_custom_topics:
+        label = str(entry.get("label") or "").strip()
+        topic = str(entry.get("topic") or "").strip()
+        if label and topic:
+            add(label, f"ask {npc_target} about {topic}")
 
     if getattr(npc, "can_shop", False) and getattr(npc, "shop_id", None):
         add("Order", "order")
@@ -783,6 +792,53 @@ def _extend_guild_actions(actions: list[dict], seen: set[tuple[str, str, bool]],
         add("Promote...", "gld promote ", prefill=True)
 
     add("Resign guild", "gld resign")
+
+
+def _rogue_guild_topics_for_npc(template_id: str) -> list[dict]:
+    topics = {
+        "tv_rogue_lockmaster": [
+            {"label": "Learn Lock Mastery", "topic": "lock mastery"},
+            {"label": "Lock Mastery Status", "topic": "lock"},
+            {"label": "Ask About Picktwirl", "topic": "picktwirl"},
+        ],
+        "tv_rogue_bruiser": [
+            {"label": "Start Dirty Fighting", "topic": "dirty fighting"},
+            {"label": "Learn Cheapshots", "topic": "cheapshots"},
+            {"label": "Learn Subdue", "topic": "subdue"},
+            {"label": "Learn Sweep", "topic": "sweep"},
+            {"label": "Ask About Coinroll", "topic": "coinroll"},
+        ],
+        "tv_rogue_drillmaster": [
+            {"label": "Start Fieldcraft", "topic": "fieldcraft"},
+            {"label": "Learn Rogue Gambits", "topic": "rogue gambits"},
+            {"label": "Learn Stun Maneuvers", "topic": "stun maneuvers"},
+            {"label": "Ask About Shadowpose", "topic": "shadowpose"},
+        ],
+        "tv_rogue_master_pyll": [
+            {"label": "Start Fieldcraft", "topic": "fieldcraft"},
+            {"label": "Learn Rogue Gambits", "topic": "rogue gambits"},
+            {"label": "Move To Alcove", "topic": "alcove"},
+        ],
+        "tv_rogue_training_admin": [
+            {"label": "Training Status", "topic": "status"},
+            {"label": "Current Task", "topic": "task"},
+            {"label": "Guild Quest", "topic": "quest"},
+            {"label": "Guild Rank", "topic": "rank"},
+        ],
+        "tv_rogue_guildmaster": [
+            {"label": "Guild Rank", "topic": "rank"},
+            {"label": "Training Status", "topic": "training"},
+            {"label": "Guild Quest", "topic": "quest"},
+        ],
+        "tv_rogue_guild_contact": [
+            {"label": "Guild Status", "topic": "status"},
+            {"label": "Current Task", "topic": "task"},
+            {"label": "Guild Quest", "topic": "quest"},
+            {"label": "Guild Rank", "topic": "rank"},
+            {"label": "Guild Password", "topic": "password"},
+        ],
+    }
+    return list(topics.get(template_id, []))
 
 
 def _extend_quest_actions(actions: list[dict], seen: set[tuple[str, str, bool]], session, server, npc) -> None:

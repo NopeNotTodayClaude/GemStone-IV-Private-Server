@@ -777,6 +777,24 @@ Emotes.list = {
       self="You look apologetic.",                room="{name} looks apologetic.",
       self_t="You apologize to {target}.",        target_t="{name} apologizes to you.",       room_t="{name} apologizes to {target}." },
 
+    { verb="picktwirl",
+      self="You flip a lockpick across your fingers and settle it back into a precise grip.", room="{name} flips a lockpick across their fingers and settles it into a precise grip.",
+      self_t="You flick a lockpick in a quick silver arc for {target}.", target_t="{name} flicks a lockpick in a quick silver arc for you.", room_t="{name} flicks a lockpick in a quick silver arc for {target}.",
+      unlock_key="rogue_emote_picktwirl",
+      locked_hint="You have not yet learned Sable's lockpick flourish." },
+
+    { verb="coinroll",
+      self="You roll a silver coin across your knuckles with a thief's lazy confidence.", room="{name} rolls a silver coin across their knuckles with lazy confidence.",
+      self_t="You roll a silver coin across your knuckles for {target}.", target_t="{name} rolls a silver coin across their knuckles for you.", room_t="{name} rolls a silver coin across their knuckles for {target}.",
+      unlock_key="rogue_emote_coinroll",
+      locked_hint="You have not yet learned the bruiser's coin trick." },
+
+    { verb="shadowpose",
+      self="You settle into a balanced rogue's pose, all loose confidence and ready motion.", room="{name} settles into a balanced rogue's pose.",
+      self_t="You melt into a balanced rogue's pose for {target}.", target_t="{name} melts into a balanced rogue's pose for you.", room_t="{name} melts into a balanced rogue's pose for {target}.",
+      unlock_key="rogue_emote_shadowpose",
+      locked_hint="You have not yet earned the guild's shadow pose." },
+
 }
 
 return Emotes

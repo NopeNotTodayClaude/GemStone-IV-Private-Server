@@ -37,4 +37,22 @@ NPC.ambient_chance = 0.03
 NPC.emote_cooldown = 45
 NPC.guild_id       = "rogue"
 
+local function norm(text)
+    return tostring(text or ""):lower():gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+function NPC:on_player_talk(player, keyword)
+    local topic = norm(keyword)
+    if topic == "" then
+        return nil
+    end
+    if topic == "rank" or topic == "status" or topic == "promotion" or topic == "promote" or topic == "guildmaster" then
+        return { guild_action = "rogue_rank_status" }
+    end
+    if topic == "training" or topic == "skills" or topic == "task" or topic == "tasks" or topic == "quest" or topic == "quests" then
+        return { guild_action = "rogue_training_admin_status" }
+    end
+    return nil
+end
+
 return NPC

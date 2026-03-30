@@ -34,4 +34,38 @@ NPC.ambient_chance = 0.03
 NPC.emote_cooldown = 45
 NPC.guild_id       = "rogue"
 
+local function norm(text)
+    return tostring(text or ""):lower():gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+function NPC:on_player_talk(player, keyword)
+    local topic = norm(keyword)
+    if topic == "" then
+        return nil
+    end
+    if topic:find("cheapshot", 1, true) then
+        return { guild_action = "rogue_train_skill", skill_name = "Cheapshots", skip_quest = true }
+    end
+    if topic:find("subdue", 1, true) then
+        return { guild_action = "rogue_train_skill", skill_name = "Subdue", skip_quest = true }
+    end
+    if topic:find("sweep", 1, true) then
+        return { guild_action = "rogue_train_skill", skill_name = "Sweep", skip_quest = true }
+    end
+    if topic == "lesson" or topic == "teach" or topic == "training" or topic == "train" or topic == "dirty fighting" or topic == "trial" then
+        return {
+            guild_action = "rogue_train_skill",
+            skill_name = "Cheapshots",
+            quest_key = "rogue_dirty_fighting",
+            extra_unlocks = { "rogue_skill_sweep_intro", "rogue_skill_subdue_intro" },
+        }
+    end
+    if topic == "coinroll" or topic == "flourish" or topic == "emote" then
+        return {
+            response = "Earn it.  Finish my dirty fighting trial and the coin trick sticks with you for good.",
+        }
+    end
+    return nil
+end
+
 return NPC

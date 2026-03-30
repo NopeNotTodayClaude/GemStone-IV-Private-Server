@@ -22,6 +22,7 @@ import re
 import time
 from types import SimpleNamespace
 
+from server.core.character_unlocks import has_unlock
 from server.core.engine.action_ready import evaluate_ready_rule
 from server.core.engine.combat.smr_engine import smr_roll
 from server.core.protocol.colors import TextPresets, colorize, roundtime_msg
@@ -94,6 +95,14 @@ _GUILD_SKILL_NAME_BY_MNEMONIC = {
     "subdue": "Subdue",
     "sweep": "Sweep",
     "tackle": "Tackle",
+}
+
+_GUILD_INTRO_UNLOCKS = {
+    "Cheapshots": "rogue_skill_cheapshots_intro",
+    "Rogue Gambits": "rogue_skill_rgambit_intro",
+    "Stun Maneuvers": "rogue_skill_stunman_intro",
+    "Subdue": "rogue_skill_subdue_intro",
+    "Sweep": "rogue_skill_sweep_intro",
 }
 
 _PASSIVE_PRESETS = {
@@ -243,7 +252,13 @@ def _resolve_mnemonic(server, raw: str) -> tuple[str, dict] | tuple[None, None]:
 def _guild_skill_rank(session, skill_name: str) -> int:
     rows = getattr(session, "guild_skills", {}) or {}
     row = rows.get(skill_name) or {}
-    return int(row.get("ranks", 0) or 0) if isinstance(row, dict) else int(row or 0)
+    ranks = int(row.get("ranks", 0) or 0) if isinstance(row, dict) else int(row or 0)
+    if ranks > 0:
+        return ranks
+    unlock_key = _GUILD_INTRO_UNLOCKS.get(str(skill_name or "").strip())
+    if unlock_key and has_unlock(session, unlock_key):
+        return 1
+    return 0
 
 
 def _guild_skill_tier(session, skill_name: str) -> int:

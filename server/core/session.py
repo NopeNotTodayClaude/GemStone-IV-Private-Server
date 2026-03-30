@@ -114,6 +114,7 @@ class Session:
         self.combat_maneuver_bonuses = []
         self.combat_maneuver_attack_context = None
         self.combat_maneuver_last_attack = None
+        self.unlocks = {}
         self.reaction_triggers = {}
         self.hotbar_slots = {}
 
@@ -303,6 +304,7 @@ class Session:
         self.combat_maneuver_bonuses = []
         self.combat_maneuver_attack_context = None
         self.combat_maneuver_last_attack = None
+        self.unlocks = {}
         self.reaction_triggers = {}
         self.hotbar_slots = {}
         self.spell_ranks = {}

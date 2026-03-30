@@ -5,6 +5,23 @@ Quest.guild_id    = "rogue"
 Quest.title       = "Locks Within Locks"
 Quest.description = "The guild expects more than brute persistence from a locksmith."
 Quest.repeatable  = false
+Quest.start_npc_template_ids = {
+    "tv_rogue_lockmaster",
+}
+Quest.turnin_npc_template_ids = {
+    "tv_rogue_lockmaster",
+}
+Quest.start_message = "Then stop pawing at locks like a dock thug.  Read the room, measure the mechanism, and prove you can detect, disarm, and pick cleanly."
+Quest.rewards = {
+    unlocks = {
+        {
+            key = "rogue_emote_picktwirl",
+            type = "emote",
+            notes = "Lock mastery flourish taught by Sable.",
+            message = "You permanently learn Sable's picktwirl flourish.  You can now PICKTWIRL.",
+        },
+    },
+}
 
 Quest.stages = {
     {

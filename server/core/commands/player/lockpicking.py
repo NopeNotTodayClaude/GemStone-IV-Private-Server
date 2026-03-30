@@ -34,6 +34,7 @@ import logging
 import random
 import re
 import time as _time
+from server.core.character_unlocks import has_unlock
 from server.core.protocol.colors import (
     colorize, TextPresets, item_name as fmt_item_name, roundtime_msg
 )
@@ -76,7 +77,10 @@ def _rogue_lockmastery_ranks(session) -> int:
     if membership.get("guild_id") != "rogue":
         return 0
     row = (getattr(session, "guild_skills", {}) or {}).get("Lock Mastery", {})
-    return int(row.get("ranks", 0) or 0)
+    ranks = int(row.get("ranks", 0) or 0)
+    if ranks > 0:
+        return ranks
+    return 1 if has_unlock(session, "rogue_skill_lockmastery_intro") else 0
 
 
 def _lockmastery_focus_bonus(session, *, consume=False) -> int:

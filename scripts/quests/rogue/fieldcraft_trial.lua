@@ -5,6 +5,25 @@ Quest.guild_id    = "rogue"
 Quest.title       = "Never Lose the Edge"
 Quest.description = "When the work turns rough, a rogue keeps moving and keeps the advantage."
 Quest.repeatable  = false
+Quest.start_npc_template_ids = {
+    "tv_rogue_drillmaster",
+    "tv_rogue_master_pyll",
+}
+Quest.turnin_npc_template_ids = {
+    "tv_rogue_drillmaster",
+    "tv_rogue_master_pyll",
+}
+Quest.start_message = "You want fieldcraft, then prove you can keep moving through the ugly seconds.  Show me stun recovery, two clean gambits, and one that actually shifts the fight."
+Quest.rewards = {
+    unlocks = {
+        {
+            key = "rogue_emote_shadowpose",
+            type = "emote",
+            notes = "Fieldcraft flourish taught by Velk.",
+            message = "You permanently learn the guild's shadowpose flourish.  You can now SHADOWPOSE.",
+        },
+    },
+}
 
 Quest.stages = {
     {

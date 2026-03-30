@@ -9,6 +9,7 @@ GROWL, SNICKER, CACKLE, HUG, KISS
 import logging
 import random
 import time
+from server.core.character_unlocks import has_unlock
 
 log = logging.getLogger(__name__)
 
@@ -1848,6 +1849,11 @@ def _make_lua_emote_cmd(emote_def: dict):
     Closes over the emote_def dict so each verb has its own messages.
     """
     async def _handler(session, cmd, args, server):
+        unlock_key = str(emote_def.get("unlock_key") or "").strip().lower()
+        if unlock_key and not has_unlock(session, unlock_key):
+            hint = str(emote_def.get("locked_hint") or "").strip() or "You have not been taught that flourish yet."
+            await session.send_line(hint)
+            return
         await _do_emote(
             session, args, server,
             emote_def["self"],

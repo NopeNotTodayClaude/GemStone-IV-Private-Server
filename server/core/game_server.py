@@ -17,6 +17,7 @@ from server.core.database import Database
 from server.core.character_creation import CharacterCreator
 from server.core.tutorial import TutorialManager
 from server.core.tutorial import is_tutorial_room_id
+from server.core.character_unlocks import load_unlocks_for_session
 from server.core.entity.creature.creature_manager import CreatureManager
 from server.core.entity.npc.npc_manager import NPCManager
 from server.core.engine.combat.combat_engine import CombatEngine
@@ -517,6 +518,7 @@ class GameServer:
             load_techniques_for_session(session, self.db)
             await reconcile_techniques_for_session(session, self, notify=False)
             load_combat_maneuvers_for_session(session, self.db)
+            load_unlocks_for_session(session, self.db)
             self.hotbar.load_for_session(session)
             if getattr(self, "wound_bridge", None):
                 await self.wound_bridge.load_wounds(session)
@@ -613,6 +615,7 @@ class GameServer:
             load_techniques_for_session(session, self.db)
             await reconcile_techniques_for_session(session, self, notify=False)
             load_combat_maneuvers_for_session(session, self.db)
+            load_unlocks_for_session(session, self.db)
             self.hotbar.load_for_session(session)
 
         # Generate real-time sync token

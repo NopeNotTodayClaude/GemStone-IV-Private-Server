@@ -149,10 +149,17 @@ ROGUE_ROOM_HINTS = {
             "GLD COMPLETE",
         ],
     ),
-    17826: (
+    17825: (
         "Rogue Transit",
         [
             "GO CHUTE",
+            "WEST",
+            "EAST",
+        ],
+    ),
+    17826: (
+        "Rogue Transit",
+        [
             "GO DOOR",
             "WEST",
         ],

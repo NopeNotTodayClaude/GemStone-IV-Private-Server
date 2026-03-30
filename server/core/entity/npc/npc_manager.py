@@ -301,7 +301,7 @@ class NPCManager:
 
         if npc._lua_table and npc.has_hook("on_load"):
             try:
-                engine.call_hook(npc._lua_table, "on_load")
+                engine.call_npc_hook(npc._lua_table, "on_load")
             except Exception as e:
                 log.error("NPC on_load hook error (%s): %s", npc.template_id, e)
 
@@ -448,7 +448,7 @@ class NPCManager:
             if not npc.alive or not npc.has_hook("on_tick") or not npc._lua_table:
                 continue
             try:
-                engine.call_hook(npc._lua_table, "on_tick")
+                engine.call_npc_hook(npc._lua_table, "on_tick")
             except Exception as e:
                 log.error("NPC on_tick hook error (%s): %s", npc.template_id, e)
 
@@ -723,7 +723,7 @@ class NPCManager:
                     lua = getattr(self.server, "lua", None)
                     engine = getattr(lua, "engine", None) if lua else None
                     if engine and engine.available:
-                        engine.call_hook(npc._lua_table, "on_player_enter", session)
+                        engine.call_npc_hook(npc._lua_table, "on_player_enter", session)
                 except Exception as e:
                     log.error("NPC on_player_enter hook error (%s): %s",
                               npc.template_id, e)
@@ -754,7 +754,7 @@ class NPCManager:
                 lua    = getattr(self.server, "lua", None)
                 engine = getattr(lua, "engine", None) if lua else None
                 if engine and engine.available:
-                    engine.call_hook(npc._lua_table, "on_death")
+                    engine.call_npc_hook(npc._lua_table, "on_death")
             except Exception as e:
                 log.error("NPC on_death hook error (%s): %s", npc.template_id, e)
 
@@ -772,7 +772,7 @@ class NPCManager:
                     lua    = getattr(self.server, "lua", None)
                     engine = getattr(lua, "engine", None) if lua else None
                     if engine and engine.available:
-                        engine.call_hook(npc._lua_table, "on_invasion", zone_slug)
+                        engine.call_npc_hook(npc._lua_table, "on_invasion", zone_slug)
                 except Exception as e:
                     log.error("NPC on_invasion hook error (%s): %s", npc.template_id, e)
 

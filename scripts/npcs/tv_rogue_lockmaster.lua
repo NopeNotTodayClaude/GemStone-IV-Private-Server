@@ -34,4 +34,24 @@ NPC.ambient_chance = 0.03
 NPC.emote_cooldown = 45
 NPC.guild_id       = "rogue"
 
+local function norm(text)
+    return tostring(text or ""):lower():gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+function NPC:on_player_talk(player, keyword)
+    local topic = norm(keyword)
+    if topic == "" then
+        return nil
+    end
+    if topic == "picktwirl" or topic == "flourish" or topic == "emote" then
+        return {
+            response = "Finish my lockwork trial cleanly and I will show you the picktwirl.",
+        }
+    end
+    if topic:find("lock mastery", 1, true) or topic:find("lmaster", 1, true) or topic:find("calipers", 1, true) or topic:find("focus", 1, true) or topic:find("sense", 1, true) or topic:find("pick", 1, true) or topic == "lock" or topic == "mastery" or topic == "training" or topic == "lesson" or topic == "teach" or topic == "train" or topic == "work" then
+        return { guild_action = "rogue_train_skill", skill_name = "Lock Mastery", quest_key = "rogue_lockmastery" }
+    end
+    return nil
+end
+
 return NPC

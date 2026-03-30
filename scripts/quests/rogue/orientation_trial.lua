@@ -5,6 +5,16 @@ Quest.guild_id    = "rogue"
 Quest.title       = "The First Walkthrough"
 Quest.description = "A new rogue is expected to learn the rooms, the trainers, and the hands that actually keep the Ta'Vaalor chapter moving."
 Quest.repeatable  = false
+Quest.start_npc_template_ids = {
+    "tv_rogue_guild_contact",
+    "tv_rogue_guildmaster",
+    "tv_rogue_training_admin",
+}
+Quest.start_message = "Your dues are square.  Now learn the chapter properly.  Go back through the inner alley, then meet the lockmaster, the bruiser, and the drillmaster before you start pretending you belong here."
+Quest.turnin_npc_template_ids = {
+    "tv_rogue_guild_contact",
+    "tv_rogue_training_admin",
+}
 
 Quest.stages = {
     {
@@ -17,7 +27,7 @@ Quest.stages = {
         objective_event = "rogue_meet_lockmaster",
         required_count  = 1,
         objective       = "Meet the lockmaster.",
-        hint            = "Take the north passage and let the lockmaster size you up.",
+        hint            = "Find Sable on the lockmaster floor and speak to her about lock mastery.",
     },
     {
         objective_event = "rogue_meet_bruiser",
@@ -29,7 +39,7 @@ Quest.stages = {
         objective_event = "rogue_meet_drillmaster",
         required_count  = 1,
         objective       = "Meet the drillmaster in the court.",
-        hint            = "The drill court handles the forms, recoveries, and gambit work.",
+        hint            = "Find Velk in the drill court and ask about training.",
     },
 }
 
