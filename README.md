@@ -7,6 +7,9 @@ Yes it has coop capability & even a custom party system for it. (Party start joi
 Currently the city of Ta'avalor is the preferred starting city. Other cities have a few shops, and "maybe" some monsters too, but nothing close to retail. The elf city however has almost everything wired up to it. (Still work in progress)
 If you are worried about the client working as good as lich with scripts, it's being worked on, but already surpasses wrayth + lich in various ways as is.
 
+IMPORTANT
+This is not an exact 1 to 1 copy project. Certain "liberties" have been taken to make this a 1 player game with coop support. It is still gemstone 4 at it's soul though.
+
 What This Includes
 
 Game server
