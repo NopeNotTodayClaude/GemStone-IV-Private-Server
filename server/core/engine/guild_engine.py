@@ -31,10 +31,11 @@ class GuildEngine:
     _TV_SHED_ROOM_ID = 17805
     _TV_BASEMENT_ROOM_ID = 18348
     _TV_LOCKSMITH_ROOM_ID = 10434
-    _TV_GUILD_ALLEY_ROOM_ID = 36780
-    _TV_LOCKMASTERY_ROOM_ID = 36781
-    _TV_COMMON_ROOM_ID = 36782
-    _TV_DRILL_ROOM_ID = 36783
+    _TV_GUILD_ENTRY_ROOM_ID = 17806
+    _TV_GUILD_CHUTE_ROOM_ID = 17826
+    _TV_LOCKMASTERY_ROOM_ID = 17827
+    _TV_COMMON_ROOM_ID = 17819
+    _TV_DRILL_ROOM_ID = 17822
 
     def __init__(self, server):
         self.server = server
@@ -3418,9 +3419,9 @@ class GuildEngine:
             if not is_member and not member_access:
                 await session.send_line("You find no obvious way into the rogue guild from here.  Members use the chute only after the guild has formally taken them in.")
                 return True
-            return await self._move_special(session, self._TV_GUILD_ALLEY_ROOM_ID, "chute")
+            return await self._move_special(session, self._TV_GUILD_CHUTE_ROOM_ID, "chute")
 
-        if room_id == self._TV_GUILD_ALLEY_ROOM_ID:
+        if room_id == self._TV_GUILD_CHUTE_ROOM_ID:
             return await self._move_special(session, self._TV_LOCKSMITH_ROOM_ID, "chute")
         return False
 
@@ -3614,7 +3615,7 @@ class GuildEngine:
         self._set_sequence_state(session.character_id, self._ROGUE_GUILD_ID, step=0, room_id=None, started_at=None)
         self.unlock_member_access(session.character_id, self._ROGUE_GUILD_ID)
         await session.send_line(colorize("  The inner door swings open just enough to admit you into the guild proper.", TextPresets.COMBAT_HIT))
-        moved = await self._move_special(session, self._TV_GUILD_ALLEY_ROOM_ID, "door")
+        moved = await self._move_special(session, self._TV_GUILD_ENTRY_ROOM_ID, "door")
         if moved:
             await self.record_event(session, "rogue_inner_door_used")
         return moved
@@ -3627,7 +3628,7 @@ class GuildEngine:
             return
         room_id = int(getattr(getattr(session, "current_room", None), "id", 0) or 0)
         room_events = {
-            self._TV_GUILD_ALLEY_ROOM_ID: "rogue_enter_alley",
+            self._TV_GUILD_ENTRY_ROOM_ID: "rogue_enter_alley",
             self._TV_LOCKMASTERY_ROOM_ID: "rogue_meet_lockmaster",
             self._TV_COMMON_ROOM_ID: "rogue_meet_bruiser",
             self._TV_DRILL_ROOM_ID: "rogue_meet_drillmaster",

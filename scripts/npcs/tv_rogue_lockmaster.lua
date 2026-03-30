@@ -5,7 +5,7 @@ NPC.name           = "Sable"
 NPC.article        = ""
 NPC.title          = "the lockmaster"
 NPC.description    = "A lean woman with iron-gray eyes, scarred fingertips, and the patient expression of someone who has watched more than one overeager rogue ruin a promising set of picks."
-NPC.home_room_id   = 36781
+NPC.home_room_id   = 17827
 
 NPC.can_combat     = false
 NPC.can_shop       = false

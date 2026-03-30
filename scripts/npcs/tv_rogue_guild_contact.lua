@@ -1,5 +1,5 @@
 -- NPC: Kharst
--- Zone/Town: auto-placed  |  Room: 36780
+-- Zone/Town: auto-placed  |  Room: 17806
 local NPC = {}
 
 NPC.template_id    = "tv_rogue_guild_contact"
@@ -7,7 +7,7 @@ NPC.name           = "Kharst"
 NPC.article        = ""
 NPC.title          = "the guild factor"
 NPC.description    = "Kharst has the unhurried look of a man who is never surprised twice by the same mistake."
-NPC.home_room_id   = 36780
+NPC.home_room_id   = 17806
 
 NPC.can_combat     = false
 NPC.can_shop       = false

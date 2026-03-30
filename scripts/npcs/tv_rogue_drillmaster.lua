@@ -5,7 +5,7 @@ NPC.name           = "Velk"
 NPC.article        = ""
 NPC.title          = "the drillmaster"
 NPC.description    = "Velk has the posture of a duelist, the stare of a quartermaster, and none of the patience usually associated with either."
-NPC.home_room_id   = 36783
+NPC.home_room_id   = 17822
 
 NPC.can_combat     = false
 NPC.can_shop       = false

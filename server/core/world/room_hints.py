@@ -219,7 +219,7 @@ async def show_room_hints(session, room, server):
         ]))
         shown.add("tv_rogue_basement")
 
-    if room.id in {36780, 36781, 36782, 36783} and "tv_rogue_guild" not in shown:
+    if room.id in {17806, 17819, 17822, 17826, 17827} and "tv_rogue_guild" not in shown:
         await session.send_line(_fmt("Rogue Guild", [
             "GLD STATUS",
             "GLD JOIN",
