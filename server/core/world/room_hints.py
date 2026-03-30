@@ -87,6 +87,134 @@ MENAGERIE_HINT = (
     ],
 )
 
+ROGUE_GUILD_TEMPLATE_IDS = {
+    "tv_rogue_guild_contact",
+    "tv_rogue_lockmaster",
+    "tv_rogue_bruiser",
+    "tv_rogue_drillmaster",
+    "tv_rogue_training_admin",
+    "tv_rogue_guildmaster",
+    "tv_rogue_master_pyll",
+}
+
+ROGUE_ROOM_HINTS = {
+    17806: (
+        "Rogue Ledger",
+        [
+            "GLD STATUS",
+            "GLD JOIN",
+            "GLD PAY {months}",
+            "GLD CHECKIN",
+            "GLD RANK",
+            "GLD SKILLS",
+            "GLD TASK {skill}",
+            "GLD COMPLETE",
+            "GLD QUEST START",
+            "GLD QUEST",
+            "GLD VOUCHERS",
+            "GLD SWAP {skill}",
+            "GLD PASSWORD",
+            "GLD NOMINATE {person}",
+            "GLD PROMOTE {person} IN {skill}",
+            "TALK TO KHARST",
+        ],
+    ),
+    17819: (
+        "Dirty Fighting",
+        [
+            "TALK TO MARN",
+            "ASK MARN ABOUT training",
+            "ASK MARN ABOUT cheapshot",
+            "ASK MARN ABOUT sweep",
+            "ASK MARN ABOUT subdue",
+            "CHEAPSHOT {maneuver} {target}",
+            "GLD TASK cheapshots",
+            "GLD TASK sweep",
+            "GLD TASK subdue",
+            "GLD PRACTICE",
+            "GLD COMPLETE",
+        ],
+    ),
+    17822: (
+        "Drill Court",
+        [
+            "TALK TO VELK",
+            "ASK VELK ABOUT training",
+            "ASK VELK ABOUT stun",
+            "ASK VELK ABOUT gambit",
+            "ASK VELK ABOUT drill",
+            "GLD TASK stun maneuvers",
+            "GLD TASK rogue gambits",
+            "GLD PRACTICE",
+            "GLD COMPLETE",
+        ],
+    ),
+    17826: (
+        "Rogue Transit",
+        [
+            "GO CHUTE",
+            "GO DOOR",
+            "WEST",
+        ],
+    ),
+    17831: (
+        "Guildmaster",
+        [
+            "TALK TO GUILDMASTER",
+            "ASK GUILDMASTER ABOUT guildmaster",
+            "GLD PASSWORD",
+            "GLD INVITE {person}",
+            "GLD INITIATE {person}",
+            "GLD NOMINATE {person}",
+            "GLD PROMOTE {person} IN {skill}",
+            "GLD PROMOTE GUILDMASTER {person}",
+        ],
+    ),
+    17833: (
+        "Inn Passage",
+        [
+            "GO PANEL",
+            "GO DOOR",
+            "EAST",
+        ],
+    ),
+    17836: (
+        "Training Admin",
+        [
+            "TALK TO TRAINING ADMINISTRATOR",
+            "ASK TRAINING ADMINISTRATOR ABOUT training",
+            "GLD CHECKIN",
+            "GLD SKILLS",
+            "GLD TASK {skill}",
+            "GLD VOUCHERS",
+            "GLD SWAP {skill}",
+        ],
+    ),
+    18345: (
+        "Guild Masters",
+        [
+            "TALK TO PYLL",
+            "ASK PYLL ABOUT gambit",
+            "ASK PYLL ABOUT TRAIN GAMBITS",
+            "GO TRAPDOOR",
+            "DOWN",
+        ],
+    ),
+    17827: (
+        "Lock Mastery",
+        [
+            "TALK TO SABLE",
+            "ASK SABLE ABOUT training",
+            "ASK SABLE ABOUT lock",
+            "ASK SABLE ABOUT mastery",
+            "GLD TASK lock mastery",
+            "GLD PRACTICE",
+            "GLD COMPLETE",
+            "GO TOOLBENCHES",
+        ],
+    ),
+}
+
 
 def _fmt(label, commands):
     return colorize(f"[{label}: {', '.join(commands)}]", HINT_COLOR)
@@ -219,21 +347,13 @@ async def show_room_hints(session, room, server):
         ]))
         shown.add("tv_rogue_basement")
 
-    if room.id in {17806, 17819, 17822, 17826, 17827} and "tv_rogue_guild" not in shown:
-        await session.send_line(_fmt("Rogue Guild", [
-            "GLD STATUS",
-            "GLD JOIN",
-            "GLD PAY {months}",
-            "GLD CHECKIN",
-            "GLD SKILLS",
-            "GLD TASK {skill}",
-            "GLD PRACTICE",
-            "GLD COMPLETE",
-            "GLD QUEST START",
-            "GLD QUEST",
-            "GO CHUTE",
-        ]))
+    rogue_hint = ROGUE_ROOM_HINTS.get(room.id)
+    if rogue_hint and "tv_rogue_guild" not in shown:
+        label, cmds = rogue_hint
+        await session.send_line(_fmt(label, cmds))
         shown.add("tv_rogue_guild")
+        shown.add("profession_guild")
+        shown.add("guild")
 
     guild_engine = getattr(server, "guild", None)
     if room.id == 10434 and guild_engine and "tv_rogue_chute" not in shown:
@@ -290,8 +410,9 @@ async def show_room_hints(session, room, server):
 
     for npc in server.npcs.get_npcs_in_room(room.id):
         tid = getattr(npc, "template_id", None) or ""
+        is_rogue_guild_npc = tid in ROGUE_GUILD_TEMPLATE_IDS
 
-        if getattr(npc, "guild_id", None) and "profession_guild" not in shown:
+        if getattr(npc, "guild_id", None) and "profession_guild" not in shown and not is_rogue_guild_npc:
             label = _get_guild_label(server, getattr(npc, "guild_id", None))
             cmds = [
                 "GLD STATUS",
@@ -349,6 +470,8 @@ async def show_room_hints(session, room, server):
 
         for service_tag, (label, cmds) in SERVICE_TAG_HINTS.items():
             if service_tag in shown:
+                continue
+            if is_rogue_guild_npc and service_tag == "guild":
                 continue
             if npc.matches_service(service_tag):
                 await session.send_line(_fmt(label, cmds))

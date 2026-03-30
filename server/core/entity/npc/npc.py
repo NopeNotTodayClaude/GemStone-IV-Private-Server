@@ -438,7 +438,7 @@ class NPC:
                 return fallback.get("default")
         return None
 
-    def get_talk_response(self, server, player, keyword: str) -> str | None:
+    def get_talk_response(self, server, player, keyword: str):
         if self.has_hook("on_player_talk") and self._lua_table:
             lua = getattr(server, "lua", None)
             engine = getattr(lua, "engine", None) if lua else None
@@ -451,7 +451,8 @@ class NPC:
                     for field in ("response", "message", "text"):
                         value = raw.get(field)
                         if isinstance(value, str) and value.strip():
-                            return value.strip()
+                            raw[field] = value.strip()
+                    return raw
 
         return self.get_dialogue(keyword or "")
 

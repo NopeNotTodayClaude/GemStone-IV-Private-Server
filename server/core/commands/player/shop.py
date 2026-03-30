@@ -76,6 +76,8 @@ def _quest_topic_key(topic: str) -> str:
 
 
 async def _send_npc_response(session, npc, topic, server):
+    from server.core.commands.player.movement import _move_player
+
     quest_engine = getattr(server, "guild", None)
     topic_key = _quest_topic_key(topic)
     if quest_engine and topic_key:
@@ -104,6 +106,27 @@ async def _send_npc_response(session, npc, topic, server):
         pass
 
     response = npc.get_talk_response(server, session, topic)
+    if isinstance(response, dict):
+        text = None
+        for field in ("response", "message", "text"):
+            value = response.get(field)
+            if isinstance(value, str) and value.strip():
+                text = value.strip()
+                break
+        if text:
+            await session.send_line(npc_speech(npc.display_name, f'says, "{text}"'))
+
+        target_room_id = int(response.get("move_to_room") or 0)
+        if target_room_id:
+            current_room = getattr(session, "current_room", None)
+            target_room = server.world.get_room(target_room_id) if getattr(server, "world", None) else None
+            if current_room and target_room:
+                direction_label = str(response.get("move_verb") or response.get("direction_label") or "out").strip() or "out"
+                await _move_player(session, current_room, target_room, direction_label, server, sneaking=False)
+            else:
+                await session.send_line("That route leads nowhere right now.")
+        return
+
     if response:
         await session.send_line(npc_speech(npc.display_name, f'says, "{response}"'))
     else:

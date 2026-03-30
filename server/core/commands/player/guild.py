@@ -1315,7 +1315,7 @@ def get_guild_npc_response(session, npc, topic, server):
                     return "Gaeld Var.  The shed.  Go in, LOOK TOOL, and mind the panel before you worry about the inner door.  Once the guild takes you in, this shop's chute becomes your regular entrance."
                 return "When the guild finally notices you, the first stop in Ta'Vaalor is a shed on Gaeld Var.  Until then, there is nothing here for you."
 
-    if template_id in {"tv_rogue_lockmaster", "tv_rogue_bruiser", "tv_rogue_drillmaster"}:
+    if template_id in {"tv_rogue_lockmaster", "tv_rogue_bruiser", "tv_rogue_drillmaster", "tv_rogue_master_pyll"}:
         if topic_l in ("join", "membership", "ledger", "dues", "pay", "checkin"):
             return "Kharst keeps the guild ledger in the alley.  I'm here to train you, not to sign your papers."
         if topic_l in ("training", "skills", "lock", "mastery", "cheapshot", "sweep", "subdue", "stun", "gambit", "drill"):
