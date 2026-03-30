@@ -4,8 +4,14 @@ Single-player/private GemStone IV server project using Lua, SQL, and a custom cl
 Yes it has coop capability & even a custom party system for it. (Party start join end commands)
 
 (Yes this runs a full private server with a custom client that tries to emulate Gemstone 4 with some single player tweaks)
-Currently the city of Ta'avalor is the preferred starting city. Other cities have a few shops, and "maybe" some monsters too, but nothing close to retail. The elf city however has almost everything wired up to it. (Still work in progress)
+Currently the city of Ta'avalor is the preferred starting city. Other cities have a few shops, and "maybe" some monsters too, but still work in progress. The elf city however has the most  wired up. (Also Still work in progress)
+
 If you are worried about the client working as good as lich with scripts, it's being worked on, but already surpasses wrayth + lich in various ways as is.
+
+IMPORTANT
+This is not an exact 1 to 1 copy project. Certain "liberties" have been taken to make this a 1 player game with coop support. The new "pet" system unlocked at level 5 covers gaps that other players would normally fill (WIP). And the death system has been changed since you probably are not getting revived lol. 
+
+It is still gemstone 4 at it's soul though.
 
 What This Includes
 
