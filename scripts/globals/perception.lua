@@ -74,4 +74,19 @@ Perception.search_failed_exit_msg = "You sense there may be something hidden her
 -- If roll >= (search_dc - sense_threshold), show the tease message instead of nothing
 Perception.sense_threshold = 15
 
+-- =============================================================================
+-- TRAP DETECTION
+-- DETECT on treasure boxes should primarily reward Perception, with optional
+-- support from trap-specific training.  The lock analysis and the trap analysis
+-- are separate checks and should report separate odds.
+-- =============================================================================
+
+Perception.trap_detect_skill_id = 27
+Perception.trap_detect_rank_multiplier = 3
+Perception.trap_detect_stat = "stat_intuition"
+Perception.trap_detect_stat_divisor = 2
+Perception.trap_detect_secondary_skill_id = 24
+Perception.trap_detect_secondary_rank_multiplier = 1
+Perception.trap_detect_sense_threshold = 15
+
 return Perception

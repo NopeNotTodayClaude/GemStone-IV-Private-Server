@@ -35,6 +35,13 @@ _DEFAULTS = {
     "search_found_exit_msg": "Your careful search reveals a hidden path: ",
     "search_failed_exit_msg":"You sense there may be something hidden here, but can't quite make it out.",
     "sense_threshold":       15,
+    "trap_detect_skill_id": 27,
+    "trap_detect_rank_multiplier": 3,
+    "trap_detect_stat": "stat_intuition",
+    "trap_detect_stat_divisor": 2,
+    "trap_detect_secondary_skill_id": 24,
+    "trap_detect_secondary_rank_multiplier": 1,
+    "trap_detect_sense_threshold": 15,
 }
 
 

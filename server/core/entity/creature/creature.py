@@ -8,6 +8,7 @@ from the database or Lua scripts.
 import time
 import random
 import logging
+from server.core.engine.combat.status_effects import get_combat_mods as get_status_combat_mods
 from server.core.scripting.loaders.body_types_loader import get_locations
 
 log = logging.getLogger(__name__)
@@ -256,8 +257,9 @@ class Creature:
         return sev >= 5
 
     def get_melee_as(self, attack=None):
-        """Get attack strength, degraded by wounds and HP percentage."""
+        """Get attack strength, degraded by wounds/HP and modified by statuses."""
         base = attack.get("as", self.as_melee) if attack else self.as_melee
+        status_as_mod, _status_ds_mod = get_status_combat_mods(self)
 
         # ── Wound penalties — body-type-aware ────────────────────────────────
         # We map location groups to penalty multipliers so that quadrupeds,
@@ -311,13 +313,15 @@ class Creature:
             0,
             base
             - penalty
+            + int(status_as_mod or 0)
             + int(getattr(self, "ai_as_bonus", 0) or 0)
             + int(self.get_temp_as_bonus()),
         )
 
     def get_melee_ds(self):
-        """Get defensive strength, degraded by wounds and HP percentage."""
+        """Get defensive strength, degraded by wounds/HP and modified by statuses."""
         ds = self.ds_melee
+        _status_as_mod, status_ds_mod = get_status_combat_mods(self)
 
         # Stance modifier (unchanged)
         if self.stance == "defensive":
@@ -385,9 +389,29 @@ class Creature:
             0,
             ds
             - penalty
+            + int(status_ds_mod or 0)
             + int(getattr(self, "ai_ds_bonus", 0) or 0)
             + int(self.get_temp_ds_bonus()),
         )
+
+    def get_ranged_ds(self) -> int:
+        """Get ranged defensive strength with status modifiers applied."""
+        _status_as_mod, status_ds_mod = get_status_combat_mods(self)
+        return max(0, int(getattr(self, "ds_ranged", self.ds_melee) or self.ds_melee) + int(status_ds_mod or 0))
+
+    def get_bolt_ds(self) -> int:
+        """Get bolt defensive strength with status modifiers applied."""
+        _status_as_mod, status_ds_mod = get_status_combat_mods(self)
+        base = int(getattr(self, "ds_bolt", getattr(self, "ds_ranged", self.ds_melee)) or getattr(self, "ds_ranged", self.ds_melee))
+        return max(0, base + int(status_ds_mod or 0))
+
+    def get_udf(self) -> int:
+        """Get UDF with status-aware fallback when an explicit value is not set."""
+        _status_as_mod, status_ds_mod = get_status_combat_mods(self)
+        base = int(getattr(self, "udf", 0) or 0)
+        if base <= 0:
+            return max(1, self.get_melee_ds())
+        return max(1, base + int(status_ds_mod or 0))
 
     def apply_wound(self, location: str, crit_rank: int) -> int:
         """

@@ -98,10 +98,13 @@ class TrapManager:
 
     def build_box_trap_state(self, creature_level: int) -> dict:
         trap_type = self.choose_random_trap(creature_level)
+        per_level = int(self._spawn_cfg.get("trap_difficulty_per_level") or 4)
+        jitter_low = int(self._spawn_cfg.get("trap_difficulty_jitter_low") or -8)
+        jitter_high = int(self._spawn_cfg.get("trap_difficulty_jitter_high") or 10)
         state = {
             "trap_type": trap_type,
             "trapped": trap_type is not None,
-            "trap_difficulty": (creature_level * 12 + random.randint(-5, 15)) if trap_type else 0,
+            "trap_difficulty": (creature_level * per_level + random.randint(jitter_low, jitter_high)) if trap_type else 0,
             "trap_checked": False,
             "trap_detected": False,
             "trap_disarmed": False,
@@ -163,14 +166,14 @@ class TrapManager:
         return random.choice(valid).get("key")
 
     async def _handle_generic(self, session, box: dict, trap: dict) -> list:
-        damage = self._roll_damage(trap.get("base_damage"))
+        damage = self._roll_damage(self._scaled_damage_range(box, trap, trap.get("base_damage"), channel="direct"))
         await session.send_line(colorize(f"  {trap.get('fail_msg')}", TextPresets.COMBAT_MISS))
         await self._apply_damage_and_effects(session, trap, damage=damage)
         return []
 
     async def _handle_scarab(self, session, box: dict, trap: dict) -> list:
         variant = self._scarab_variant_for_box(box, trap)
-        base_damage = self._roll_damage(trap.get("base_damage"))
+        base_damage = self._roll_damage(self._scaled_damage_range(box, trap, trap.get("base_damage"), channel="direct"))
         await session.send_line(colorize(f"  {variant.get('attach_line') or trap.get('fail_msg')}", TextPresets.COMBAT_MISS))
         await self._apply_damage_and_effects(session, trap, damage=base_damage)
         scarab_state = {
@@ -197,17 +200,19 @@ class TrapManager:
         return []
 
     async def _handle_gas(self, session, box: dict, trap: dict) -> list:
-        damage = self._roll_damage(trap.get("base_damage"))
+        damage = self._roll_damage(self._scaled_damage_range(box, trap, trap.get("base_damage"), channel="direct"))
         await session.send_line(colorize(f"  {trap.get('fail_msg')}", TextPresets.COMBAT_MISS))
         await self._apply_damage_and_effects(session, trap, damage=damage)
         special = trap.get("special") or {}
         harmed = await self._spawn_room_hazard(
             session,
+            box=box,
+            trap=trap,
             trap_type="gas",
             room_id=getattr(getattr(session, "current_room", None), "id", 0),
             duration=int(special.get("duration") or 10),
             tick_interval=int(special.get("tick_interval") or 5),
-            damage_range=special.get("same_room_damage"),
+            damage_range=self._scaled_damage_range(box, trap, special.get("same_room_damage"), channel="hazard"),
             wound_cfg=None,
             statuses=special.get("same_room_statuses") or [],
             cloud_line="The lingering gas cloud makes your lungs burn as you breathe it in!",
@@ -219,11 +224,13 @@ class TrapManager:
         special = trap.get("special") or {}
         harmed = await self._spawn_room_hazard(
             session,
+            box=box,
+            trap=trap,
             trap_type="spores",
             room_id=getattr(getattr(session, "current_room", None), "id", 0),
             duration=int(special.get("duration") or 25),
             tick_interval=int(special.get("tick_interval") or 5),
-            damage_range=special.get("same_room_damage"),
+            damage_range=self._scaled_damage_range(box, trap, special.get("same_room_damage"), channel="hazard"),
             wound_cfg=special.get("wound"),
             statuses=special.get("same_room_statuses") or [],
             cloud_line="The spore cloud invades your lungs and leaves you choking!",
@@ -232,29 +239,29 @@ class TrapManager:
 
     async def _handle_sphere(self, session, box: dict, trap: dict) -> list:
         await session.send_line(colorize(f"  {trap.get('fail_msg')}", TextPresets.COMBAT_MISS))
-        await self._apply_damage_and_effects(session, trap, damage=self._roll_damage(trap.get("base_damage")))
+        await self._apply_damage_and_effects(session, trap, damage=self._roll_damage(self._scaled_damage_range(box, trap, trap.get("base_damage"), channel="direct")))
         special = trap.get("special") or {}
         return await self._apply_same_room_collateral(
             session,
-            damage_range=special.get("same_room_damage"),
+            damage_range=self._scaled_damage_range(box, trap, special.get("same_room_damage"), channel="room"),
             statuses=special.get("same_room_statuses") or [],
             message="The elemental wave slams into you and knocks you off balance!",
         )
 
     async def _handle_fire_vial(self, session, box: dict, trap: dict) -> list:
         await session.send_line(colorize(f"  {trap.get('fail_msg')}", TextPresets.COMBAT_MISS))
-        await self._apply_damage_and_effects(session, trap, damage=self._roll_damage(trap.get("base_damage")))
+        await self._apply_damage_and_effects(session, trap, damage=self._roll_damage(self._scaled_damage_range(box, trap, trap.get("base_damage"), channel="direct")))
         special = trap.get("special") or {}
         return await self._apply_same_room_collateral(
             session,
-            damage_range=special.get("same_room_damage"),
+            damage_range=self._scaled_damage_range(box, trap, special.get("same_room_damage"), channel="room"),
             statuses=[],
             message="Spraying flame catches you in the blast from the trapped container!",
         )
 
     async def _handle_boomer(self, session, box: dict, trap: dict) -> list:
         await session.send_line(colorize(f"  {trap.get('fail_msg')}", TextPresets.COMBAT_MISS))
-        await self._apply_damage_and_effects(session, trap, damage=self._roll_damage(trap.get("base_damage")))
+        await self._apply_damage_and_effects(session, trap, damage=self._roll_damage(self._scaled_damage_range(box, trap, trap.get("base_damage"), channel="direct")))
         special = trap.get("special") or {}
         if special.get("destroys_box"):
             box["destroyed"] = True
@@ -262,14 +269,14 @@ class TrapManager:
             await session.send_line(colorize("  The blast tears the container apart!", TextPresets.WARNING))
         harmed = await self._apply_same_room_collateral(
             session,
-            damage_range=special.get("same_room_damage"),
+            damage_range=self._scaled_damage_range(box, trap, special.get("same_room_damage"), channel="room"),
             statuses=[],
             message="The explosion catches you in a wave of heat and shrapnel!",
         )
         harmed.extend(
             await self._apply_adjacent_room_collateral(
                 session,
-                damage_range=special.get("adjacent_room_damage"),
+                damage_range=self._scaled_damage_range(box, trap, special.get("adjacent_room_damage"), channel="room"),
                 message=str(special.get("adjacent_room_message") or "A heavy explosion booms nearby!"),
             )
         )
@@ -277,7 +284,7 @@ class TrapManager:
 
     async def _handle_temporal_rift(self, session, box: dict, trap: dict) -> list:
         await session.send_line(colorize(f"  {trap.get('fail_msg')}", TextPresets.COMBAT_MISS))
-        await self._apply_damage_and_effects(session, trap, damage=self._roll_damage(trap.get("base_damage")))
+        await self._apply_damage_and_effects(session, trap, damage=self._roll_damage(self._scaled_damage_range(box, trap, trap.get("base_damage"), channel="direct")))
         special = trap.get("special") or {}
         await self._transport_to_temporal_rift(
             session,
@@ -288,7 +295,7 @@ class TrapManager:
 
     async def _handle_dark_crystal(self, session, box: dict, trap: dict) -> list:
         await session.send_line(colorize(f"  {trap.get('fail_msg')}", TextPresets.COMBAT_MISS))
-        await self._apply_damage_and_effects(session, trap, damage=self._roll_damage(trap.get("base_damage")))
+        await self._apply_damage_and_effects(session, trap, damage=self._roll_damage(self._scaled_damage_range(box, trap, trap.get("base_damage"), channel="direct")))
         special = trap.get("special") or {}
         pct = float(special.get("mana_burn_pct") or 0.50)
         mana_loss = int((getattr(session, "mana_current", 0) or 0) * pct)
@@ -299,11 +306,11 @@ class TrapManager:
 
     async def _handle_glyph(self, session, box: dict, trap: dict) -> list:
         await session.send_line(colorize(f"  {trap.get('fail_msg')}", TextPresets.COMBAT_MISS))
-        await self._apply_damage_and_effects(session, trap, damage=self._roll_damage(trap.get("base_damage")))
+        await self._apply_damage_and_effects(session, trap, damage=self._roll_damage(self._scaled_damage_range(box, trap, trap.get("base_damage"), channel="direct")))
         special = trap.get("special") or {}
         return await self._apply_same_room_collateral(
             session,
-            damage_range=special.get("same_room_damage"),
+            damage_range=self._scaled_damage_range(box, trap, special.get("same_room_damage"), channel="room"),
             statuses=special.get("same_room_statuses") or [],
             message="The magical flare rakes through you with disorienting force!",
         )
@@ -402,6 +409,8 @@ class TrapManager:
         self,
         session,
         *,
+        box: dict,
+        trap: dict,
         trap_type: str,
         room_id: int,
         duration: int,
@@ -416,6 +425,8 @@ class TrapManager:
         hazard = {
             "trap_type": trap_type,
             "owner": session,
+            "box": box,
+            "trap": trap,
             "room_id": room_id,
             "expires_at": time.time() + max(1, int(duration)),
             "next_tick": time.time() + max(1, int(tick_interval)),
@@ -726,6 +737,26 @@ class TrapManager:
             box["trap_variant"] = picked.get("key")
             return picked
         return {}
+
+    def _scaled_damage_range(self, box: dict, trap: dict, damage_range, *, channel: str = "direct"):
+        if not isinstance(damage_range, dict):
+            return damage_range
+        base = float(self._spawn_cfg.get("damage_scale_base_difficulty") or 45)
+        step = max(1.0, float(self._spawn_cfg.get("damage_scale_step") or 15))
+        pct_key = {
+            "direct": "direct_damage_scale_pct",
+            "room": "room_damage_scale_pct",
+            "hazard": "hazard_tick_scale_pct",
+        }.get(channel, "direct_damage_scale_pct")
+        pct = float(self._spawn_cfg.get(pct_key) or 0.0)
+        trap_diff = int(box.get("trap_difficulty", 0) or 0) + int(trap.get("diff_bonus", 0) or 0)
+        if trap_diff <= base or pct <= 0:
+            return damage_range
+        tiers = max(0.0, (trap_diff - base) / step)
+        mult = 1.0 + (tiers * pct)
+        lo = max(0, int(round((int(damage_range.get("min") or 0)) * mult)))
+        hi = max(lo, int(round((int(damage_range.get("max") or lo)) * mult)))
+        return {"min": lo, "max": hi}
 
     @staticmethod
     def _roll_damage(damage_range) -> int:

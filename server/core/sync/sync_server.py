@@ -290,7 +290,8 @@ class SyncServer:
         if event_type == "hotbar_execute" and hotbar:
             slot = int(msg.get("slot", 0) or 0)
             target_name = str(msg.get("target") or "").strip()
-            ok, notice = await hotbar.execute_slot(session, slot, target_name=target_name)
+            subaction_key = str(msg.get("subaction_key") or "").strip()
+            ok, notice = await hotbar.execute_slot(session, slot, target_name=target_name, subaction_key=subaction_key)
             if notice:
                 await session.send_line(notice)
                 await session.send_prompt()

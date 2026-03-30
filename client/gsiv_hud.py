@@ -3330,6 +3330,30 @@ class HUDApp:
             payload["target"] = target_name
         self._send_sync_event(payload)
 
+    def _execute_hotbar_slot_variant(self, slot: int, subaction_key: str):
+        slot_map = {
+            int(row.get("slot", 0) or 0): row
+            for row in (self._hotbar_state.get("slots") or [])
+            if 1 <= int(row.get("slot", 0) or 0) <= 9
+        }
+        slot_info = slot_map.get(int(slot)) or {}
+        targeting = str(slot_info.get("targeting") or "").strip().lower()
+
+        target_name = ""
+        if targeting.startswith("current_target"):
+            if not self._current_target and self._room_enemies:
+                self._set_target_entry(self._room_enemies[0], fg=ACCENT_RED)
+            target_name = str(self._current_target or "").strip()
+
+        payload = {
+            "type": "hotbar_execute",
+            "slot": int(slot),
+            "subaction_key": str(subaction_key or "").strip(),
+        }
+        if target_name:
+            payload["target"] = target_name
+        self._send_sync_event(payload)
+
     def _show_hotbar_menu(self, event, slot: int):
         state = self._hotbar_state or {}
         catalog = (state.get("catalog") or {}).get("categories") or []
@@ -3348,6 +3372,9 @@ class HUDApp:
         menu.add_command(label=f"Hotbar {slot}", state="disabled")
         menu.add_separator()
 
+        submenu_actions = slot_info.get("submenu_actions") or []
+        assigned_category = str(slot_info.get("category_key") or "").strip()
+
         for category in catalog:
             actions = category.get("actions") or []
             if not actions:
@@ -3357,6 +3384,33 @@ class HUDApp:
                               activebackground="#2a3a5a",
                               activeforeground=TEXT_MAIN,
                               relief="flat", bd=1)
+            category_key = str(category.get("key") or "").strip()
+            if submenu_actions and category_key == assigned_category:
+                exec_menu = tk.Menu(submenu, tearoff=0, bg="#1a1e26", fg=TEXT_MAIN,
+                                    font=(self._game_font, 10),
+                                    activebackground="#2a3a5a",
+                                    activeforeground=TEXT_MAIN,
+                                    relief="flat", bd=1)
+                for action in submenu_actions:
+                    label = str(action.get("label") or "").strip()
+                    action_key = str(action.get("key") or "").strip()
+                    if not label or not action_key:
+                        continue
+                    lock_label = str(action.get("lock_label") or "").strip()
+                    enabled = bool(action.get("enabled", True))
+                    if lock_label and not enabled:
+                        label = f"{label} [{lock_label}]"
+                    exec_menu.add_command(
+                        label=label,
+                        state=("normal" if enabled else "disabled"),
+                        command=lambda a=action_key: self._execute_hotbar_slot_variant(slot, a),
+                    )
+                if exec_menu.index("end") is not None:
+                    submenu.add_cascade(
+                        label=f"{str(slot_info.get('submenu_label') or slot_info.get('label') or 'Variants').strip()} >",
+                        menu=exec_menu,
+                    )
+                    submenu.add_separator()
             for action in actions:
                 label = str(action.get("label") or "").strip()
                 if not label:

@@ -586,6 +586,7 @@ def _db_save_item_state(server, inv_id, item_dict):
     """Persist runtime item properties (lock, trap, contents) to extra_data JSON.
     Called after adding a generated box/item to inventory so it survives logout."""
     EXTRA_KEYS = (
+        'creature_level',
         'is_locked', 'lock_difficulty', 'opened',
         'trap_type', 'trapped', 'trap_difficulty', 'trap_checked',
         'trap_detected', 'trap_disarmed', 'trap_variant', 'trap_payload',
@@ -1601,23 +1602,11 @@ async def cmd_open(session, cmd, args, server):
                 )
             )
         else:
-            if cont.get("trapped") and not cont.get("trap_disarmed"):
-                try:
-                    from server.core.commands.player.lockpicking import _trigger_trap
-                    trap = server.traps.get_trap_def(cont.get("trap_type")) if getattr(server, "traps", None) else None
-                    await session.send_line(colorize(
-                        f"You carefully start to open {_item_display(cont)}...",
-                        TextPresets.WARNING
-                    ))
-                    if trap:
-                        await _trigger_trap(session, server, cont, trap, source="open")
-                    else:
-                        await session.send_line(colorize("Something hidden in the latch snaps at you!", TextPresets.WARNING))
-                    return
-                except Exception as e:
-                    log.error("OPEN trap trigger failed: %s", e, exc_info=True)
-            cont['opened'] = True
-            await session.send_line('You open ' + _item_display(cont) + '.')
+            try:
+                from server.core.commands.player.lockpicking import _open_box_with_trap_guard
+                await _open_box_with_trap_guard(session, server, cont, source="open", show_contents=False)
+            except Exception as e:
+                log.error("OPEN trap trigger failed: %s", e, exc_info=True)
         return
 
     await session.send_line("I could not find what you were referring to.")
@@ -2274,10 +2263,10 @@ async def cmd_get_all(session, cmd, args, server):
                 f"{fmt_item_name(box.get('short_name', 'the box'))} is locked!"
             )
             return
-        box["opened"] = True
-        await session.send_line(
-            f"You open {fmt_item_name(box.get('short_name', 'the box'))}."
-        )
+        from server.core.commands.player.lockpicking import _open_box_with_trap_guard
+        opened = await _open_box_with_trap_guard(session, server, box, source="get_all", show_contents=False)
+        if not opened:
+            return
 
     if box.get("destroyed"):
         await session.send_line("That has been destroyed.")

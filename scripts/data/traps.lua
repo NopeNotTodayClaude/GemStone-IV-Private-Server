@@ -14,6 +14,14 @@ TrapData.spawn = {
     min_level = 3,
     base_chance_per_level = 0.03,
     max_chance = 0.60,
+    trap_difficulty_per_level = 4,
+    trap_difficulty_jitter_low = -8,
+    trap_difficulty_jitter_high = 10,
+    damage_scale_base_difficulty = 45,
+    damage_scale_step = 15,
+    direct_damage_scale_pct = 0.20,
+    room_damage_scale_pct = 0.18,
+    hazard_tick_scale_pct = 0.15,
 }
 
 TrapData.weight_tiers = {
@@ -55,7 +63,7 @@ TrapData.definitions = {
         fail_msg = "A trap scarab bursts from the lock and fastens itself to you in a frenzy of tiny stabbing bites!",
         room_msg = "{name} recoils as a trap scarab erupts from the container!",
         damage_type = "puncture",
-        base_damage = { min = 6, max = 14 },
+        base_damage = { min = 10, max = 20 },
         diff_bonus = 15,
         tools = { "putty" },
         tool_action = {
@@ -72,8 +80,8 @@ TrapData.definitions = {
                     attach_line = "A blood-red scarab latches onto you, drilling in with frantic little bites!",
                     room_attach = "A blood-red scarab fastens itself to {name} and begins drinking greedily.",
                     tick_message = "The blood-red scarab drinks deeply, leaving you slick with fresh blood!",
-                    damage_min = 4,
-                    damage_max = 10,
+                    damage_min = 8,
+                    damage_max = 16,
                     wound_location = "right_hand",
                     wound_rank = 3,
                     applies_bleed = true,
@@ -85,12 +93,12 @@ TrapData.definitions = {
                     attach_line = "A scarlet-gold scarab darts across your skin with a burning, feverish bite!",
                     room_attach = "A scarlet-gold scarab skitters over {name}'s hand and bites viciously.",
                     tick_message = "The scarlet-gold scarab bites again, leaving a poisonous burn in its wake!",
-                    damage_min = 3,
-                    damage_max = 8,
+                    damage_min = 6,
+                    damage_max = 14,
                     wound_location = "right_hand",
                     wound_rank = 2,
                     statuses = {
-                        { id = "poisoned", duration = 60, stacks = 1, magnitude = 1 },
+                        { id = "poisoned", duration = 90, stacks = 1, magnitude = 2 },
                     },
                 },
                 {
@@ -99,12 +107,12 @@ TrapData.definitions = {
                     attach_line = "A spiked onyx scarab clamps down and sends an icy surge through your arm!",
                     room_attach = "A spiked onyx scarab anchors itself to {name}, its black shell pulsing faintly.",
                     tick_message = "The spiked onyx scarab drives its spines in again, leaving your limbs numb and shaky.",
-                    damage_min = 5,
-                    damage_max = 12,
+                    damage_min = 8,
+                    damage_max = 16,
                     wound_location = "right_arm",
                     wound_rank = 2,
                     statuses = {
-                        { id = "staggered", duration = 15, stacks = 1, magnitude = 1 },
+                        { id = "staggered", duration = 20, stacks = 1, magnitude = 1 },
                     },
                     jump_on_death = true,
                 },
@@ -119,15 +127,15 @@ TrapData.definitions = {
         fail_msg = "A poison needle shoots out and pricks your finger!",
         room_msg = "{name} jerks a hand back from a suddenly snapping needle trap!",
         damage_type = "puncture",
-        base_damage = { min = 4, max = 12 },
+        base_damage = { min = 10, max = 22 },
         diff_bonus = 0,
         tools = { "putty" },
         tool_action = {
             "You carefully press putty into the tiny aperture beside the lock plate.",
         },
-        wound = { location = "right_hand", rank = 1, bleed = false },
+        wound = { location = "right_hand", rank = 2, bleed = false },
         statuses = {
-            { id = "poisoned", duration = 90, stacks = 1, magnitude = 1 },
+            { id = "poisoned", duration = 120, stacks = 1, magnitude = 2 },
         },
     },
 
@@ -138,15 +146,15 @@ TrapData.definitions = {
         fail_msg = "Steel jaws slam shut on your hand with brutal force!",
         room_msg = "{name} cries out as steel jaws clamp shut on a hand!",
         damage_type = "crush",
-        base_damage = { min = 18, max = 34 },
+        base_damage = { min = 30, max = 56 },
         diff_bonus = 5,
         tools = { "grips" },
         tool_action = {
             "You work the metal grips into the mechanism and begin teasing the retaining pins loose.",
         },
-        wound = { location = "right_hand", rank = 4, bleed = true },
+        wound = { location = "right_hand", rank = 5, bleed = true },
         statuses = {
-            { id = "stunned", duration = 6, stacks = 1, magnitude = 1 },
+            { id = "stunned", duration = 8, stacks = 1, magnitude = 1 },
         },
     },
 
@@ -157,7 +165,7 @@ TrapData.definitions = {
         fail_msg = "The tiny sphere flashes and discharges a violent wave of force through the room!",
         room_msg = "A violent wave of force erupts from {name}'s container!",
         damage_type = "impact",
-        base_damage = { min = 16, max = 30 },
+        base_damage = { min = 28, max = 52 },
         diff_bonus = 10,
         tools = { "lockpick" },
         tool_action = {
@@ -165,13 +173,13 @@ TrapData.definitions = {
         },
         special = {
             kind = "room_wave",
-            same_room_damage = { min = 8, max = 20 },
+            same_room_damage = { min = 16, max = 34 },
             same_room_statuses = {
-                { id = "staggered", duration = 8, stacks = 1, magnitude = 1 },
+                { id = "staggered", duration = 12, stacks = 1, magnitude = 1 },
             },
         },
         statuses = {
-            { id = "staggered", duration = 8, stacks = 1, magnitude = 1 },
+            { id = "staggered", duration = 12, stacks = 1, magnitude = 1 },
         },
     },
 
@@ -182,7 +190,7 @@ TrapData.definitions = {
         fail_msg = "The dark crystal flares and tears at your reserves with a brutal pulse of anti-magic!",
         room_msg = "A dark pulse of anti-magic bursts from {name}'s container!",
         damage_type = "magic",
-        base_damage = { min = 14, max = 28 },
+        base_damage = { min = 24, max = 46 },
         diff_bonus = 15,
         tools = { "file" },
         tool_action = {
@@ -190,10 +198,10 @@ TrapData.definitions = {
         },
         special = {
             kind = "mana_burn",
-            mana_burn_pct = 0.50,
+            mana_burn_pct = 0.75,
         },
         statuses = {
-            { id = "dazed", duration = 10, stacks = 1, magnitude = 1 },
+            { id = "dazed", duration = 12, stacks = 1, magnitude = 1 },
         },
     },
 
@@ -204,13 +212,13 @@ TrapData.definitions = {
         fail_msg = "The metallic scales burst outward in a slicing spray!",
         room_msg = "A slicing spray of metallic scales bursts from {name}'s container!",
         damage_type = "slash",
-        base_damage = { min = 12, max = 24 },
+        base_damage = { min = 22, max = 42 },
         diff_bonus = 10,
         tools = { "lockpick" },
         tool_action = {
             "You work a fine implement around the scale lining, easing the trigger away from the tumblers.",
         },
-        wound = { location = "right_hand", rank = 2, bleed = true },
+        wound = { location = "right_hand", rank = 3, bleed = true },
     },
 
     sulphur = {
@@ -220,7 +228,7 @@ TrapData.definitions = {
         fail_msg = "The sulphur compound ignites in a hot flash that singes you and floods the air with choking smoke!",
         room_msg = "A hot sulphurous flash erupts from {name}'s container!",
         damage_type = "fire",
-        base_damage = { min = 20, max = 36 },
+        base_damage = { min = 34, max = 64 },
         diff_bonus = 15,
         tools = { "file", "needle" },
         tool_action = {
@@ -229,7 +237,7 @@ TrapData.definitions = {
         },
         wound = { location = "right_hand", rank = 2, bleed = false },
         statuses = {
-            { id = "clumsy", duration = 20, stacks = 1, magnitude = 1 },
+            { id = "clumsy", duration = 30, stacks = 1, magnitude = 1 },
         },
     },
 
@@ -240,7 +248,7 @@ TrapData.definitions = {
         fail_msg = "A choking cloud of gas vents into your face and spills through the room!",
         room_msg = "A choking cloud of gas spills from {name}'s container!",
         damage_type = "poison",
-        base_damage = { min = 8, max = 18 },
+        base_damage = { min = 18, max = 34 },
         diff_bonus = 10,
         tools = { "grips" },
         tool_action = {
@@ -248,12 +256,17 @@ TrapData.definitions = {
         },
         special = {
             kind = "gas_cloud",
-            same_room_damage = { min = 3, max = 8 },
-            duration = 10,
-            tick_interval = 5,
+            same_room_damage = { min = 10, max = 20 },
+            duration = 15,
+            tick_interval = 4,
+            same_room_statuses = {
+                { id = "poisoned", duration = 90, stacks = 1, magnitude = 2 },
+                { id = "feeble", duration = 20, stacks = 1, magnitude = 1 },
+            },
         },
         statuses = {
-            { id = "poisoned", duration = 90, stacks = 1, magnitude = 1 },
+            { id = "poisoned", duration = 120, stacks = 1, magnitude = 2 },
+            { id = "feeble", duration = 20, stacks = 1, magnitude = 1 },
         },
     },
 
@@ -264,16 +277,16 @@ TrapData.definitions = {
         fail_msg = "The acid vial tips and shatters, splashing caustic fluid over you!",
         room_msg = "{name} hisses in pain as acid splashes out of a trapped container!",
         damage_type = "acid",
-        base_damage = { min = 18, max = 34 },
+        base_damage = { min = 34, max = 60 },
         diff_bonus = 12,
         tools = { "cotton", "grips" },
         tool_action = {
             "You pack cotton around the vial to catch any sudden spill.",
             "You use the grips to lift the acid vial out of danger.",
         },
-        wound = { location = "right_hand", rank = 2, bleed = false },
+        wound = { location = "right_hand", rank = 3, bleed = false },
         statuses = {
-            { id = "feeble", duration = 20, stacks = 1, magnitude = 1 },
+            { id = "feeble", duration = 35, stacks = 1, magnitude = 1 },
         },
     },
 
@@ -284,13 +297,16 @@ TrapData.definitions = {
         fail_msg = "The lid snaps down brutally on your fingers!",
         room_msg = "{name}'s hand is smashed by a snapping lid!",
         damage_type = "crush",
-        base_damage = { min = 8, max = 18 },
+        base_damage = { min = 18, max = 34 },
         diff_bonus = 5,
         tools = { "grips" },
         tool_action = {
             "You wedge the grips against the coiled spring and begin forcing it flat.",
         },
-        wound = { location = "right_hand", rank = 1, bleed = false },
+        wound = { location = "right_hand", rank = 2, bleed = false },
+        statuses = {
+            { id = "dazed", duration = 6, stacks = 1, magnitude = 1 },
+        },
     },
 
     fire_vial = {
@@ -300,7 +316,7 @@ TrapData.definitions = {
         fail_msg = "The fire vial shatters and erupts in a spray of flame!",
         room_msg = "Flame erupts from {name}'s trapped container!",
         damage_type = "fire",
-        base_damage = { min = 24, max = 42 },
+        base_damage = { min = 42, max = 78 },
         diff_bonus = 18,
         tools = { "grips" },
         tool_action = {
@@ -308,9 +324,12 @@ TrapData.definitions = {
         },
         special = {
             kind = "room_blast",
-            same_room_damage = { min = 6, max = 14 },
+            same_room_damage = { min = 18, max = 34 },
         },
-        wound = { location = "right_hand", rank = 2, bleed = false },
+        wound = { location = "right_hand", rank = 3, bleed = false },
+        statuses = {
+            { id = "stunned", duration = 4, stacks = 1, magnitude = 1 },
+        },
     },
 
     spores = {
@@ -320,7 +339,7 @@ TrapData.definitions = {
         fail_msg = "A dark cloud of spores erupts into the air and everyone nearby begins choking!",
         room_msg = "A dark cloud of spores erupts from {name}'s trapped container!",
         damage_type = "poison",
-        base_damage = { min = 0, max = 0 },
+        base_damage = { min = 10, max = 20 },
         diff_bonus = 12,
         tools = { "putty" },
         tool_action = {
@@ -330,12 +349,16 @@ TrapData.definitions = {
             kind = "room_hazard",
             hazard_id = "spores",
             duration = 25,
-            tick_interval = 5,
-            same_room_damage = { min = 4, max = 10 },
-            wound = { location = "chest", rank = 1, bleed = false },
+            tick_interval = 4,
+            same_room_damage = { min = 12, max = 24 },
+            wound = { location = "chest", rank = 2, bleed = false },
             same_room_statuses = {
-                { id = "poisoned", duration = 60, stacks = 1, magnitude = 1 },
+                { id = "poisoned", duration = 90, stacks = 1, magnitude = 2 },
+                { id = "feeble", duration = 20, stacks = 1, magnitude = 1 },
             },
+        },
+        statuses = {
+            { id = "poisoned", duration = 90, stacks = 1, magnitude = 2 },
         },
     },
 
@@ -346,13 +369,13 @@ TrapData.definitions = {
         fail_msg = "The plated face kicks loose in a violent burst of razor-edged metal!",
         room_msg = "Razor-edged fragments spray from {name}'s trapped container!",
         damage_type = "slash",
-        base_damage = { min = 18, max = 34 },
+        base_damage = { min = 30, max = 54 },
         diff_bonus = 14,
         tools = { "vials" },
         tool_action = {
             "You drip acid across the plated anchors and wait for the fastenings to weaken.",
         },
-        wound = { location = "right_hand", rank = 2, bleed = true },
+        wound = { location = "right_hand", rank = 3, bleed = true },
     },
 
     glyph = {
@@ -362,19 +385,21 @@ TrapData.definitions = {
         fail_msg = "The glyph flares and twists space violently around the trapped container!",
         room_msg = "A violent magical flare erupts from {name}'s trapped container!",
         damage_type = "magic",
-        base_damage = { min = 20, max = 40 },
+        base_damage = { min = 38, max = 72 },
         diff_bonus = 20,
         tools = {},
         tool_action = {},
         special = {
             kind = "magic_blast",
-            same_room_damage = { min = 5, max = 12 },
+            same_room_damage = { min = 16, max = 30 },
             same_room_statuses = {
-                { id = "dazed", duration = 8, stacks = 1, magnitude = 1 },
+                { id = "dazed", duration = 12, stacks = 1, magnitude = 1 },
+                { id = "stunned", duration = 4, stacks = 1, magnitude = 1 },
             },
         },
         statuses = {
-            { id = "dazed", duration = 10, stacks = 1, magnitude = 1 },
+            { id = "dazed", duration = 12, stacks = 1, magnitude = 1 },
+            { id = "stunned", duration = 4, stacks = 1, magnitude = 1 },
         },
     },
 
@@ -385,13 +410,13 @@ TrapData.definitions = {
         fail_msg = "Metal rods lance out of the container and stab into you!",
         room_msg = "{name} recoils as a cluster of metal rods launches from a trapped container!",
         damage_type = "puncture",
-        base_damage = { min = 14, max = 28 },
+        base_damage = { min = 26, max = 48 },
         diff_bonus = 10,
         tools = { "grips" },
         tool_action = {
             "You secure the rods with the grips and begin levering them away from the trigger.",
         },
-        wound = { location = "right_hand", rank = 2, bleed = true },
+        wound = { location = "right_hand", rank = 3, bleed = true },
     },
 
     boomer = {
@@ -401,7 +426,7 @@ TrapData.definitions = {
         fail_msg = "The trap detonates in a deafening explosion!",
         room_msg = "{name}'s trapped container detonates in a deafening explosion!",
         damage_type = "fire",
-        base_damage = { min = 36, max = 72 },
+        base_damage = { min = 80, max = 140 },
         diff_bonus = 30,
         tools = { "putty" },
         tool_action = {
@@ -410,13 +435,13 @@ TrapData.definitions = {
         special = {
             kind = "room_blast",
             destroys_box = true,
-            same_room_damage = { min = 14, max = 28 },
-            adjacent_room_damage = { min = 4, max = 12 },
+            same_room_damage = { min = 30, max = 56 },
+            adjacent_room_damage = { min = 12, max = 26 },
             adjacent_room_message = "A heavy explosion booms nearby and the walls shudder from the force!",
         },
-        wound = { location = "right_hand", rank = 3, bleed = false },
+        wound = { location = "right_hand", rank = 4, bleed = false },
         statuses = {
-            { id = "stunned", duration = 6, stacks = 1, magnitude = 1 },
+            { id = "stunned", duration = 8, stacks = 1, magnitude = 1 },
         },
     },
 
@@ -427,7 +452,7 @@ TrapData.definitions = {
         fail_msg = "The trap tears open a temporal rift and drags you through collapsing space!",
         room_msg = "Space folds in on itself around {name} as a temporal rift yanks them away!",
         damage_type = "magic",
-        base_damage = { min = 10, max = 18 },
+        base_damage = { min = 24, max = 42 },
         diff_bonus = 28,
         tools = {},
         tool_action = {},
@@ -437,7 +462,7 @@ TrapData.definitions = {
             same_room_message = "The room ripples violently as the rift snaps shut.",
         },
         statuses = {
-            { id = "stunned", duration = 8, stacks = 1, magnitude = 1 },
+            { id = "stunned", duration = 10, stacks = 1, magnitude = 1 },
         },
     },
 }

@@ -15,7 +15,10 @@ from server.core.scripting.lua_bindings.weapon_api import (
     _resolve_profession_name,
     _validate_technique_loadout,
 )
-from server.core.scripting.lua_bindings.combat_maneuver_api import available_maneuver_summaries
+from server.core.scripting.lua_bindings.combat_maneuver_api import (
+    available_maneuver_summaries,
+    hotbar_child_maneuver_summaries,
+)
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +77,8 @@ class HotbarManager:
                 "short_label": str((action or {}).get("short_label") or (action or {}).get("label") or ""),
                 "command_preview": str((action or {}).get("command_preview") or ""),
                 "targeting": str((action or {}).get("targeting") or "").strip().lower(),
+                "submenu_label": str((action or {}).get("submenu_label") or ""),
+                "submenu_actions": list((action or {}).get("submenu_actions") or []),
                 "pulse": bool(ready_state.get("ready")),
                 "pulse_until": ready_state.get("ready_until"),
                 "pulse_reason": str(ready_state.get("message") or ""),
@@ -159,27 +164,85 @@ class HotbarManager:
         return f"WEAPON {mnemonic} <target>"
 
     def _combat_maneuver_actions(self, session) -> list[dict]:
+        summaries = available_maneuver_summaries(session, self.server)
         actions = []
-        for row in available_maneuver_summaries(session, self.server):
+        parents: dict[str, dict[str, Any]] = {}
+        parent_defaults: dict[str, str] = {}
+        children_by_parent: dict[str, list[dict[str, Any]]] = {}
+        for row in summaries:
             key = str(row.get("mnemonic") or "").strip()
             if not key or str(row.get("type") or "").strip().lower() not in {"attack", "setup", "buff", "aoe", "concentration", "martial_stance"}:
                 continue
             targeting = str(row.get("targeting") or "none").strip().lower()
-            preview = f"CMAN {key}"
+            subcommand_prefix = str(row.get("hotbar_subcommand") or "").strip().lower()
+            if subcommand_prefix and str(row.get("hotbar_default_child") or "").strip():
+                preview = subcommand_prefix.upper()
+            else:
+                preview = f"{subcommand_prefix.upper() or 'CMAN'} {key}".strip()
             if targeting.startswith("current_target"):
                 preview += " <target>"
-            actions.append(
-                {
-                    "key": key,
-                    "label": str(row.get("name") or key.replace("_", " ").title()).strip(),
-                    "short_label": str(row.get("name") or key.replace("_", " ").title()).strip(),
+            action = {
+                "key": key,
+                "label": str(row.get("name") or key.replace("_", " ").title()).strip(),
+                "short_label": str(row.get("name") or key.replace("_", " ").title()).strip(),
+                "command_preview": preview,
+                "description": str(row.get("description") or "").strip(),
+                "rank": int(row.get("rank", 0) or 0),
+                "targeting": targeting,
+                "ready_rule": row.get("ready_rule") if isinstance(row.get("ready_rule"), dict) else None,
+                "submenu_label": "",
+                "submenu_actions": [],
+                "default_subaction_key": "",
+                "subcommand_prefix": subcommand_prefix,
+            }
+            parent_key = str(row.get("hotbar_parent") or "").strip().lower()
+            if parent_key:
+                children_by_parent.setdefault(parent_key, [])
+                continue
+            parents[key] = action
+            parent_defaults[key] = str(row.get("hotbar_default_child") or "").strip().lower()
+            actions.append(action)
+        for parent_key in list(children_by_parent.keys()):
+            parent = parents.get(parent_key)
+            if not parent:
+                continue
+            children = []
+            prefix = str(parent.get("subcommand_prefix") or "").strip().lower()
+            for child_row in hotbar_child_maneuver_summaries(session, self.server, parent_key):
+                child_targeting = str(child_row.get("targeting") or parent.get("targeting") or "none").strip().lower()
+                preview = f"{prefix.upper() or 'CMAN'} {child_row['mnemonic']}".strip()
+                if child_targeting.startswith("current_target"):
+                    preview += " <target>"
+                unlock_skill = str(child_row.get("guild_unlock_skill") or "").strip()
+                unlock_rank = int(child_row.get("guild_unlock_rank", 0) or 0)
+                lock_label = ""
+                if not child_row.get("unlocked") and unlock_skill and unlock_rank > 0:
+                    lock_label = f"Requires {unlock_skill} rank {unlock_rank}"
+                children.append({
+                    "key": str(child_row.get("mnemonic") or "").strip().lower(),
+                    "label": str(child_row.get("name") or "").strip(),
+                    "short_label": str(child_row.get("name") or "").strip(),
                     "command_preview": preview,
-                    "description": str(row.get("description") or "").strip(),
-                    "rank": int(row.get("rank", 0) or 0),
-                    "targeting": targeting,
-                    "ready_rule": row.get("ready_rule") if isinstance(row.get("ready_rule"), dict) else None,
-                }
+                    "targeting": child_targeting,
+                    "enabled": bool(child_row.get("unlocked")),
+                    "lock_label": lock_label,
+                    "unlock_rank": unlock_rank,
+                })
+            default_key = str(parent_defaults.get(parent_key) or "").strip().lower()
+            if default_key and not any(str(row.get("key") or "").strip().lower() == default_key for row in children):
+                default_key = ""
+            if not default_key:
+                default_key = str(children[0].get("key") if children else "" or "").strip().lower()
+            children.sort(
+                key=lambda row: (
+                    0 if str(row.get("key") or "").strip().lower() == default_key else 1,
+                    int(row.get("unlock_rank", 0) or 0),
+                    row["label"],
+                )
             )
+            parent["submenu_label"] = parent["label"]
+            parent["submenu_actions"] = children
+            parent["default_subaction_key"] = default_key
         return actions
 
     def _combat_action_allowed(self, session, action_key: str) -> bool:
@@ -371,7 +434,7 @@ class HotbarManager:
         session.hotbar_slots = slots
         return True, "Hotbar slot cleared."
 
-    async def execute_slot(self, session, slot_index: int, target_name: str = "") -> tuple[bool, str]:
+    async def execute_slot(self, session, slot_index: int, target_name: str = "", subaction_key: str = "") -> tuple[bool, str]:
         slot_index = int(slot_index)
         assignment = (getattr(session, "hotbar_slots", {}) or {}).get(slot_index)
         if not assignment:
@@ -394,14 +457,14 @@ class HotbarManager:
         if not action:
             return False, f"Hotbar slot {slot_index} is not available with your current loadout."
 
-        command = self._command_for_action(session, category_key, action, target_name=target_name)
+        command = self._command_for_action(session, category_key, action, target_name=target_name, subaction_key=subaction_key)
         if not command:
             return False, f"Hotbar slot {slot_index} cannot be used without a current target."
 
         await self.server.commands.handle(session, command)
         return True, ""
 
-    def _command_for_action(self, session, category_key: str, action: dict[str, Any], *, target_name: str = "") -> str:
+    def _command_for_action(self, session, category_key: str, action: dict[str, Any], *, target_name: str = "", subaction_key: str = "") -> str:
         action_key = str(action.get("key") or "").strip()
         targeting = str(action.get("targeting") or "").strip().lower()
         resolved_target = self._resolve_target_name(session, target_name)
@@ -414,6 +477,31 @@ class HotbarManager:
         if category_key == "magic":
             return f"incant {action_key}"
         if category_key == "combat_maneuvers":
+            submenu_actions = [row for row in (action.get("submenu_actions") or []) if isinstance(row, dict)]
+            if submenu_actions:
+                child_map = {
+                    str(row.get("key") or "").strip().lower(): row
+                    for row in submenu_actions
+                    if str(row.get("key") or "").strip()
+                }
+                chosen_key = str(subaction_key or action.get("default_subaction_key") or "").strip().lower()
+                chosen = child_map.get(chosen_key) or next(iter(child_map.values()), None)
+                if not chosen:
+                    return ""
+                if not bool(chosen.get("enabled", True)):
+                    return ""
+                chosen_targeting = str(chosen.get("targeting") or targeting).strip().lower()
+                if chosen_targeting.startswith("current_target"):
+                    if not resolved_target:
+                        return ""
+                    prefix = str(action.get("subcommand_prefix") or "").strip().lower()
+                    if prefix:
+                        return f"{prefix} {chosen['key']} {resolved_target}"
+                    return f"cman {chosen['key']} {resolved_target}"
+                prefix = str(action.get("subcommand_prefix") or "").strip().lower()
+                if prefix:
+                    return f"{prefix} {chosen['key']}"
+                return f"cman {chosen['key']}"
             if targeting.startswith("current_target"):
                 if not resolved_target:
                     return ""

@@ -98,6 +98,8 @@ def _player_target_entity(target_session, server=None):
 
 
 def _creature_to_spell_entity(creature):
+    ranged_ds = int(creature.get_ranged_ds() if hasattr(creature, "get_ranged_ds") else (getattr(creature, "ds_ranged", 0) or 0))
+    bolt_ds = int(creature.get_bolt_ds() if hasattr(creature, "get_bolt_ds") else (getattr(creature, "ds_bolt", 0) or 0))
     return {
         "id": int(getattr(creature, "id", 0) or 0),
         "name": getattr(creature, "name", "creature") or "creature",
@@ -107,8 +109,8 @@ def _creature_to_spell_entity(creature):
         "stance": getattr(creature, "stance", "neutral") or "neutral",
         "current_room_id": int(getattr(creature, "current_room_id", 0) or 0),
         "torso_armor_asg": int(getattr(creature, "armor_asg", 1) or 1),
-        "ranged_ds": int(getattr(creature, "ds_ranged", 0) or 0),
-        "ds_bolt": int(getattr(creature, "ds_bolt", 0) or 0),
+        "ranged_ds": ranged_ds,
+        "ds_bolt": bolt_ds,
         "td": int(getattr(creature, "td", 0) or 0),
         "stat_strength": 50,
         "stat_constitution": 50,

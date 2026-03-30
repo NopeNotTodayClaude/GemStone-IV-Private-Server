@@ -23,6 +23,7 @@ import time
 from types import SimpleNamespace
 
 from server.core.character_unlocks import has_unlock
+from server.core.engine.action_feedback import summarize_applied_effects
 from server.core.engine.action_ready import evaluate_ready_rule
 from server.core.engine.combat.smr_engine import smr_roll
 from server.core.protocol.colors import TextPresets, colorize, roundtime_msg
@@ -60,26 +61,6 @@ _SPECIAL_ALIASES = {
     "cunningdefense": "cdefense",
     "combatfocus": "focus",
     "acrobatsleap": "acrobatsleap",
-}
-
-_CHEAPSHOT_CMAN_THRESHOLDS = {
-    "footstomp": 1,
-    "nosetweak": 2,
-    "templeshot": 2,
-    "kneebash": 3,
-    "eyepoke": 4,
-    "throatchop": 4,
-    "swiftkick": 5,
-}
-
-_CHEAPSHOT_GUILD_THRESHOLDS = {
-    "footstomp": 1,
-    "nosetweak": 10,
-    "templeshot": 20,
-    "kneebash": 30,
-    "eyepoke": 42,
-    "throatchop": 54,
-    "swiftkick": 63,
 }
 
 _GUILD_SKILL_NAME_BY_MNEMONIC = {
@@ -283,11 +264,14 @@ def _effective_maneuver_rank(session, mnemonic: str, meta: dict | None = None) -
     if direct > 0:
         return direct
 
-    if canonical in _CHEAPSHOT_CMAN_THRESHOLDS:
-        cheapshots = _guild_skill_rank(session, "Cheapshots")
-        if cheapshots >= _CHEAPSHOT_GUILD_THRESHOLDS[canonical]:
-            return _CHEAPSHOT_CMAN_THRESHOLDS[canonical]
-        return 0
+    if meta:
+        unlock_skill = str(meta.get("guild_unlock_skill") or "").strip()
+        unlock_rank = int(meta.get("guild_unlock_rank", 0) or 0)
+        granted_rank = max(1, int(meta.get("granted_rank", 1) or 1))
+        if unlock_skill and unlock_rank > 0:
+            if _guild_skill_rank(session, unlock_skill) >= unlock_rank:
+                return granted_rank
+            return 0
 
     guild_skill_name = _GUILD_SKILL_NAME_BY_MNEMONIC.get(canonical)
     if guild_skill_name:
@@ -549,10 +533,27 @@ def _find_target(session, server, target_name: str):
 def _status_apply(server, target, effect_id: str, duration: float, magnitude: float = 1):
     effect = _STATUS_NAME_MAP.get(str(effect_id or "").strip().lower(), str(effect_id or "").strip().lower())
     if not effect or duration <= 0:
-        return
+        return False
     status = getattr(server, "status", None)
     if status:
-        status.apply(target, effect, duration=float(duration), magnitude=float(magnitude or 1))
+        return bool(status.apply(target, effect, duration=float(duration), magnitude=float(magnitude or 1)))
+    return False
+
+
+def _setup_header_line(server, mnemonic: str, creature) -> str:
+    target = str(getattr(creature, "full_name", None) or getattr(creature, "name", None) or "the target").strip()
+    special = {
+        "sweep": f"You sweep {target} off its feet.",
+        "subdue": f"You spring in and subdue {target}.",
+        "trip": f"You trip {target} and throw it off balance.",
+        "kneebash": f"You slam into {target}'s knees.",
+        "footstomp": f"You stamp down hard on {target}.",
+        "nosetweak": f"You twist {target}'s nose sharply.",
+        "templeshot": f"You smack {target} across the temple.",
+        "throatchop": f"You drive a chop into {target}'s throat.",
+        "eyepoke": f"You jab viciously toward {target}'s eyes.",
+    }
+    return special.get(str(mnemonic or "").strip().lower(), f"You land {meta_name(mnemonic, server)} on {target}.")
 
 
 def _spend_stamina(session, server, amount: int) -> bool:
@@ -615,9 +616,51 @@ def available_maneuver_summaries(session, server) -> list[dict]:
                 "stamina": _stamina_cost_from_meta(meta),
                 "roundtime": _roundtime_from_meta(meta),
                 "ready_rule": meta.get("hotbar_ready") if isinstance(meta.get("hotbar_ready"), dict) else None,
+                "hotbar_parent": str(meta.get("hotbar_parent") or "").strip().lower(),
+                "hotbar_default_child": str(meta.get("hotbar_default_child") or "").strip().lower(),
+                "hotbar_subcommand": str(meta.get("hotbar_subcommand") or "").strip().lower(),
             }
         )
     out.sort(key=lambda row: (row["type"], row["name"]))
+    return out
+
+
+def hotbar_child_maneuver_summaries(session, server, parent_key: str) -> list[dict]:
+    defs = _combat_defs(server)
+    canonical_parent = str(parent_key or "").strip().lower()
+    out = []
+    for mnemonic, meta in defs.items():
+        if str(mnemonic).startswith("_") or not isinstance(meta, dict):
+            continue
+        canonical = str(meta.get("mnemonic") or mnemonic).strip().lower()
+        if canonical != str(mnemonic).strip().lower():
+            continue
+        if str(meta.get("hotbar_parent") or "").strip().lower() != canonical_parent:
+            continue
+        if not _profession_allowed(session, server, meta):
+            continue
+        unlock_skill = str(meta.get("guild_unlock_skill") or "").strip()
+        unlock_rank = int(meta.get("guild_unlock_rank", 0) or 0)
+        effective_rank = _effective_maneuver_rank(session, canonical, meta)
+        out.append(
+            {
+                "mnemonic": canonical,
+                "name": str(meta.get("name") or canonical.title()).strip(),
+                "targeting": str(meta.get("targeting") or "none").strip().lower(),
+                "effective_rank": effective_rank,
+                "unlocked": effective_rank > 0,
+                "guild_unlock_skill": unlock_skill,
+                "guild_unlock_rank": unlock_rank,
+                "granted_rank": max(1, int(meta.get("granted_rank", 1) or 1)),
+            }
+        )
+    out.sort(
+        key=lambda row: (
+            0 if row["unlocked"] else 1,
+            int(row.get("guild_unlock_rank", 0) or 0),
+            row["name"],
+        )
+    )
     return out
 
 
@@ -951,40 +994,66 @@ async def _use_stance_maneuver(session, server, mnemonic: str, rank: int):
 
 
 async def _apply_setup_effects(session, server, creature, spec: dict, *, rank: int, margin: int, damage: int = 0):
+    applied: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    def note(effect_id: str, *, target_label: str = "defender"):
+        key = (str(effect_id or "").strip().lower(), str(target_label or "defender").strip().lower())
+        if key in seen:
+            return
+        seen.add(key)
+        applied.append({
+            "effect": effect_id,
+            "entity": creature if target_label == "defender" else session,
+            "target_label": target_label,
+        })
+
     if spec.get("status"):
         duration = float(_eval_formula(spec.get("duration", 5), rank=rank, margin=margin, damage=damage) or 0)
         magnitude = float(_eval_formula(spec.get("magnitude", 1), rank=rank, margin=margin, damage=damage) or 1)
         _status_apply(server, creature, spec["status"], duration, magnitude=magnitude)
+        note(spec["status"])
     for extra_key in ("extra", "extra2"):
         payload = spec.get(extra_key)
         if not payload:
             continue
         effect_id, duration_expr = payload
         _status_apply(server, creature, effect_id, float(_eval_formula(duration_expr, rank=rank, margin=margin, damage=damage) or 0))
+        note(effect_id)
     if spec.get("staggered"):
         _status_apply(server, creature, "staggered", float(_eval_formula(spec["staggered"], rank=rank, margin=margin, damage=damage) or 0))
+        note("staggered")
     if spec.get("major_bleed"):
         magnitude = float(_eval_formula(spec["major_bleed"], rank=rank, margin=margin, damage=damage) or 1)
         _status_apply(server, creature, "major_bleed", 30, magnitude=magnitude)
+        note("major_bleed")
     if spec.get("weakened_armament"):
         magnitude = float(_eval_formula(spec["weakened_armament"], rank=rank, margin=margin, damage=damage) or 1)
         _status_apply(server, creature, "weakened_armament", 30, magnitude=magnitude)
+        note("weakened_armament")
     if spec.get("ds_bonus") and hasattr(creature, "apply_temporary_bonus"):
         ds_bonus = int(_eval_formula(spec["ds_bonus"], rank=rank, margin=margin, damage=damage) or 0)
         creature.apply_temporary_bonus(f"cman:{id(spec)}", 15, ds_bonus=ds_bonus)
+        applied.append({"effect": "ds_bonus", "entity": creature, "target_label": "defender"})
     if spec.get("force_target_stance"):
         _shift_target_stance_more_offensive(creature)
     if spec.get("force_kneel"):
         _status_apply(server, creature, "prone", 4)
+        note("prone")
     if spec.get("disarm"):
         _try_disarm_target(creature)
+        applied.append({"effect": "weakened_armament", "entity": creature, "target_label": "defender"})
     if spec.get("strip_spells"):
         count = int(_eval_formula(spec["strip_spells"], rank=rank, margin=margin, damage=damage) or 0)
         _apply_strip_spells(creature, count)
+        if count > 0:
+            applied.append({"effect": "disoriented", "entity": creature, "target_label": "defender"})
+    return applied
 
 
 async def _use_attack_maneuver(session, server, mnemonic: str, creature, rank: int, meta: dict):
     preset = _ATTACK_PRESETS.get(mnemonic, {})
+    applied: list[dict] = []
     status = getattr(server, "status", None)
     if preset.get("need_vulnerable") and not (status and status.has(creature, "vulnerable")):
         await session.send_line("That maneuver requires a vulnerable target.")
@@ -1019,9 +1088,13 @@ async def _use_attack_maneuver(session, server, mnemonic: str, creature, rank: i
     damage = int(outcome.get("damage", 0) or 0)
     if preset.get("status"):
         _status_apply(server, creature, preset["status"], float(_eval_formula(preset.get("duration", 5), rank=rank, margin=margin, damage=damage) or 0))
+        applied.append({"effect": preset["status"], "entity": creature, "target_label": "defender"})
     if preset.get("major_bleed"):
         magnitude = float(_eval_formula(preset.get("major_bleed"), rank=rank, margin=margin, damage=damage) or 1)
         _status_apply(server, creature, "major_bleed", 30, magnitude=magnitude)
+        applied.append({"effect": "major_bleed", "entity": creature, "target_label": "defender"})
+    for line in summarize_applied_effects(server, applied):
+        await session.send_line(line)
     if preset.get("attempt_steal") and int(getattr(session, "silver", 0) or 0) >= 0:
         creature_silver = int(getattr(creature, "silver", 0) or 0)
         if creature_silver > 0:
@@ -1029,6 +1102,8 @@ async def _use_attack_maneuver(session, server, mnemonic: str, creature, rank: i
             creature.silver = creature_silver - stolen
             session.silver = int(getattr(session, "silver", 0) or 0) + stolen
             await session.send_line(f"You snatch {stolen} silver from {creature.full_name} in the motion of the attack.")
+        else:
+            await session.send_line(f"You land the mugging strike, but come away empty-handed from {creature.full_name}.")
     return bool(outcome.get("killed"))
 
 
@@ -1050,8 +1125,14 @@ async def _use_setup_maneuver(session, server, mnemonic: str, creature, rank: in
         damage = _apply_damage_direct(creature, 6 + (rank * 3) + max(0, margin // 8))
         if damage > 0:
             await session.send_line(f"Your maneuver lands for {damage} direct damage.")
-    await _apply_setup_effects(session, server, creature, spec, rank=rank, margin=margin, damage=damage)
-    await session.send_line(f"You execute {meta_name(mnemonic, server)} successfully.")
+    await session.send_line(_setup_header_line(server, mnemonic, creature))
+    applied = await _apply_setup_effects(session, server, creature, spec, rank=rank, margin=margin, damage=damage)
+    summary_lines = summarize_applied_effects(server, applied)
+    if summary_lines:
+        for line in summary_lines:
+            await session.send_line(line)
+    elif damage <= 0:
+        await session.send_line(f"{meta_name(mnemonic, server)} lands cleanly, but produces no lasting effect.")
     return bool(getattr(creature, "is_dead", False))
 
 
@@ -1060,6 +1141,7 @@ async def _use_aoe_maneuver(session, server, mnemonic: str, primary_target, rank
     room_id = getattr(getattr(session, "current_room", None), "id", None)
     creatures = list(getattr(server.creatures, "get_creatures_in_room", lambda _rid: [])(room_id) or [])
     total_hits = 0
+    applied: list[dict] = []
     for creature in creatures:
         if getattr(creature, "is_dead", False):
             continue
@@ -1069,13 +1151,16 @@ async def _use_aoe_maneuver(session, server, mnemonic: str, primary_target, rank
         total_hits += 1
         margin = int(roll.get("margin", 0) or 0)
         damage = _apply_damage_direct(creature, 8 + (rank * 4) + max(0, margin // 6))
-        await _apply_setup_effects(session, server, creature, spec, rank=rank, margin=margin, damage=damage)
+        applied.extend(await _apply_setup_effects(session, server, creature, spec, rank=rank, margin=margin, damage=damage))
     if mnemonic == "eviscerate":
         for creature in creatures:
             if creature is primary_target or getattr(creature, "is_dead", False):
                 continue
             _status_apply(server, creature, spec.get("witness_status", "terrified"), float(spec.get("witness_duration", 15) or 15))
+            applied.append({"effect": spec.get("witness_status", "terrified"), "entity": creature, "target_label": "defender"})
     await session.send_line(f"{meta_name(mnemonic, server)} tears through {total_hits} foe(s).")
+    for line in summarize_applied_effects(server, applied):
+        await session.send_line(line)
     return False
 
 

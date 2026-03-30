@@ -107,10 +107,13 @@ def generate_box(db, creature_level, server=None):
         trap_state = server.traps.build_box_trap_state(creature_level) or {}
     else:
         trap_type = _random_trap(creature_level, server=None)
+        trap_per_level = 4
+        trap_jitter_low = -8
+        trap_jitter_high = 10
         trap_state = {
             "trap_type": trap_type,
             "trapped": trap_type is not None,
-            "trap_difficulty": (creature_level * 12 + random.randint(-5, 15)) if trap_type else 0,
+            "trap_difficulty": (creature_level * trap_per_level + random.randint(trap_jitter_low, trap_jitter_high)) if trap_type else 0,
             "trap_checked": False,
             "trap_detected": False,
             "trap_disarmed": False,
@@ -158,6 +161,7 @@ def generate_box(db, creature_level, server=None):
         }
 
     box.update({
+        "creature_level":   int(creature_level or 1),
         "lock_difficulty":  max(10, lock_diff),
         "is_locked":        True,
         "opened":           False,

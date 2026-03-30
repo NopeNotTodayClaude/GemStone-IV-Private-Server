@@ -26,6 +26,7 @@ import logging
 import time
 from typing import Optional, List, Dict, Any
 
+from server.core.engine.action_feedback import summarize_applied_effects
 from server.core.engine.combat.smr_engine import smr_roll, moc_hits, open_d100
 from server.core.engine.combat.status_effects import (
     apply_effect, apply_stun, apply_prone, apply_stagger, apply_vulnerable,
@@ -271,6 +272,8 @@ def _apply_effects(result: dict, session, targets: list, server):
         except Exception:
             effects = []
 
+    applied_rows = []
+
     for eff in effects:
         if not isinstance(eff, dict):
             continue
@@ -291,6 +294,11 @@ def _apply_effects(result: dict, session, targets: list, server):
             if dispatcher and duration > 0:
                 try:
                     dispatcher(session, duration, magnitude)
+                    applied_rows.append({
+                        "effect": effect_name,
+                        "entity": session,
+                        "target_label": "self",
+                    })
                 except Exception as e:
                     log.warning("Effect apply error %s on self: %s", effect_name, e)
             if tgt_label == 'self_and_party' and hasattr(server, 'sessions'):
@@ -308,6 +316,11 @@ def _apply_effects(result: dict, session, targets: list, server):
                 if dispatcher and duration > 0:
                     try:
                         dispatcher(tgt, duration, magnitude)
+                        applied_rows.append({
+                            "effect": effect_name,
+                            "entity": tgt,
+                            "target_label": "defender",
+                        })
                     except Exception as e:
                         log.warning("Effect apply error %s on target: %s", effect_name, e)
 
@@ -331,8 +344,14 @@ def _apply_effects(result: dict, session, targets: list, server):
             if dispatcher and dur > 0:
                 try:
                     dispatcher(tgt_obj, dur, mag)
+                    applied_rows.append({
+                        "effect": eff_name,
+                        "entity": tgt_obj,
+                        "target_label": "defender",
+                    })
                 except Exception as e:
                     log.warning("AoE effect %s error: %s", eff_name, e)
+    return applied_rows
 
 
 # ── Stamina drain ─────────────────────────────────────────────────────────────
@@ -1080,7 +1099,9 @@ async def execute_technique(session, mnemonic: str, target_name: str,
             },
         )
 
-    _apply_effects(result, session, targets, server)
+    applied_rows = _apply_effects(result, session, targets, server)
+    for line in summarize_applied_effects(server, applied_rows):
+        await session.send_line(line)
 
     # Handle deferred AoE (Volley)
     if result.get('is_deferred_aoe'):

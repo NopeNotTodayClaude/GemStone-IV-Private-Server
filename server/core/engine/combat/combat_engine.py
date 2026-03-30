@@ -39,6 +39,7 @@ from server.core.scripting.loaders.body_types_loader import (
 from server.core.engine.combat.material_combat import (
     resolve_flare, get_crit_phantom, resolve_armor_flare
 )
+from server.core.engine.combat.status_effects import get_combat_mods
 from server.core.scripting.lua_bindings.weapon_api import set_reaction_trigger
 from server.core.scripting.lua_bindings.combat_maneuver_api import (
     consume_on_attack_bonuses,
@@ -48,6 +49,17 @@ from server.core.scripting.lua_bindings.combat_maneuver_api import (
 )
 
 log = logging.getLogger(__name__)
+
+
+def _status_combat_mods(server, entity) -> tuple[int, int, int, int, int]:
+    mgr = getattr(server, "status", None)
+    if mgr:
+        try:
+            return tuple(int(v or 0) for v in mgr.get_combat_mods(entity))
+        except Exception:
+            pass
+    as_mod, ds_mod = get_combat_mods(entity)
+    return int(as_mod or 0), int(ds_mod or 0), 0, 0, 0
 
 
 def _holy_flare_damage(session, server) -> int:
@@ -1082,8 +1094,11 @@ class CombatEngine:
         uaf = self._calc_player_uaf(session)
         # udf=0 in mob lua means "not explicitly set" — fall back to ds_melee,
         # which is the creature's actual melee defense stat for UCS combat.
-        _raw_udf = getattr(creature, 'udf', 0)
-        udf = max(1, _raw_udf if _raw_udf > 0 else getattr(creature, 'ds_melee', creature.level * 3))
+        if hasattr(creature, "get_udf"):
+            udf = max(1, int(creature.get_udf() or 1))
+        else:
+            _raw_udf = getattr(creature, 'udf', 0)
+            udf = max(1, _raw_udf if _raw_udf > 0 else getattr(creature, 'ds_melee', creature.level * 3))
 
         # Tier 1 (decent) base MM — stance penalizes MM per wiki note
         mm_stance = {
@@ -1759,6 +1774,7 @@ class CombatEngine:
         buffs = _buff_totals(session, self.server)
         cman_passive = get_passive_combat_mods(session, self.server)
         cman_temp = get_temp_combat_bonus_totals(session)
+        status_as_mod, _status_ds_mod, _status_evade_pen, _status_parry_pen, _status_block_pen = _status_combat_mods(self.server, session)
         str_bonus = (
             (
                 session.stat_strength
@@ -1811,6 +1827,8 @@ class CombatEngine:
             if loc in ('right_arm', 'left_arm', 'right_hand', 'left_hand') and severity >= 3:
                 base -= severity * 3
 
+        base += int(status_as_mod or 0)
+
         base = int(base * getattr(session, 'death_stat_mult', 1.0))
 
         # Encumbrance AS penalty (applies after all other modifiers)
@@ -1832,6 +1850,7 @@ class CombatEngine:
         UAF is NOT affected by stance (stance affects MM instead).
         """
         cman_temp = get_temp_combat_bonus_totals(session)
+        status_as_mod, _status_ds_mod, _status_evade_pen, _status_parry_pen, _status_block_pen = _status_combat_mods(self.server, session)
         brawling_ranks = _sr(session, SKILL_BRAWLING)
         cm_ranks       = _sr(session, SKILL_COMBAT_MANEUVERS)
         str_bonus      = ((getattr(session, 'stat_strength',  50) + int(cman_temp.get("strength_bonus", 0) or 0)) - 50) // 2
@@ -1861,6 +1880,8 @@ class CombatEngine:
             if loc in ('right_arm', 'left_arm', 'right_hand', 'left_hand') and severity >= 3:
                 uaf -= severity * 2
 
+        uaf += int(status_as_mod or 0)
+
         uaf = int(uaf * getattr(session, 'death_stat_mult', 1.0))
         return max(1, uaf)
 
@@ -1874,6 +1895,7 @@ class CombatEngine:
         buffs = _buff_totals(session, self.server)
         cman_passive = get_passive_combat_mods(session, self.server)
         cman_temp = get_temp_combat_bonus_totals(session)
+        _status_as_mod, status_ds_mod, status_evade_pen, status_parry_pen, status_block_pen = _status_combat_mods(self.server, session)
         str_bonus = ((session.stat_strength + int(buffs.get("strength_bonus", 0) or 0) - int(buffs.get("strength_penalty", 0) or 0)) - 50) // 2
         dex_bonus = ((session.stat_dexterity + int(cman_temp.get("dexterity_bonus", 0) or 0)) - 50) // 2
         agi_bonus = ((session.stat_agility + int(cman_temp.get("agility_bonus", 0) or 0)) - 50) // 2
@@ -1924,11 +1946,15 @@ class CombatEngine:
         evade_ds += int(cman_temp.get("ds_bonus", 0) or 0) // 3
         evade_ds = int(
             evade_ds * (
-                1.0
-                + (
-                    int(cman_passive.get("evade_pct_bonus", 0) or 0)
-                    + int(cman_temp.get("evade_pct_bonus", 0) or 0)
-                ) / 100.0
+                max(
+                    0.0,
+                    1.0
+                    + (
+                        int(cman_passive.get("evade_pct_bonus", 0) or 0)
+                        + int(cman_temp.get("evade_pct_bonus", 0) or 0)
+                        - int(status_evade_pen or 0)
+                    ) / 100.0
+                )
             )
         )
         evade_ds = max(0, evade_ds)
@@ -1961,11 +1987,15 @@ class CombatEngine:
                 parry_ds = int(p_base * ohw_mod.get(stance, 0.50)) + parry_bonus.get(stance, 30)
         parry_ds = int(
             parry_ds * (
-                1.0
-                + (
-                    int(cman_passive.get("parry_pct_bonus", 0) or 0)
-                    + int(cman_temp.get("parry_pct_bonus", 0) or 0)
-                ) / 100.0
+                max(
+                    0.0,
+                    1.0
+                    + (
+                        int(cman_passive.get("parry_pct_bonus", 0) or 0)
+                        + int(cman_temp.get("parry_pct_bonus", 0) or 0)
+                        - int(status_parry_pen or 0)
+                    ) / 100.0
+                )
             )
         )
 
@@ -1982,21 +2012,20 @@ class CombatEngine:
             block_ds     = max(0, block_ds)
         block_ds = int(
             block_ds * (
-                1.0
-                + (
-                    int(cman_passive.get("block_pct_bonus", 0) or 0)
-                    + int(cman_temp.get("block_pct_bonus", 0) or 0)
-                ) / 100.0
+                max(
+                    0.0,
+                    1.0
+                    + (
+                        int(cman_passive.get("block_pct_bonus", 0) or 0)
+                        + int(cman_temp.get("block_pct_bonus", 0) or 0)
+                        - int(status_block_pen or 0)
+                    ) / 100.0
+                )
             )
         )
 
         # ── Generic DS (status + MOC) ──────────────────────────────────────
         generic_ds = 0
-        if getattr(session, "position", "standing") in ("sitting", "kneeling", "prone"):
-            generic_ds -= 50
-        import time as _time
-        if getattr(session, "_stunned_until", 0) > _time.time():
-            generic_ds -= 20
         for loc, severity in getattr(session, "injuries", {}).items():
             if severity >= 3:
                 generic_ds -= severity * 2
@@ -2024,6 +2053,7 @@ class CombatEngine:
         total = evade_ds + parry_ds + block_ds + generic_ds
         total += int(buffs.get("ds", 0) or 0)
         total -= int(buffs.get("ds_penalty", 0) or 0)
+        total += int(status_ds_mod or 0)
         total += int(cman_passive.get("ds_bonus", 0) or 0)
         total += int(cman_temp.get("ds_bonus", 0) or 0)
         total = int(total * getattr(session, "death_stat_mult", 1.0))

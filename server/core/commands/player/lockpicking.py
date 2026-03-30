@@ -49,6 +49,7 @@ log = logging.getLogger(__name__)
 
 SKILL_PICKING_LOCKS  = 25
 SKILL_DISARMING_TRAPS = 24
+SKILL_PERCEPTION = 27
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -62,14 +63,73 @@ def _skill_ranks(session, skill_id: int) -> int:
     return int(data.get("ranks", 0)) if isinstance(data, dict) else 0
 
 
+def _bonus_from_ranks(ranks: int) -> int:
+    if ranks <= 0:
+        return 0
+    if ranks <= 10:
+        return ranks * 5
+    if ranks <= 20:
+        return 50 + (ranks - 10) * 4
+    if ranks <= 30:
+        return 90 + (ranks - 20) * 3
+    if ranks <= 40:
+        return 120 + (ranks - 30) * 2
+    return ranks + 100
+
+
 def _skill_bonus(session, skill_id: int) -> int:
+    data = (session.skills or {}).get(skill_id, {})
+    if isinstance(data, dict):
+        bonus = int(data.get("bonus", 0) or 0)
+        if bonus > 0:
+            return bonus
+        ranks = int(data.get("ranks", 0) or 0)
+        if ranks > 0:
+            return _bonus_from_ranks(ranks)
     ranks = _skill_ranks(session, skill_id)
-    return ranks * 3 if ranks else session.level * 2
+    return _bonus_from_ranks(ranks) if ranks else session.level * 2
 
 
 def _buff_bonus(session, server, key: str) -> int:
     buffs = get_active_buff_totals(server, session)
     return int(buffs.get(key, 0) or 0)
+
+
+def _trap_detect_score(session, server, focus_bonus: int = 0) -> int:
+    """Compute trap-detection score from Lua-loaded perception config."""
+    cfg = getattr(server, "perception_cfg", {}) or {}
+    primary_sid = int(cfg.get("trap_detect_skill_id", cfg.get("skill_id", SKILL_PERCEPTION)) or SKILL_PERCEPTION)
+    primary_mult = int(cfg.get("trap_detect_rank_multiplier", cfg.get("rank_multiplier", 3)) or 3)
+    stat_name = str(cfg.get("trap_detect_stat", cfg.get("stat", "stat_intuition")) or "stat_intuition")
+    stat_div = int(cfg.get("trap_detect_stat_divisor", cfg.get("stat_divisor", 2)) or 2)
+    secondary_sid = int(cfg.get("trap_detect_secondary_skill_id", SKILL_DISARMING_TRAPS) or SKILL_DISARMING_TRAPS)
+    secondary_mult = int(cfg.get("trap_detect_secondary_rank_multiplier", 0) or 0)
+
+    primary_ranks = _skill_ranks(session, primary_sid)
+    secondary_ranks = _skill_ranks(session, secondary_sid)
+    primary_bonus = _skill_bonus(session, primary_sid) if primary_ranks > 0 else 0
+    secondary_bonus = secondary_ranks * secondary_mult
+    stat_bonus = (int(getattr(session, stat_name, 50) or 50) - 50) // max(1, stat_div)
+    buff_bonus = _buff_bonus(session, server, "perception_bonus") + _buff_bonus(session, server, "disarming_traps_bonus")
+    return primary_bonus + secondary_bonus + stat_bonus + buff_bonus + int(focus_bonus or 0)
+
+
+def _trap_detect_verdict(min_roll_needed: int) -> str:
+    if min_roll_needed <= 1:
+        return "  Trap detection: certain.  (any roll succeeds)"
+    if min_roll_needed <= 20:
+        return f"  Trap detection: very likely.  You need a d100 roll of {min_roll_needed}+ to identify it."
+    if min_roll_needed <= 50:
+        return f"  Trap detection: within reach.  You need a d100 roll of {min_roll_needed}+ to identify it."
+    if min_roll_needed <= 80:
+        return f"  Trap detection: difficult.  You need a d100 roll of {min_roll_needed}+."
+    if min_roll_needed <= 100:
+        return f"  Trap detection: very hard.  You need a d100 roll of {min_roll_needed}+."
+    over = min_roll_needed - 100
+    return (
+        "  Trap detection: out of reach.  "
+        f"Even a perfect d100 roll leaves you {over} short."
+    )
 
 
 def _rogue_lockmastery_ranks(session) -> int:
@@ -379,6 +439,7 @@ def _save_box_state(server, box: dict, **overrides):
         return
 
     extra = {
+        "creature_level":   box.get("creature_level"),
         "is_locked":       box.get("is_locked", True),
         "opened":          box.get("opened", False),
         "lock_difficulty": box.get("lock_difficulty", 20),
@@ -395,6 +456,14 @@ def _save_box_state(server, box: dict, **overrides):
     }
     extra.update(overrides)
     server.db.save_item_extra_data(inv_id, extra)
+
+
+def _box_display(box: dict) -> str:
+    disp = fmt_item_name(box.get("short_name") or "the box")
+    level = int(box.get("creature_level", 0) or 0)
+    if level > 0:
+        disp += colorize(f" [Level {level}]", TextPresets.SYSTEM)
+    return disp
 
 
 # ── Detect-state cache ──────────────────────────────────────────────────────────
@@ -496,7 +565,7 @@ async def cmd_detect(session, cmd, args, server):
         await session.send_line("That has been destroyed.")
         return
 
-    disp      = fmt_item_name(box.get("short_name") or "the box")
+    disp      = _box_display(box)
     trap_type = box.get("trap_type")
 
     await session.send_line(f"You carefully examine {disp}...")
@@ -514,7 +583,7 @@ async def cmd_detect(session, cmd, args, server):
 
         # Pick skill with current lockpick
         pick_ranks  = _skill_ranks(session, SKILL_PICKING_LOCKS)
-        pick_skill  = (pick_ranks * 3 if pick_ranks else session.level * 2) + focus_bonus
+        pick_skill  = _skill_bonus(session, SKILL_PICKING_LOCKS) + focus_bonus
         dex_bonus   = _stat_bonus(getattr(session, "stat_dexterity", 50))
 
         lockpick, _ = _find_lockpick(session)
@@ -620,15 +689,19 @@ async def cmd_detect(session, cmd, args, server):
             await session.send_line(colorize("  Use DISARM to neutralize it.", TextPresets.SYSTEM))
         else:
             # Detection roll
-            dis_skill = (
-                _skill_bonus(session, SKILL_DISARMING_TRAPS)
-                + _buff_bonus(session, server, "disarming_traps_bonus")
-                + focus_bonus
-            )
-            int_bonus = _stat_bonus(getattr(session, "stat_intuition", 50))
+            detect_skill = _trap_detect_score(session, server, focus_bonus=focus_bonus)
             trap_diff = box.get("trap_difficulty", session.level * 12)
+            min_roll_needed = max(1, 1 - (detect_skill - trap_diff))
+            await session.send_line(colorize(
+                f"  Trap detection: {detect_skill} effective vs difficulty {trap_diff}",
+                TextPresets.SYSTEM
+            ))
+            await session.send_line(colorize(
+                _trap_detect_verdict(min_roll_needed),
+                TextPresets.COMBAT_HIT if min_roll_needed <= 20 else TextPresets.SYSTEM if min_roll_needed <= 50 else TextPresets.WARNING
+            ))
             d100, _   = _open_roll(0)
-            endroll   = -999 if d100 == 1 else (dis_skill + int_bonus) - trap_diff + d100
+            endroll   = -999 if d100 == 1 else detect_skill - trap_diff + d100
 
             if endroll >= 0:
                 _set_detected(session, box)
@@ -671,7 +744,7 @@ async def cmd_disarm(session, cmd, args, server):
         await session.send_line("That has been destroyed.")
         return
 
-    disp      = fmt_item_name(box.get("short_name") or "the box")
+    disp      = _box_display(box)
     trap_type = box.get("trap_type")
 
     # Not trapped
@@ -892,6 +965,33 @@ async def _trigger_trap(session, server, box: dict, trap: dict, *, source: str =
     _save_box_state(server, box)
 
 
+async def _open_box_with_trap_guard(session, server, box: dict, *, source: str, show_contents: bool = False) -> bool:
+    """Open a box only through the canonical trapped-container gate."""
+    if box.get("destroyed"):
+        await session.send_line("That has been destroyed.")
+        return False
+
+    disp = _box_display(box)
+    if box.get("trapped") and not box.get("trap_disarmed"):
+        trap = _trap_def(server, box.get("trap_type"))
+        await session.send_line(colorize(
+            f"You carefully start to open {disp}...",
+            TextPresets.WARNING
+        ))
+        if trap:
+            await _trigger_trap(session, server, box, trap, source=source)
+        else:
+            await session.send_line(colorize("Something hidden in the latch snaps at you!", TextPresets.WARNING))
+        return False
+
+    box["opened"] = True
+    _save_box_state(server, box, opened=True)
+    await session.send_line(f"You open {disp}.")
+    if show_contents:
+        await _show_contents(session, box)
+    return True
+
+
 # ── PICK ──────────────────────────────────────────────────────────────────────
 
 async def cmd_pick(session, cmd, args, server):
@@ -915,9 +1015,7 @@ async def cmd_pick(session, cmd, args, server):
 
     if not box.get("is_locked"):
         await session.send_line("That does not appear to be locked.")
-        box["opened"] = True
-        await session.send_line(f"You open {fmt_item_name(box.get('short_name', 'the box'))}.")
-        await _show_contents(session, box)
+        await _open_box_with_trap_guard(session, server, box, source="pick_open", show_contents=True)
         return
 
     # Warn if trapped and not yet disarmed
@@ -957,7 +1055,7 @@ async def cmd_pick(session, cmd, args, server):
 
     # ── Compute endroll ───────────────────────────────────────────────────
     pick_ranks = _skill_ranks(session, SKILL_PICKING_LOCKS)
-    pick_skill = (pick_ranks * 3 if pick_ranks else session.level * 2) + _buff_bonus(session, server, "picking_locks_bonus")
+    pick_skill = _skill_bonus(session, SKILL_PICKING_LOCKS) + _buff_bonus(session, server, "picking_locks_bonus")
     dex_bonus  = _stat_bonus(getattr(session, "stat_dexterity", 50))
     lock_diff  = box.get("lock_difficulty", session.level * 15 + 20)
 
@@ -993,7 +1091,7 @@ async def cmd_pick(session, cmd, args, server):
         f"  =  {raw_endroll if not fumble else 'FUMBLE'}"
     )
 
-    disp = fmt_item_name(box.get("short_name") or "the box")
+    disp = _box_display(box)
     mat  = get_material_data(lockpick)
     cond = get_condition(lockpick)
 
@@ -1161,10 +1259,10 @@ async def _show_contents(session, box: dict):
     contents = box.get("contents", [])
     if not contents:
         await session.send_line(
-            f"  Looking inside {fmt_item_name(box.get('short_name', 'the box'))}... it is empty."
+            f"  Looking inside {_box_display(box)}... it is empty."
         )
         return
-    await session.send_line(f"  Looking inside {fmt_item_name(box.get('short_name', 'the box'))}:")
+    await session.send_line(f"  Looking inside {_box_display(box)}:")
     for item in contents:
         await session.send_line(f"    {colorize(item['name'], TextPresets.ITEM_NAME)}")
 

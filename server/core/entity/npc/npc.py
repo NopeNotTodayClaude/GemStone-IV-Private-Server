@@ -21,6 +21,7 @@ Combat compatibility:
 import random
 import time
 import logging
+from server.core.engine.combat.status_effects import get_combat_mods as get_status_combat_mods
 from server.core.protocol.colors import npc_emote, npc_speech, npc_name, colorize, TextPresets
 
 log = logging.getLogger(__name__)
@@ -331,19 +332,37 @@ class NPC:
 
     def get_melee_as(self, attack=None) -> int:
         base = attack.get("as", self.as_melee) if attack else self.as_melee
+        status_as_mod, _status_ds_mod = get_status_combat_mods(self)
         if self.health_max > 0:
             hp_pct = self.health_current / self.health_max
             if hp_pct < 0.75:
                 base -= int((0.75 - hp_pct) / 0.75 * 30)
-        return max(0, base)
+        return max(0, base + int(status_as_mod or 0))
 
     def get_melee_ds(self) -> int:
         ds = self.ds_melee
+        _status_as_mod, status_ds_mod = get_status_combat_mods(self)
         if self.health_max > 0:
             hp_pct = self.health_current / self.health_max
             if hp_pct < 0.75:
                 ds -= int((0.75 - hp_pct) / 0.75 * 40)
-        return max(0, ds)
+        return max(0, ds + int(status_ds_mod or 0))
+
+    def get_ranged_ds(self) -> int:
+        _status_as_mod, status_ds_mod = get_status_combat_mods(self)
+        return max(0, int(getattr(self, "ds_ranged", self.ds_melee) or self.ds_melee) + int(status_ds_mod or 0))
+
+    def get_bolt_ds(self) -> int:
+        _status_as_mod, status_ds_mod = get_status_combat_mods(self)
+        base = int(getattr(self, "ds_bolt", getattr(self, "ds_ranged", self.ds_melee)) or getattr(self, "ds_ranged", self.ds_melee))
+        return max(0, base + int(status_ds_mod or 0))
+
+    def get_udf(self) -> int:
+        _status_as_mod, status_ds_mod = get_status_combat_mods(self)
+        base = int(getattr(self, "udf", 0) or 0)
+        if base <= 0:
+            return max(1, self.get_melee_ds())
+        return max(1, base + int(status_ds_mod or 0))
 
     # ── Dialogue ──────────────────────────────────────────────────────────────
 

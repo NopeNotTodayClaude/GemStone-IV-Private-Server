@@ -34,7 +34,10 @@ from server.core.engine.skinning import (
     resolve_skinning,
 )
 from server.core.scripting.loaders.body_types_loader import get_aimable, resolve_aim
-from server.core.scripting.lua_bindings.combat_maneuver_api import handle_cman_command
+from server.core.scripting.lua_bindings.combat_maneuver_api import (
+    available_maneuver_summaries,
+    handle_cman_command,
+)
 
 log = logging.getLogger(__name__)
 
@@ -103,6 +106,16 @@ _ROGUE_CHEAPSHOTS = {
         "room": "{name} drives a brutal throatchop into {target}!",
     },
 }
+
+_CHEAPSHOT_VERB_ORDER = (
+    "footstomp",
+    "nosetweak",
+    "templeshot",
+    "kneebash",
+    "eyepoke",
+    "throatchop",
+    "swiftkick",
+)
 
 
 def _rogue_guild_skill_ranks(session, skill_name: str) -> int:
@@ -260,7 +273,16 @@ async def _perform_missile_attack(session, creature, weapon, server, *, verb, sk
     stance_mult = getattr(combat, "_STANCE_WEAPON_PCT", {}).get(session.stance, 0.70)
     raw_as = dex_bonus + cm_bonus + skill_bonus + enchant + attack_bonus + as_bonus
     player_as = int(raw_as * stance_mult)
-    creature_ds = int(getattr(creature, ds_attr, getattr(creature, "ds_ranged", 20)) or 20)
+    ds_getters = {
+        "ds_melee": "get_melee_ds",
+        "ds_ranged": "get_ranged_ds",
+        "ds_bolt": "get_bolt_ds",
+    }
+    getter_name = ds_getters.get(ds_attr)
+    if getter_name and hasattr(creature, getter_name):
+        creature_ds = int(getattr(creature, getter_name)() or 20)
+    else:
+        creature_ds = int(getattr(creature, ds_attr, getattr(creature, "ds_ranged", 20)) or 20)
 
     d100 = random.randint(1, 100)
     location, aim_succeeded = combat._resolve_hit_location(
@@ -568,75 +590,35 @@ async def cmd_subdue(session, cmd, args, server):
 
 async def cmd_cheapshot(session, cmd, args, server):
     """CHEAPSHOT [maneuver] <target> - Rogue Guild dirty fighting."""
-    status = getattr(server, "status", None)
-    if status and status.has(session, "stunned"):
-        await session.send_line("You are stunned!  Try STUNMAN ATTACK if you have the training for it.")
+    raw_cmd = str(cmd or "").strip().lower()
+    raw_args = str(args or "").strip()
+
+    if raw_cmd in _CHEAPSHOT_VERB_ORDER:
+        await handle_cman_command(session, raw_cmd, raw_args, server)
         return
-    skill_ranks = _rogue_guild_skill_ranks(session, "Cheapshots")
-    if skill_ranks <= 0:
-        await session.send_line("You lack the Rogue Guild training to land a proper cheapshot.")
-        return
-    if session.position != "standing":
-        await session.send_line("You need to stand up first!")
-        return
-    if not args:
-        available = [name for name, data in _ROGUE_CHEAPSHOTS.items() if skill_ranks >= data["rank"]]
+
+    if not raw_args:
+        names = {
+            str(row.get("mnemonic") or "").strip().lower(): str(row.get("name") or "").strip()
+            for row in available_maneuver_summaries(session, server)
+            if str(row.get("hotbar_parent") or "").strip().lower() == "cheapshots"
+        }
+        available = [names[key] for key in _CHEAPSHOT_VERB_ORDER if key in names]
+        if not available:
+            await session.send_line("You lack the Rogue Guild training to land a proper cheapshot.")
+            return
         await session.send_line("Available cheapshots: " + ", ".join(available))
         return
 
-    parts = args.strip().split(None, 1)
-    candidate = parts[0].lower()
-    if candidate in _ROGUE_CHEAPSHOTS:
+    parts = raw_args.split(None, 1)
+    candidate = str(parts[0] or "").strip().lower()
+    if candidate in _CHEAPSHOT_VERB_ORDER:
         maneuver = candidate
         target_arg = parts[1] if len(parts) > 1 else ""
     else:
         maneuver = "footstomp"
-        target_arg = args.strip()
-
-    data = _ROGUE_CHEAPSHOTS.get(maneuver)
-    if not data:
-        await session.send_line("That is not a recognized cheapshot maneuver.")
-        return
-    if skill_ranks < data["rank"]:
-        await session.send_line(f"You need rank {data['rank']} in Cheapshots before you can use {maneuver.upper()}.")
-        return
-    if not target_arg.strip():
-        await session.send_line("Cheapshot whom?")
-        return
-    if not _spend_stamina(session, server, int(data["stamina"])):
-        await session.send_line("You are too tired to attempt that cheapshot right now.")
-        return
-
-    creature = _find_creature_target(session, target_arg.strip(), server)
-    if not creature:
-        await session.send_line(f"You don't see any '{target_arg.strip()}' here.")
-        return
-    if creature.is_dead:
-        await session.send_line(f"The {creature.name} is already dead.")
-        return
-
-    score = _rogue_maneuver_score(session, skill_ranks, use_hide=getattr(session, "hidden", False))
-    difficulty = int(data["difficulty"]) + int(getattr(creature, "level", 1) or 1) * 5 + max(0, creature.get_melee_ds() // 6)
-    margin = score - difficulty
-    target_name = creature.full_name
-
-    if margin >= 0:
-        for effect_id, duration in data["effects"]:
-            _apply_status(server, creature, effect_id, duration)
-        _apply_status(server, creature, "vulnerable", 10)
-        await session.send_line(colorize(data["hit"].format(target=target_name), TextPresets.COMBAT_HIT))
-        await server.world.broadcast_to_room(
-            session.current_room.id,
-            data["room"].format(name=session.character_name, target=target_name),
-            exclude=session,
-        )
-        if getattr(server, "guild", None):
-            await server.guild.record_event(session, "cheapshot_success")
-    else:
-        await session.send_line(colorize(f"You lunge in with a dirty trick, but {target_name} slips clear of it.", TextPresets.WARNING))
-
-    session.set_roundtime(3)
-    await session.send_line(roundtime_msg(3))
+        target_arg = raw_args
+    await handle_cman_command(session, maneuver, target_arg, server)
 
 
 async def cmd_stunman(session, cmd, args, server):
