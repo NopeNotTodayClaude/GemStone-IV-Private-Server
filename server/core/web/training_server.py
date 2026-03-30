@@ -15,6 +15,7 @@ import time
 import uuid
 import asyncio
 import logging
+import re
 from typing import Any
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
@@ -306,6 +307,56 @@ def _cm_unlock_reason(meta: dict[str, Any], direct_rank: int, max_rank: int, nex
     return f'Rank {direct_rank + 1} is available now.'
 
 
+def _cm_current_loadout(session) -> dict[str, Any]:
+    hands = [getattr(session, 'right_hand', None), getattr(session, 'left_hand', None)]
+    categories = _wt_current_weapon_categories(session)
+    return {
+        'weapon_categories': categories,
+        'has_weapon': any(item and item.get('item_type') == 'weapon' for item in hands),
+        'has_shield': any(item and item.get('item_type') == 'shield' for item in hands),
+    }
+
+
+def _cm_weapon_loadout_match(meta: dict[str, Any], loadout: dict[str, Any]) -> bool:
+    requirements = str(meta.get('requirements') or '').strip().lower()
+    if not requirements:
+        return True
+
+    categories = set(loadout.get('weapon_categories') or set())
+    required: set[str] = set()
+    excluded: set[str] = set()
+    require_shield = False
+
+    if 'polearms cannot be used' in requirements:
+        excluded.add('polearm')
+    if 'not twohanded' in requirements or 'not two-handed' in requirements:
+        excluded.add('twohanded')
+    if 'closed fist attacks' in requirements:
+        excluded.add('brawling')
+
+    if 'quarterstaff' in requirements or re.search(r'\bstaff\b', requirements):
+        required.add('twohanded')
+    if 'polearm' in requirements and 'polearms cannot be used' not in requirements:
+        required.add('polearm')
+    if 'two-handed weapon' in requirements or 'two handed weapon' in requirements or 'twohanded weapon' in requirements:
+        required.add('twohanded')
+    if 'slashing weapon' in requirements:
+        required.add('edged')
+    if 'brawling weapon' in requirements or 'empty right hand' in requirements or 'bare-handed' in requirements:
+        required.add('brawling')
+
+    if 'requires a shield' in requirements or 'require a shield' in requirements:
+        require_shield = True
+
+    if require_shield and not bool(loadout.get('has_shield')):
+        return False
+    if required and not (categories & required):
+        return False
+    if excluded and (categories & excluded):
+        return False
+    return True
+
+
 def _cm_passive_summary(session, server) -> list[str]:
     from server.core.scripting.lua_bindings.combat_maneuver_api import get_passive_combat_mods
 
@@ -349,6 +400,7 @@ def _build_cman_state(session, server) -> dict[str, Any]:
     free_points = int(_available_cman_points(session, server) or 0)
     spent_points = int(_spent_cman_points(session, server) or 0)
     total_points = free_points + spent_points
+    loadout = _cm_current_loadout(session)
     maneuvers = []
 
     for mnemonic, meta in (defs or {}).items():
@@ -366,6 +418,7 @@ def _build_cman_state(session, server) -> dict[str, Any]:
         profession_ok = bool(_profession_allowed(session, server, meta))
         is_guild_skill = bool(meta.get('is_guild_skill'))
         is_learnable = bool(meta.get('is_learnable', True))
+        loadout_ok = _cm_weapon_loadout_match(meta, loadout)
 
         if is_guild_skill:
             availability = 'guild'
@@ -380,7 +433,7 @@ def _build_cman_state(session, server) -> dict[str, Any]:
         else:
             availability = 'locked'
 
-        maneuvers.append({
+        row = {
             'mnemonic': canonical,
             'name': str(meta.get('name') or canonical.title()).strip(),
             'type': str(meta.get('type') or '').strip().lower(),
@@ -402,18 +455,22 @@ def _build_cman_state(session, server) -> dict[str, Any]:
             'is_guild_skill': is_guild_skill,
             'is_learnable': is_learnable,
             'profession_ok': profession_ok,
+            'loadout_ok': loadout_ok,
             'availability': availability,
             'can_learn': bool(
                 not is_guild_skill
                 and is_learnable
                 and profession_ok
+                and loadout_ok
                 and direct_rank < max_rank
                 and next_cost > 0
                 and next_cost <= free_points
             ),
             'can_unlearn': bool(not is_guild_skill and direct_rank > 0),
             'status_text': _cm_unlock_reason(meta, direct_rank, max_rank, next_cost, free_points, profession_ok),
-        })
+        }
+        if direct_rank > 0 or loadout_ok:
+            maneuvers.append(row)
 
     category_order = {'general': 0, 'warrior_guild': 1, 'rogue_guild': 2}
     type_order = {'passive': 0, 'buff': 1, 'martial_stance': 2, 'setup': 3, 'attack': 4, 'aoe': 5, 'concentration': 6}

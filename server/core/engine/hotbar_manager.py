@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from server.core.engine.action_ready import evaluate_ready_rule
 from server.core.scripting.lua_bindings.weapon_api import (
     _get_skill_ranks,
     _resolve_profession_name,
@@ -56,6 +57,11 @@ class HotbarManager:
             enabled = action is not None
             if not action and category_key and action_key:
                 action = self._resolve_saved_action(session, category_key, action_key)
+            ready_state = self._slot_ready_state(session, action) if enabled else {
+                "ready": False,
+                "ready_until": None,
+                "message": "",
+            }
 
             slots.append({
                 "slot": slot,
@@ -68,6 +74,9 @@ class HotbarManager:
                 "short_label": str((action or {}).get("short_label") or (action or {}).get("label") or ""),
                 "command_preview": str((action or {}).get("command_preview") or ""),
                 "targeting": str((action or {}).get("targeting") or "").strip().lower(),
+                "pulse": bool(ready_state.get("ready")),
+                "pulse_until": ready_state.get("ready_until"),
+                "pulse_reason": str(ready_state.get("message") or ""),
             })
 
         return {
@@ -137,6 +146,7 @@ class HotbarManager:
                 "command_preview": self._weapon_command_preview(tech, canonical),
                 "description": str(tech.get("description") or "").strip(),
                 "targeting": "current_target_optional" if str(tech.get("type") or "").strip().lower() == "aoe" else "current_target",
+                "ready_rule": self._weapon_ready_rule(tech),
             })
         out.sort(key=lambda row: row["label"])
         return out
@@ -165,7 +175,9 @@ class HotbarManager:
                     "short_label": str(row.get("name") or key.replace("_", " ").title()).strip(),
                     "command_preview": preview,
                     "description": str(row.get("description") or "").strip(),
+                    "rank": int(row.get("rank", 0) or 0),
                     "targeting": targeting,
+                    "ready_rule": row.get("ready_rule") if isinstance(row.get("ready_rule"), dict) else None,
                 }
             )
         return actions
@@ -241,6 +253,52 @@ class HotbarManager:
         if not has_non_brawling:
             categories.add("brawling")
         return categories
+
+    def _weapon_ready_rule(self, tech: dict[str, Any]) -> dict | None:
+        rule = tech.get("hotbar_ready")
+        if isinstance(rule, dict):
+            return rule
+        trigger = str(tech.get("reaction_trigger") or "").strip().lower()
+        if not trigger:
+            return None
+        return {
+            "kind": "reaction_trigger",
+            "trigger": trigger,
+            "message": self._reaction_message(trigger),
+        }
+
+    def _reaction_message(self, trigger: str) -> str:
+        labels = {
+            "recent_parry": "That technique requires a recent parry window.",
+            "recent_block": "That technique requires a recent block window.",
+            "recent_evade": "That technique requires a recent evade window.",
+            "recent_evade_block_parry": "That technique requires a recent evade, block, or parry window.",
+        }
+        return labels.get(str(trigger or "").strip().lower(), "That technique is not ready yet.")
+
+    def _slot_ready_state(self, session, action: dict[str, Any] | None) -> dict[str, Any]:
+        if not isinstance(action, dict):
+            return {"ready": False, "ready_until": None, "message": ""}
+
+        rule = action.get("ready_rule")
+        if not isinstance(rule, dict):
+            return {"ready": False, "ready_until": None, "message": ""}
+
+        targeting = str(action.get("targeting") or "").strip().lower()
+        target = self._resolve_target_entity(session, allow_first_room_target=False) if targeting.startswith("current_target") else None
+        eval_rule = rule
+        if targeting.startswith("current_target"):
+            eval_rule = {
+                "all_of": [{"kind": "target_required"}, rule],
+                "message": str(rule.get("message") or ""),
+            }
+        return evaluate_ready_rule(
+            eval_rule,
+            session=session,
+            server=self.server,
+            target=target,
+            rank=int(action.get("rank", 0) or 0),
+        )
 
     def _resolve_saved_action(self, session, category_key: str, action_key: str) -> dict | None:
         if category_key == "weapon_techniques":
@@ -364,6 +422,23 @@ class HotbarManager:
         return ""
 
     def _resolve_target_name(self, session, preferred_name: str = "") -> str:
+        creature = self._resolve_target_entity(session, preferred_name=preferred_name, allow_first_room_target=True)
+        if not creature:
+            return ""
+
+        try:
+            session.target = creature
+        except Exception:
+            pass
+
+        return str(
+            getattr(creature, "name", None)
+            or getattr(creature, "character_name", None)
+            or getattr(creature, "full_name", None)
+            or ""
+        ).strip()
+
+    def _resolve_target_entity(self, session, preferred_name: str = "", *, allow_first_room_target: bool) -> Any:
         creatures = getattr(self.server, "creatures", None)
         room = getattr(session, "current_room", None)
         room_id = getattr(room, "id", None)
@@ -382,7 +457,7 @@ class HotbarManager:
                     target = None
             creature = target
 
-        if not creature and creatures and room_id:
+        if not creature and allow_first_room_target and creatures and room_id:
             for candidate in (creatures.get_creatures_in_room(room_id) or []):
                 if getattr(candidate, "is_dead", False):
                     continue
@@ -391,17 +466,4 @@ class HotbarManager:
                 creature = candidate
                 break
 
-        if not creature:
-            return ""
-
-        try:
-            session.target = creature
-        except Exception:
-            pass
-
-        return str(
-            getattr(creature, "name", None)
-            or getattr(creature, "character_name", None)
-            or getattr(creature, "full_name", None)
-            or ""
-        ).strip()
+        return creature

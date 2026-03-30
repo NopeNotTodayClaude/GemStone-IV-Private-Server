@@ -40,39 +40,22 @@ Creature.decay_seconds = 300
 Creature.crumbles      = false
 Creature.decay_message = ""
 Creature.spawn_rooms = {
-    5934,
-    5935,
-    5936,
-    5937,
-    5938,
-    5939,
-    5940,
-    5941,
-    5942,
-    5943,
-    5944,
-    5945,
-    5946,
-    5947
+    7542,
+    7543,
+    7544,
+    7545,
+    7546,
+    7547,
+    7550
     }
 Creature.roam_rooms = {
-    5934,
-    5935,
-    5936,
-    5937,
-    5938,
-    5939,
-    5940,
-    5941,
-    5942,
-    5943,
-    5944,
-    5945,
-    5946,
-    5947,
-    5931,
-    5932,
-    5933
+    7542,
+    7543,
+    7544,
+    7545,
+    7546,
+    7547,
+    7550
     }
 Creature.roam_chance     = 18
 Creature.respawn_seconds = 200

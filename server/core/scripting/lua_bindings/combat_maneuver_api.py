@@ -22,6 +22,7 @@ import re
 import time
 from types import SimpleNamespace
 
+from server.core.engine.action_ready import evaluate_ready_rule
 from server.core.engine.combat.smr_engine import smr_roll
 from server.core.protocol.colors import TextPresets, colorize, roundtime_msg
 from server.core.scripting.lua_bindings.weapon_api import (
@@ -168,7 +169,7 @@ _STANCE_PRESETS = {
 }
 
 _ATTACK_PRESETS = {
-    "coupdegrace": {"as_bonus": "10 + (5 * rank)", "df_mult": "1.15 + (0.05 * rank)", "crit_bonus": "rank", "need_vulnerable": True},
+    "coupdegrace": {"as_bonus": "10 + (5 * rank)", "df_mult": "1.15 + (0.05 * rank)", "crit_bonus": "rank"},
     "exsanguinate": {"as_bonus": "5 + (3 * rank)", "df_mult": "1.0 + (0.08 * rank)", "major_bleed": "max(2, rank + floor(margin / 25))"},
     "leapattack": {"as_bonus": "5 + (3 * rank)", "df_mult": "1.05 + (0.05 * rank)"},
     "mblow": {"df_mult": "1.0 + (0.10 * rank)", "force_target_stance": True},
@@ -598,10 +599,23 @@ def available_maneuver_summaries(session, server) -> list[dict]:
                 "description": str(meta.get("description") or "").strip(),
                 "stamina": _stamina_cost_from_meta(meta),
                 "roundtime": _roundtime_from_meta(meta),
+                "ready_rule": meta.get("hotbar_ready") if isinstance(meta.get("hotbar_ready"), dict) else None,
             }
         )
     out.sort(key=lambda row: (row["type"], row["name"]))
     return out
+
+
+def combat_maneuver_ready_state(session, server, mnemonic: str, *, target=None, meta: dict | None = None, rank: int | None = None) -> dict:
+    meta = meta or ((_combat_defs(server) or {}).get(mnemonic) or {})
+    rule = meta.get("hotbar_ready")
+    if not isinstance(rule, dict):
+        return {"has_rule": False, "ready": False, "ready_until": None, "message": ""}
+    if rank is None:
+        rank = _effective_maneuver_rank(session, mnemonic, meta)
+    result = evaluate_ready_rule(rule, session=session, server=server, target=target, rank=int(rank or 0))
+    result["has_rule"] = True
+    return result
 
 
 def maybe_auto_stand_before_attack(session, server) -> bool:
@@ -1119,6 +1133,18 @@ async def execute_combat_maneuver(session, mnemonic: str, raw_args: str, server,
         if not creature and targeting == "current_target":
             await session.send_line("You need a valid target for that maneuver.")
             return
+
+    ready_state = combat_maneuver_ready_state(
+        session,
+        server,
+        mnemonic,
+        target=creature,
+        meta=meta,
+        rank=rank,
+    )
+    if ready_state.get("has_rule") and not ready_state.get("ready"):
+        await session.send_line(ready_state.get("message") or "You cannot use that maneuver right now.")
+        return
 
     stamina = _stamina_cost_from_meta(meta)
     if not _spend_stamina(session, server, stamina):

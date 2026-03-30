@@ -76,6 +76,15 @@ class Creature:
         self.skills = list(template.get("skills", []) or [])
         self.preferred_stance = (template.get("preferred_stance") or None)
         self.stance_profile = (template.get("stance_profile") or None)
+        self.flags = list(template.get("flags", []) or [])
+        self.traits = list(template.get("traits", []) or [])
+        self.keywords = list(template.get("keywords", []) or [])
+        self.movement_modes = list(template.get("movement_modes", []) or [])
+        self.movement_tags = list(template.get("movement_tags", []) or [])
+        self.flying = bool(template.get("flying", False))
+        self.airborne = bool(template.get("airborne", False))
+        self.levitating = bool(template.get("levitating", False))
+        self.hovering = bool(template.get("hovering", False))
 
         # State
         self.current_room_id = 0

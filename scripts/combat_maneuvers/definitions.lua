@@ -280,6 +280,18 @@ Maneuvers['coupdegrace'] = def {
     requirements    = '',
     description     = 'Attempt to finish off a weakened enemy.',
     mechanics       = 'Maneuver a target, resulting in their immediate [[death]].  The target must be incapacitated in some way, and have {{mono|(Rank * 10)%}} or lower [[health]] (200 max).  Alternatively, the target may have {{mono|(Rank * 5)%}} or lower health (200 max) without being incapacitated.  Applies [[Empowered]] with a power of {{mono|(Success Margin / 5)}} to the player and player\'s party for 90 seconds, and [[Demoralized]] with a power of {{mono|(Success Margin / 5)}} for 90 seconds to any hostile [[creature]]s in the room.',
+    hotbar_ready    = {
+        any_of = {
+            {
+                all_of = {
+                    { kind = 'target_status_any', statuses = { 'stunned', 'dazed', 'prone', 'webbed', 'rooted', 'immobile', 'immobilized', 'bound', 'pinned', 'staggered', 'disoriented', 'vulnerable' } },
+                    { kind = 'target_health_at_or_below', percent_per_rank = 10, max_health_cap = 200 },
+                },
+            },
+            { kind = 'target_health_at_or_below', percent_per_rank = 5, max_health_cap = 200 },
+        },
+        message = 'That maneuver requires an incapacitated or badly weakened target.',
+    },
     is_guild_skill  = false,
     is_learnable    = true,
     max_rank        = 5,
@@ -349,6 +361,7 @@ Maneuvers['cutthroat'] = def {
     requirements    = '',
     description     = 'Spring from [[stealth|hiding]] and attempt to slit your target\'s throat.',
     mechanics       = 'Maneuver a target and deal significant neck damage.  Applies [[Major Bleed]] based on the damage done, and [[Silenced|Silences]] until the target dies or the associated neck [[wound]] is healed.',
+    hotbar_ready    = { kind = 'player_hidden', message = 'You need to be hidden first.' },
     is_guild_skill  = false,
     is_learnable    = true,
     max_rank        = 5,
@@ -579,6 +592,7 @@ Maneuvers['exsanguinate'] = def {
     requirements    = '',
     description     = 'Exploit your foe\'s existing wounds to bleed them dry.',
     mechanics       = 'Maneuver a target causing all remaining ticks of [[Major Bleed]] to trigger.  There is a {{mono|(Rank * 10)%}} chance of automatically reapplying the bleed at {{mono|(Success Margin / 5)%}} effectiveness.  Finally, you passively gain one additional round of Major Bleed at ranks 3 and 5 (up to 2 additional rounds).',
+    hotbar_ready    = { kind = 'target_status_any', statuses = { 'bleeding', 'major_bleed' }, message = 'That maneuver requires a bleeding target.' },
     is_guild_skill  = false,
     is_learnable    = true,
     max_rank        = 5,
@@ -970,6 +984,7 @@ Maneuvers['leapattack'] = def {
     requirements    = '',
     description     = 'Leap into the air to attack a flying target.',
     mechanics       = 'Leap into the air to make an unaimed attack against a [[flying]] target.',
+    hotbar_ready    = { kind = 'target_flag_any', flags = { 'flying', 'airborne', 'levitating', 'hovering' }, message = 'That maneuver requires a flying target.' },
     is_guild_skill  = false,
     is_learnable    = true,
     max_rank        = 1,

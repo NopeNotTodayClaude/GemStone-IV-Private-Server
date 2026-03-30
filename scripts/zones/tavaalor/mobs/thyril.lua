@@ -47,21 +47,15 @@ Creature.decay_seconds = 280
 Creature.crumbles      = false
 Creature.decay_message = ""
 
--- Deep Fearling Pass: forest trail, ridgeline
-Creature.spawn_rooms = {
-    10162, 10163, 10164, 10165, 10166,
-    10167, 10168, 10169, 10170,
-    10270, 15931,
-}
+-- Fearling Pass is map-locked to fire ants and kobolds on the local map set.
+-- Disable this legacy thyril placement until a mapped room set explicitly
+-- places it again.
+Creature.spawn_rooms = {}
 
-Creature.roam_rooms = {
-    10162, 10163, 10164, 10165, 10166,
-    10167, 10168, 10169, 10170,
-    10270, 15931,
-}
+Creature.roam_rooms = {}
 
 Creature.roam_chance     = 30
 Creature.respawn_seconds = 300
-Creature.max_count       = 1
+Creature.max_count       = 0
 
 return Creature

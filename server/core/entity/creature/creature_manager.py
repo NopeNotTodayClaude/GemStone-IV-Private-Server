@@ -32,6 +32,7 @@ from server.core.entity.creature.ai_runtime import (
 from server.core.entity.creature.creature import Creature
 from server.core.entity.creature.creature_data import get_template, get_all_templates, register_templates
 from server.core.entity.creature.lua_mob_loader import load_all_mob_luas
+from server.core.entity.creature.lua_spawn_registry_loader import load_zone_spawn_registries
 from server.core.engine.magic_effects import has_effect
 from server.core.protocol.colors import creature_name, creature_arrival, creature_departure, colorize, TextPresets
 
@@ -51,11 +52,14 @@ class CreatureManager:
         self._spawn_config: List[dict] = []
         self._hunting_rooms: set = set()
         self._zone_level_spawn_threshold = 10
+        self._spawn_registries: dict = {}
+        self._spawn_registry_blocks: dict = {}
 
     # ── Initialization ────────────────────────────────────────────────────
 
     async def initialize(self):
         scripts_path = self.server.config.get("paths.scripts", "./scripts")
+        self._spawn_registries = load_zone_spawn_registries(scripts_path)
 
         # ── Phase 1: Lua mob files (authoritative for scripted creatures) ──
         lua_templates = load_all_mob_luas(scripts_path)
@@ -66,7 +70,7 @@ class CreatureManager:
         sql_configs = self._load_sql_spawn_configs()
 
         # ── Phase 3: Build unified spawn configs from ALL sources ──────────
-        self._build_spawn_configs(lua_templates, sql_configs)
+        self._build_spawn_configs(lua_templates, sql_configs, self._spawn_registries)
 
         # ── Phase 4: Initial spawn ────────────────────────────────────────
         spawned = 0
@@ -275,10 +279,94 @@ class CreatureManager:
 
     # ── Unified spawn config builder ─────────────────────────────────────
 
-    def _build_spawn_configs(self, lua_templates: dict, sql_configs: list = None):
+    def _zone_slug_for_room(self, room_id: int) -> Optional[str]:
+        room = self.server.world.get_room(room_id)
+        if not room:
+            return None
+        zone = self.server.world.get_zone_by_id(int(getattr(room, "zone_id", 0) or 0))
+        return getattr(zone, "slug", None) if zone else None
+
+    def _record_spawn_registry_block(self, template_id: str, room_id: int, zone_slug: str):
+        entry = self._spawn_registry_blocks.setdefault(template_id, {
+            "rooms": set(),
+            "zones": set(),
+        })
+        entry["rooms"].add(int(room_id))
+        if zone_slug:
+            entry["zones"].add(str(zone_slug))
+
+    def _room_allowed_by_spawn_registry(self, template_id: str, template: dict, room_id: int, registries: dict) -> bool:
+        try:
+            level = int((template or {}).get("level", 1) or 1)
+        except Exception:
+            level = 1
+        if level > 35:
+            return True
+
+        zone_slug = self._zone_slug_for_room(room_id)
+        if not zone_slug:
+            return True
+
+        registry = (registries or {}).get(zone_slug)
+        if not registry:
+            return True
+
+        population = registry.get("population") or {}
+        map_locked = bool(registry.get("map_locked", False))
+        population_entry = population.get(template_id)
+        mob_rooms = registry.get("mob_rooms") or {}
+        depth_rooms = registry.get("depth_rooms") or {}
+
+        if template_id in mob_rooms:
+            allowed = set(int(r) for r in (mob_rooms.get(template_id) or []))
+            if room_id in allowed:
+                return True
+            self._record_spawn_registry_block(template_id, room_id, zone_slug)
+            return False
+
+        if population_entry:
+            depth_key = str(population_entry.get("depth", "") or "").strip()
+            if depth_key and depth_key in depth_rooms:
+                allowed = set(int(r) for r in (depth_rooms.get(depth_key) or []))
+                if room_id in allowed:
+                    return True
+                self._record_spawn_registry_block(template_id, room_id, zone_slug)
+                return False
+            if map_locked:
+                return True
+            return True
+
+        origin = str((template or {}).get("template_origin", "") or "").strip().lower()
+        if not map_locked:
+            return True
+
+        if origin == "catalog":
+            self._record_spawn_registry_block(template_id, room_id, zone_slug)
+            return False
+
+        source_zones = {
+            str(zone).strip()
+            for zone in ((template or {}).get("source_zones") or [])
+            if str(zone).strip()
+        }
+        source_zone = str((template or {}).get("source_zone", "") or "").strip()
+        if source_zone:
+            source_zones.add(source_zone)
+
+        if origin == "authored" and zone_slug in source_zones:
+            return True
+
+        if origin == "authored":
+            self._record_spawn_registry_block(template_id, room_id, zone_slug)
+            return False
+
+        return True
+
+    def _build_spawn_configs(self, lua_templates: dict, sql_configs: list = None, spawn_registries: dict = None):
         world = self.server.world
         configs = []
         hunting = set()
+        self._spawn_registry_blocks = {}
 
         lua_count = 0
         sql_count = 0
@@ -293,11 +381,17 @@ class CreatureManager:
 
             valid_spawn = [
                 r for r in spawn_rooms
-                if isinstance(r, int) and world.get_room(r) and not world.get_room(r).safe
+                if isinstance(r, int)
+                and world.get_room(r)
+                and not world.get_room(r).safe
+                and self._room_allowed_by_spawn_registry(tid, tmpl, r, spawn_registries)
             ]
             valid_wander = [
                 r for r in wander_rooms
-                if isinstance(r, int) and world.get_room(r) and not world.get_room(r).safe
+                if isinstance(r, int)
+                and world.get_room(r)
+                and not world.get_room(r).safe
+                and self._room_allowed_by_spawn_registry(tid, tmpl, r, spawn_registries)
             ]
             if not valid_spawn:
                 continue
@@ -345,6 +439,25 @@ class CreatureManager:
         self._lua_config_count = lua_count
         self._sql_config_count = sql_count
         self._legacy_config_count = 0
+        if self._spawn_registry_blocks:
+            blocked_templates = len(self._spawn_registry_blocks)
+            blocked_rooms = sum(len(info["rooms"]) for info in self._spawn_registry_blocks.values())
+            offenders = sorted(
+                self._spawn_registry_blocks.items(),
+                key=lambda row: (-len(row[1]["rooms"]), row[0]),
+            )[:10]
+            for template_id, info in offenders:
+                log.warning(
+                    "Spawn registry blocked '%s' from %d room(s) across zone(s): %s",
+                    template_id,
+                    len(info["rooms"]),
+                    ", ".join(sorted(info["zones"])) or "unknown",
+                )
+            log.info(
+                "CreatureManager: spawn registry blocked %d template(s) across %d room(s) in map-backed zones",
+                blocked_templates,
+                blocked_rooms,
+            )
 
     # ── Spawn helpers ─────────────────────────────────────────────────────
 

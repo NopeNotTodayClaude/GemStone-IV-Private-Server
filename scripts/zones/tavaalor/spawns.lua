@@ -2,41 +2,39 @@
 -- Ta'Vaalor Catacombs — Spawn Registry
 -- scripts/zones/tavaalor/spawns.lua
 --
--- Declares all mob populations for the catacombs.
--- The Lua mob loader picks up individual .lua files in mobs/ automatically.
--- This file documents the intended population design and depth tiers for
--- reference, and can be loaded by any zone-management tooling.
+-- Local map source of truth:
+--   map_files/EN-tavaalor-1534463105.png
+--   map_files/en-tavaalor-1565907614.png
 --
--- Depth tiers:
---   UPPER  (5909-5922): fanged rodent (primary), catacomb rat (secondary)
---   MID    (5923-5933): catacomb rat (primary), lesser skeleton (primary)
---   DEEP   (5934-5947): skeleton warrior, ghoul, cave worm
+-- The catacombs shown on the Ta'Vaalor map are labeled only:
+--   Fanged Rodent (1)
 --
--- Population summary at full spawn:
---   fanged rodent    12   Level 1   respawn 120s
---   catacomb rat      9   Level 2   respawn 150s
---   lesser skeleton   8   Level 3   respawn 200s
---   skeleton warrior  6   Level 5   respawn 280s
---   ghoul             4   Level 6   respawn 320s
---   cave worm         2   Level 7   respawn 400s
---                   ---
---   Total            41 creatures across 39 rooms
+-- So for the mapped city catacombs, fanged rodents are the only valid
+-- hunting population.  Any deeper catacomb population must not spawn here
+-- unless/until a separate local map is added that explicitly places it.
 ---------------------------------------------------
 
 local Spawns = {}
 
 Spawns.zone      = "tavaalor"
 Spawns.area      = "catacombs"
+Spawns.map_locked = true
 Spawns.room_range = { min = 5909, max = 5947 }
 
--- Population table (informational — actual loading is per-mob .lua file)
 Spawns.population = {
-    { mob = "fanged_rodent",    level = 1, max = 12, depth = "upper" },
-    { mob = "catacomb_rat",     level = 2, max =  9, depth = "upper_mid" },
-    { mob = "lesser_skeleton",  level = 3, max =  8, depth = "mid" },
-    { mob = "skeleton_warrior", level = 5, max =  6, depth = "deep" },
-    { mob = "ghoul",            level = 6, max =  4, depth = "deep" },
-    { mob = "cave_worm",        level = 7, max =  2, depth = "deepest" },
+    { mob = "fanged_rodent", level = 1, max = 12, depth = "catacombs" },
+}
+
+
+
+
+
+Spawns.mob_rooms = {
+    fanged_rodent = {
+        5909, 5910, 5911, 5912, 5913, 5914, 5915, 5916, 5917, 5918,
+        5919, 5920, 5921, 5922, 5923, 5925, 5926, 5927, 5928, 5929,
+        5932, 5933, 5936, 5939, 5943, 5945, 5946, 5947
+    },
 }
 
 return Spawns

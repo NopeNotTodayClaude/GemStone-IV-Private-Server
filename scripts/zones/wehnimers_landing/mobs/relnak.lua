@@ -33,13 +33,13 @@ Creature.special_loot = {}
 Creature.decay_seconds = 300
 Creature.crumbles      = false
 Creature.decay_message = ""
--- Rooms 5900-5940 are reserved for fanged_rodent only (Ta'Vaalor catacombs).
--- Assign proper WL catacomb room IDs here when confirmed.
 Creature.spawn_rooms = {
-    2268, 2269, 2270, 2271, 2272, 2273, 2274, 2275, 2276, 2277, 2278
+    7534, 7535, 7536, 7537, 7538, 7548, 7549, 7551, 7552, 7553,
+    7554, 7555, 7556, 7557, 7558, 7559, 7560, 7561
 }
 Creature.roam_rooms  = {
-    2267, 2268, 2269, 2270, 2271, 2272, 2273, 2274, 2275, 2276, 2277, 2278, 2279, 2280
+    7534, 7535, 7536, 7537, 7538, 7548, 7549, 7551, 7552, 7553,
+    7554, 7555, 7556, 7557, 7558, 7559, 7560, 7561
 }
 Creature.roam_chance     = 25
 Creature.respawn_seconds = 180

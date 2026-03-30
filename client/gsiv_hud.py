@@ -2214,6 +2214,9 @@ class HUDApp:
         self._room_start_index: str = "1.0"
         self._hotbar_state: dict = {"slots": [], "catalog": {"categories": []}}
         self._hotbar_buttons: Dict[int, tk.Button] = {}
+        self._hotbar_slot_rows: Dict[int, dict] = {}
+        self._hotbar_pulse_job: Optional[str] = None
+        self._hotbar_pulse_phase: bool = False
 
         # Embedded status effect bar (toolbar strip)
         self._fx_icon_frame: "Optional[tk.Frame]" = None
@@ -3220,21 +3223,77 @@ class HUDApp:
 
     def _apply_hotbar_state(self, hotbar: dict):
         self._hotbar_state = hotbar or {"slots": [], "catalog": {"categories": []}}
-        slot_map = {
+        self._hotbar_slot_rows = {
             int(row.get("slot", 0) or 0): row
             for row in (self._hotbar_state.get("slots") or [])
             if 1 <= int(row.get("slot", 0) or 0) <= 9
         }
+        self._refresh_hotbar_buttons()
+        self._schedule_hotbar_pulse()
+
+    def _refresh_hotbar_buttons(self):
+        now = time.time()
         for slot, btn in self._hotbar_buttons.items():
-            row = slot_map.get(slot) or {}
+            row = self._hotbar_slot_rows.get(slot) or {}
             label = str(row.get("short_label") or row.get("label") or "").strip()
             enabled = bool(row.get("enabled"))
             assigned = bool(row.get("assigned"))
+            pulse = bool(row.get("pulse"))
+            pulse_until = row.get("pulse_until")
+            if pulse_until not in (None, ""):
+                try:
+                    pulse = pulse and float(pulse_until) > now
+                except Exception:
+                    pulse = bool(row.get("pulse"))
+            fg = TEXT_MAIN if enabled else (ACCENT_YEL if assigned else TEXT_DIM)
+            bg = "#1a2740" if enabled else ("#2a2414" if assigned else "#141a22")
+            if pulse and enabled:
+                fg = "#fff6d9"
+                bg = "#7a4d14" if self._hotbar_pulse_phase else "#274e19"
             btn.config(
                 text=self._hotbar_button_text(slot, label),
-                fg=(TEXT_MAIN if enabled else (ACCENT_YEL if assigned else TEXT_DIM)),
-                bg=("#1a2740" if enabled else ("#2a2414" if assigned else "#141a22")),
+                fg=fg,
+                bg=bg,
+                activeforeground=fg,
+                activebackground=bg,
             )
+
+    def _schedule_hotbar_pulse(self):
+        if self._hotbar_pulse_job:
+            try:
+                self.root.after_cancel(self._hotbar_pulse_job)
+            except Exception:
+                pass
+            self._hotbar_pulse_job = None
+
+        now = time.time()
+        has_active_pulse = False
+        for row in self._hotbar_slot_rows.values():
+            if not bool(row.get("pulse")):
+                continue
+            pulse_until = row.get("pulse_until")
+            if pulse_until in (None, ""):
+                has_active_pulse = True
+                break
+            try:
+                if float(pulse_until) > now:
+                    has_active_pulse = True
+                    break
+            except Exception:
+                has_active_pulse = True
+                break
+
+        if not has_active_pulse:
+            self._hotbar_pulse_phase = False
+            self._refresh_hotbar_buttons()
+            return
+
+        self._hotbar_pulse_job = self.root.after(220, self._tick_hotbar_pulse)
+
+    def _tick_hotbar_pulse(self):
+        self._hotbar_pulse_phase = not self._hotbar_pulse_phase
+        self._refresh_hotbar_buttons()
+        self._schedule_hotbar_pulse()
 
     def _hotbar_button_text(self, slot: int, label: str) -> str:
         if not label:

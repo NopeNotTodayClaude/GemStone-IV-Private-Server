@@ -419,6 +419,7 @@ def _load_creature_catalog(scripts_path: str, templates: dict):
             merged["spawn_rooms"] = _resolve_room_sources(override.get("spawn_from"), templates, "spawn_rooms")
         if override.get("roam_from") or override.get("spawn_from"):
             merged["wander_rooms"] = _resolve_room_sources(override.get("roam_from") or override.get("spawn_from"), templates, "wander_rooms")
+        merged["catalog_override"] = True
         templates[template_id] = _normalize_template(merged)
 
     for entry in raw.get("creatures") or []:
@@ -437,6 +438,12 @@ def _load_creature_catalog(scripts_path: str, templates: dict):
         if entry.get("roam_from") or entry.get("spawn_from"):
             merged["wander_rooms"] = _resolve_room_sources(entry.get("roam_from") or entry.get("spawn_from"), templates, "wander_rooms")
         normalized = _normalize_template(merged)
+        normalized["template_origin"] = "catalog"
+        normalized["catalog_base_template"] = base_template or None
+        normalized["catalog_spawn_from"] = str(entry.get("spawn_from") or entry.get("roam_from") or "") or None
+        normalized["source_zone"] = None
+        normalized["source_zones"] = []
+        normalized["source_files"] = [catalog_path]
         templates[normalized["template_id"]] = normalized
 
     log.info(
@@ -948,6 +955,10 @@ def load_all_mob_luas(scripts_path: str) -> dict:
             if tmpl is None:
                 continue
             tid = tmpl["template_id"]
+            tmpl["template_origin"] = "authored"
+            tmpl["source_zone"] = zone_slug
+            tmpl["source_zones"] = [zone_slug]
+            tmpl["source_files"] = [fpath]
 
             if tid in templates:
                 # Same creature in a different zone — merge rooms, don't skip
@@ -962,6 +973,14 @@ def load_all_mob_luas(scripts_path: str) -> dict:
                 existing["wander_rooms"] = existing.get("wander_rooms", []) + new_wander
 
                 existing["max_count"] = existing.get("max_count", 3) + tmpl.get("max_count", 3)
+                existing_zones = set(existing.get("source_zones", []) or [])
+                existing_zones.update(tmpl.get("source_zones", []) or [])
+                existing["source_zones"] = sorted(existing_zones)
+                existing_files = list(existing.get("source_files", []) or [])
+                for path in tmpl.get("source_files", []) or []:
+                    if path not in existing_files:
+                        existing_files.append(path)
+                existing["source_files"] = existing_files
 
                 merged_count += 1
                 log.info(
