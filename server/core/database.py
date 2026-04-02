@@ -1002,6 +1002,226 @@ class Database:
         finally:
             conn.close()
 
+    def load_character_inn_stays(self):
+        """Load all active inn stays keyed by character id."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                """
+                SELECT character_id, inn_id, checked_in_room_id, private_room_id,
+                       private_table_room_id, room_latched, checked_in_at, updated_at
+                FROM character_inn_stays
+                """
+            )
+            return cur.fetchall() or []
+        except Exception as e:
+            log.error("Failed to load inn stays: %s", e)
+            return []
+        finally:
+            conn.close()
+
+    def get_character_inn_stay(self, character_id):
+        """Load one active inn stay row for a character."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                """
+                SELECT character_id, inn_id, checked_in_room_id, private_room_id,
+                       private_table_room_id, room_latched, checked_in_at, updated_at
+                FROM character_inn_stays
+                WHERE character_id = %s
+                LIMIT 1
+                """,
+                (character_id,),
+            )
+            return cur.fetchone()
+        except Exception as e:
+            log.error("Failed to load inn stay for char %s: %s", character_id, e)
+            return None
+        finally:
+            conn.close()
+
+    def upsert_character_inn_stay(
+        self,
+        character_id,
+        inn_id,
+        checked_in_room_id,
+        *,
+        private_room_id=None,
+        private_table_room_id=None,
+        room_latched=False,
+    ):
+        """Create or replace the active inn stay for one character."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO character_inn_stays (
+                    character_id, inn_id, checked_in_room_id, private_room_id,
+                    private_table_room_id, room_latched
+                ) VALUES (%s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    inn_id = VALUES(inn_id),
+                    checked_in_room_id = VALUES(checked_in_room_id),
+                    private_room_id = VALUES(private_room_id),
+                    private_table_room_id = VALUES(private_table_room_id),
+                    room_latched = VALUES(room_latched),
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    character_id,
+                    inn_id,
+                    checked_in_room_id,
+                    private_room_id,
+                    private_table_room_id,
+                    1 if room_latched else 0,
+                ),
+            )
+            conn.commit()
+            return self.get_character_inn_stay(character_id)
+        except Exception as e:
+            log.error("Failed to upsert inn stay for char %s: %s", character_id, e)
+            return None
+        finally:
+            conn.close()
+
+    def update_character_inn_stay(
+        self,
+        character_id,
+        *,
+        checked_in_room_id=None,
+        private_room_id=None,
+        private_table_room_id=None,
+        room_latched=None,
+    ):
+        """Update selected inn stay fields for one character."""
+        assignments = []
+        params = []
+        if checked_in_room_id is not None:
+            assignments.append("checked_in_room_id = %s")
+            params.append(checked_in_room_id)
+        if private_room_id is not None:
+            assignments.append("private_room_id = %s")
+            params.append(private_room_id)
+        if private_table_room_id is not None:
+            assignments.append("private_table_room_id = %s")
+            params.append(private_table_room_id)
+        if room_latched is not None:
+            assignments.append("room_latched = %s")
+            params.append(1 if room_latched else 0)
+        if not assignments:
+            return self.get_character_inn_stay(character_id)
+
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            params.append(character_id)
+            cur.execute(
+                f"""
+                UPDATE character_inn_stays
+                SET {", ".join(assignments)}, updated_at = CURRENT_TIMESTAMP
+                WHERE character_id = %s
+                """,
+                tuple(params),
+            )
+            conn.commit()
+            return self.get_character_inn_stay(character_id)
+        except Exception as e:
+            log.error("Failed to update inn stay for char %s: %s", character_id, e)
+            return None
+        finally:
+            conn.close()
+
+    def clear_character_inn_stay(self, character_id):
+        """Delete a character's active inn stay row."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM character_inn_stays WHERE character_id = %s", (character_id,))
+            conn.commit()
+            return True
+        except Exception as e:
+            log.error("Failed to clear inn stay for char %s: %s", character_id, e)
+            return False
+        finally:
+            conn.close()
+
+    def load_character_inn_access(self):
+        """Load all inn access grants."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                """
+                SELECT id, owner_character_id, guest_character_id, inn_id, room_id,
+                       access_kind, granted_at
+                FROM character_inn_access
+                """
+            )
+            return cur.fetchall() or []
+        except Exception as e:
+            log.error("Failed to load inn access rows: %s", e)
+            return []
+        finally:
+            conn.close()
+
+    def grant_character_inn_access(self, owner_character_id, guest_character_id, inn_id, room_id, access_kind):
+        """Grant one character access to a rented inn room or private table."""
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO character_inn_access (
+                    owner_character_id, guest_character_id, inn_id, room_id, access_kind
+                ) VALUES (%s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    owner_character_id = VALUES(owner_character_id),
+                    inn_id = VALUES(inn_id),
+                    granted_at = CURRENT_TIMESTAMP
+                """,
+                (owner_character_id, guest_character_id, inn_id, room_id, access_kind),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            log.error(
+                "Failed to grant inn access owner=%s guest=%s room=%s kind=%s: %s",
+                owner_character_id, guest_character_id, room_id, access_kind, e
+            )
+            return False
+        finally:
+            conn.close()
+
+    def revoke_character_inn_access(self, owner_character_id, *, room_id=None, access_kind=None):
+        """Revoke inn access grants owned by one character."""
+        clauses = ["owner_character_id = %s"]
+        params = [owner_character_id]
+        if room_id is not None:
+            clauses.append("room_id = %s")
+            params.append(room_id)
+        if access_kind is not None:
+            clauses.append("access_kind = %s")
+            params.append(access_kind)
+
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"DELETE FROM character_inn_access WHERE {' AND '.join(clauses)}",
+                tuple(params),
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            log.error("Failed to revoke inn access for owner %s: %s", owner_character_id, e)
+            return False
+        finally:
+            conn.close()
+
     def save_character_skill(self, character_id, skill_id, ranks, bonus, ranks_this_level=0):
         """Insert or update a single skill rank for a character."""
         conn = self._get_conn()

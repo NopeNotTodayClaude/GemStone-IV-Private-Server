@@ -42,6 +42,7 @@ from server.core.engine.pets.pet_manager import PetManager
 from server.core.engine.traps import TrapManager
 from server.core.engine.hotbar_manager import HotbarManager
 from server.core.engine.ferry_manager import FerryManager
+from server.core.engine.inn_manager import InnManager
 from server.core.engine.travel_office_manager import TravelOfficeManager
 from server.core.engine.justice_manager import JusticeManager
 from server.core.commands.player.training import _try_load_lua_skills
@@ -101,6 +102,7 @@ class GameServer:
         self.traps = TrapManager(self)
         self.hotbar = HotbarManager(self)
         self.ferries = FerryManager(self)
+        self.inns = InnManager(self)
         self.travel_offices = TravelOfficeManager(self)
         self.justice = JusticeManager(self)
         self.perception_cfg  = {}                           # Loaded from globals/perception.lua after Lua init
@@ -197,6 +199,9 @@ class GameServer:
 
         await self.ferries.initialize()
         log.info("Ferry system ready")
+
+        await self.inns.initialize()
+        log.info("Inn system ready")
 
         await self.travel_offices.initialize()
         log.info("Travel office system ready")

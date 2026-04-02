@@ -93,6 +93,9 @@ async def _send_npc_response(session, npc, topic, server):
             maybe_handle_guild_npc_action,
             maybe_handle_adventurer_guild_npc_response,
         )
+        inn_mgr = getattr(server, "inns", None)
+        if inn_mgr and await inn_mgr.maybe_handle_npc_topic(session, npc, topic):
+            return
         if await maybe_handle_adventurer_guild_npc_response(session, npc, topic, server):
             return
         response = npc.get_talk_response(server, session, topic)

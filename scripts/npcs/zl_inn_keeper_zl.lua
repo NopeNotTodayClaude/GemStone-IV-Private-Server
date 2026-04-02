@@ -1,12 +1,12 @@
 -- NPC: a dwarven innkeeper
--- Auto-generated shopkeeper binding for room 16849
+-- Auto-generated shopkeeper binding for room 9482
 local NPC = {}
 NPC.template_id    = "zl_inn_keeper_zl"
 NPC.name           = "a dwarven innkeeper"
 NPC.article        = "a"
 NPC.title          = "innkeeper"
 NPC.description    = "A loud jovial dwarf who runs the Bawdy Bard with more noise than management."
-NPC.home_room_id   = 16849
+NPC.home_room_id   = 9482
 NPC.can_combat     = false
 NPC.can_shop       = true
 NPC.can_wander     = false

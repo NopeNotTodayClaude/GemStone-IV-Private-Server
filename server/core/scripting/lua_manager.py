@@ -207,6 +207,10 @@ class LuaManager:
         from server.core.scripting.loaders.ferries_loader import load_ferries
         return self._load_once("ferries", lambda: load_ferries(self._engine))
 
+    def get_inns(self) -> Optional[dict]:
+        from server.core.scripting.loaders.inns_loader import load_inns
+        return self._load_once("inns", lambda: load_inns(self._engine))
+
     def get_travel_offices(self) -> Optional[dict]:
         from server.core.scripting.loaders.travel_offices_loader import load_travel_offices
         return self._load_once("travel_offices", lambda: load_travel_offices(self._engine))

@@ -1,12 +1,12 @@
 -- NPC: an elven innkeeper
--- Auto-generated shopkeeper binding for room 15608
+-- Auto-generated shopkeeper binding for room 9921
 local NPC = {}
 NPC.template_id    = "tai_inn_keeper_tai"
 NPC.name           = "an elven innkeeper"
 NPC.article        = "an"
 NPC.title          = "innkeeper"
 NPC.description    = "A refined elven host whose inn caters to visiting scholars and diplomats."
-NPC.home_room_id   = 15608
+NPC.home_room_id   = 9921
 NPC.can_combat     = false
 NPC.can_shop       = true
 NPC.can_wander     = false

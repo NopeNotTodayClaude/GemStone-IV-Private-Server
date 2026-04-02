@@ -1,12 +1,12 @@
 -- NPC: an innkeeper
--- Auto-generated shopkeeper binding for room 10951
+-- Auto-generated shopkeeper binding for room 10956
 local NPC = {}
 NPC.template_id    = "rr_inn_keeper_rr"
 NPC.name           = "an innkeeper"
 NPC.article        = "an"
 NPC.title          = "innkeeper"
 NPC.description    = "A laid-back human who runs the inn with minimal fuss and maximum hospitality."
-NPC.home_room_id   = 10951
+NPC.home_room_id   = 10956
 NPC.can_combat     = false
 NPC.can_shop       = true
 NPC.can_wander     = false

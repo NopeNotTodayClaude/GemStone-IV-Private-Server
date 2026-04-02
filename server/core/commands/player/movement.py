@@ -535,6 +535,10 @@ async def cmd_move(session, cmd, args, server):
         ok = await server.justice.before_move(session, room, target_room_id, direction)
         if not ok:
             return
+    if hasattr(server, "inns"):
+        ok = await server.inns.before_move(session, room, target_room_id, direction)
+        if not ok:
+            return
 
     # Break combat on movement -- only send flee message if truly mid-combat.
     # exited_combat grace period (set after kill) suppresses the message so
@@ -633,6 +637,10 @@ async def cmd_go(session, cmd, args, server):
             return
     if hasattr(server, "justice"):
         ok = await server.justice.before_move(session, room, target_room_id, 'go_' + target)
+        if not ok:
+            return
+    if hasattr(server, "inns"):
+        ok = await server.inns.before_move(session, room, target_room_id, 'go_' + target)
         if not ok:
             return
 

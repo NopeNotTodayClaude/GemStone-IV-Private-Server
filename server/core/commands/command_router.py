@@ -45,6 +45,9 @@ from server.core.commands.player.shop import (
 from server.core.commands.player.bank import (
     cmd_deposit, cmd_withdraw, cmd_check, cmd_bank, cmd_locker
 )
+from server.core.commands.player.inn import (
+    cmd_check_in, cmd_check_out, cmd_check_room, cmd_latch, cmd_unlatch, cmd_invite
+)
 from server.core.commands.player.customize import cmd_customize, cmd_confirm, cmd_redeem
 from server.core.commands.player.dye import cmd_dye, cmd_dye_colors
 from server.core.commands.player.climbing import cmd_climb, cmd_swim
@@ -326,8 +329,14 @@ class CommandRouter:
         self.register("deposit", cmd_deposit)
         self.register("withdraw", cmd_withdraw)
         self.register("check", cmd_check)
+        self.register("check in", cmd_check_in)
+        self.register("check out", cmd_check_out)
+        self.register("check room", cmd_check_room)
         self.register("bank", cmd_bank)
         self.register("locker", cmd_locker)
+        self.register("latch", cmd_latch)
+        self.register("unlatch", cmd_unlatch)
+        self.register("invite", cmd_invite)
 
         # ---- Shop customization ----
         self.register("customize", cmd_customize)

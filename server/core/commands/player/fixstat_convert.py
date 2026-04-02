@@ -116,15 +116,15 @@ def _fixstat_consume(session, reason, server):
 
 # ── In-room inn detection ─────────────────────────────────────────────────────
 
-def _is_at_inn(session):
-    """True if the player's current room is a safe/inn room."""
+def _is_at_inn(session, server):
+    """True if the player is checked in and currently inside that inn."""
+    inns = getattr(server, "inns", None)
+    if inns:
+        return inns.can_use_fixstats(session)
+
     room = getattr(session, "current_room", None)
     if not room:
         return False
-    # Safe rooms always qualify
-    if getattr(room, "safe", False):
-        return True
-    # Check location name for inn keywords
     loc = getattr(room, "location_name", "") or ""
     loc_lower = loc.lower()
     for kw in _inn_room_ids():
@@ -144,9 +144,10 @@ async def cmd_fixstats(session, cmd, args, server):
     from server.core.protocol.colors import colorize, TextPresets
 
     # ── Require inn room ──────────────────────────────────────────────────────
-    if not _is_at_inn(session):
+    if not _is_at_inn(session, server):
+        inns = getattr(server, "inns", None)
         await session.send_line(colorize(
-            "  You must be at an inn or safe resting place to reallocate your stats.",
+            f"  {(inns.fixstats_gate_message() if inns else 'You must be at an inn or safe resting place to reallocate your stats.')}",
             TextPresets.SYSTEM
         ))
         return
