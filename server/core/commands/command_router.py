@@ -20,7 +20,7 @@ from server.core.commands.player.inventory import (
 )
 from server.core.commands.player.actions import (
     cmd_stand, cmd_sit, cmd_kneel, cmd_lie, cmd_rest, cmd_sleep, cmd_use, cmd_tend, cmd_wounds,
-    cmd_read, cmd_invoke, cmd_steal,
+    cmd_read, cmd_invoke, cmd_raise, cmd_gaze, cmd_steal,
     # Legacy hardcoded emotes kept as fallback if Lua is unavailable
     cmd_bow, cmd_wave, cmd_nod, cmd_grin, cmd_smile, cmd_frown,
     cmd_laugh, cmd_cry, cmd_sigh, cmd_shrug, cmd_wince, cmd_ponder,
@@ -36,7 +36,7 @@ from server.core.commands.player.combat import (
 )
 from server.core.commands.player.lockpicking import cmd_pick, cmd_disarm, cmd_detect, cmd_lmaster
 from server.core.commands.player.boxpick import (
-    cmd_submit, cmd_boxpick, cmd_claim, cmd_done, cmd_ring, cmd_pay,
+    cmd_submit, cmd_boxpick, cmd_claim, cmd_done, cmd_ring, cmd_pay as cmd_locksmith_pay,
     cmd_cancel_job, cmd_forfeit, cmd_myjobs, cmd_repair
 )
 from server.core.commands.player.shop import (
@@ -59,6 +59,7 @@ from server.core.commands.player.foraging import cmd_forage, cmd_track
 from server.core.commands.player.crafting import cmd_artisan, cmd_fletching, cmd_cobbling, cmd_cut, cmd_measure
 from server.core.commands.player.guild import cmd_gld, cmd_questlog, cmd_questslog, cmd_answer, cmd_bounty
 from server.core.commands.player.pets import cmd_pet, cmd_touch_companion, cmd_kick_companion
+from server.core.commands.player.justice import cmd_justice, cmd_inquire, cmd_accuse, cmd_justice_service
 
 log = logging.getLogger(__name__)
 
@@ -87,6 +88,20 @@ async def cmd_ask_combined(session, cmd, args, server):
 
     # Fall back to player ASK
     await cmd_ask(session, cmd, args, server)
+
+
+async def cmd_answer_combined(session, cmd, args, server):
+    justice_mgr = getattr(server, "justice", None)
+    if justice_mgr and await justice_mgr.maybe_handle_answer(session, args):
+        return
+    await cmd_answer(session, cmd, args, server)
+
+
+async def cmd_pay_combined(session, cmd, args, server):
+    justice_mgr = getattr(server, "justice", None)
+    if justice_mgr and await justice_mgr.maybe_handle_pay(session, args):
+        return
+    await cmd_locksmith_pay(session, cmd, args, server)
 
 
 class CommandRouter:
@@ -189,6 +204,8 @@ class CommandRouter:
         self.register("release", cmd_release)
         self.register("send", cmd_send)
         self.register("read", cmd_read)
+        self.register("raise", cmd_raise)
+        self.register("gaze", cmd_gaze)
         self.register("invoke", cmd_invoke)
         self.register("forage", cmd_forage)
         self.register("track", cmd_track)
@@ -200,8 +217,13 @@ class CommandRouter:
         self.register("swim", cmd_swim)
         self.register("quest", cmd_questlog)
         self.register("quests", cmd_questslog)
-        self.register("answer", cmd_answer)
+        self.register("answer", cmd_answer_combined)
         self.register("bounty", cmd_bounty)
+        self.register("justice", cmd_justice)
+        self.register("inquire", cmd_inquire)
+        self.register("accuse", cmd_accuse)
+        for _justice_verb in ("clean", "scrub", "dust", "polish", "sort", "haul", "rub", "push", "slide"):
+            self.register(_justice_verb, cmd_justice_service)
 
         # Free-form custom emote — always available
         self.register("emote", cmd_emote, aliases=["em"])
@@ -290,7 +312,7 @@ class CommandRouter:
 
         # ---- Locksmith services / picking queue ----
         self.register("ring", cmd_ring)
-        self.register("pay", cmd_pay)
+        self.register("pay", cmd_pay_combined)
         self.register("submit", cmd_submit)
         self.register("boxpick", cmd_boxpick, aliases=["pickjobs"])
         self.register("claim", cmd_claim)
@@ -386,8 +408,9 @@ class CommandRouter:
             "boxpick", "pickjobs", "myjobs", "repair", "ring", "pay",
             "claim", "done", "cancel", "forfeit", "submit",
             "customize", "order", "list", "mark",
-            "look in", "detect", "get all", "getall", "empty",
-            "party", "pt", "gld", "stop",
+            "look in", "detect", "gaze", "get all", "getall", "empty",
+            "party", "pt", "gld", "stop", "justice", "inquire", "accuse",
+            "clean", "scrub", "dust", "polish", "sort", "haul", "rub", "push", "slide",
             "esp", "think", "chat", "tell", "whisper",
         }
         # All social emotes (Lua + legacy) bypass RT automatically

@@ -772,6 +772,13 @@ async def cmd_steal(session, cmd, args, server):
             return
 
         _mark_pickpocketed(target, getattr(session, "character_id", 0))
+        justice_mgr = getattr(server, "justice", None)
+        if justice_mgr:
+            await justice_mgr.on_theft(
+                session,
+                getattr(target, "display_name", getattr(target, "character_name", getattr(target, "full_name", "your target"))),
+                room_id=getattr(getattr(session, "current_room", None), "id", 0),
+            )
         await session.send_line(colorize(
             f"You deftly lift {stolen_item.get('short_name') or stolen_item.get('name') or 'an item'} from "
             f"{getattr(target, 'display_name', getattr(target, 'character_name', getattr(target, 'full_name', 'your target')))}"
@@ -794,6 +801,13 @@ async def cmd_steal(session, cmd, args, server):
                     ok, detail = _transfer_stolen_player_item(session, target, stolen_item, stolen_source, server)
                     if ok:
                         _mark_pickpocketed(target, getattr(session, "character_id", 0))
+                        justice_mgr = getattr(server, "justice", None)
+                        if justice_mgr:
+                            await justice_mgr.on_theft(
+                                session,
+                                getattr(target, "character_name", "your target"),
+                                room_id=getattr(getattr(session, "current_room", None), "id", 0),
+                            )
                         await session.send_line(colorize(
                             f"You deftly lift {stolen_item.get('short_name') or stolen_item.get('name') or 'an item'} from "
                             f"{getattr(target, 'character_name', 'your target')} and hide it in {detail}.",
@@ -827,6 +841,13 @@ async def cmd_steal(session, cmd, args, server):
             )
 
     _mark_pickpocketed(target, getattr(session, "character_id", 0))
+    justice_mgr = getattr(server, "justice", None)
+    if justice_mgr:
+        await justice_mgr.on_theft(
+            session,
+            getattr(target, "display_name", getattr(target, "character_name", getattr(target, "full_name", "your target"))),
+            room_id=getattr(getattr(session, "current_room", None), "id", 0),
+        )
 
     await session.send_line(colorize(
         f"You deftly lift {amount} silver from {getattr(target, 'display_name', getattr(target, 'character_name', getattr(target, 'full_name', 'your target')))}.",
@@ -1597,6 +1618,24 @@ async def cmd_read(session, cmd, args, server):
                 break
 
     if not scroll:
+        travel_mgr = getattr(server, "travel_offices", None)
+        if travel_mgr:
+            for slot in ("right_hand", "left_hand"):
+                item = getattr(session, slot, None)
+                if not item:
+                    continue
+                names = {
+                    str(item.get("name") or "").lower(),
+                    str(item.get("short_name") or "").lower(),
+                    str(item.get("noun") or "").lower(),
+                }
+                if any(search in name for name in names if name):
+                    lines = travel_mgr.read_travel_item(session, item)
+                    if lines:
+                        for line in lines:
+                            await session.send_line(line)
+                        return
+
         await session.send_line(
             f"You aren't holding anything like '{args.strip()}' that can be read.  "
             "You must have the scroll in your hand."
@@ -1657,6 +1696,68 @@ async def cmd_read(session, cmd, args, server):
             await server.guild.record_event(session, "scroll_read_success")
         except Exception:
             pass
+
+
+async def cmd_raise(session, cmd, args, server):
+    """RAISE <item> - Raise a held travel pass, ticket, or similar item."""
+    from server.core.protocol.colors import colorize, TextPresets
+
+    if not args:
+        await session.send_line("Raise what?")
+        return
+
+    target = args.strip().lower()
+    for slot in ("right_hand", "left_hand"):
+        item = getattr(session, slot, None)
+        if not item:
+            continue
+        names = (
+            str(item.get("name") or "").lower(),
+            str(item.get("short_name") or "").lower(),
+            str(item.get("noun") or "").lower(),
+        )
+        if not any(target in name for name in names if name):
+            continue
+        travel_mgr = getattr(server, "travel_offices", None)
+        if travel_mgr and await travel_mgr.raise_travel_item(session, item):
+            return
+        await session.send_line(colorize("Nothing happens.", TextPresets.WARNING))
+        return
+
+    await session.send_line("You are not holding that.")
+
+
+async def cmd_gaze(session, cmd, args, server):
+    """GAZE <item> - Focus on a held travel item for dynamic destination info."""
+    if not args:
+        await session.send_line("Gaze at what?")
+        return
+
+    target = args.strip().lower()
+    if target.startswith("at "):
+        target = target[3:].strip()
+    travel_mgr = getattr(server, "travel_offices", None)
+    for slot in ("right_hand", "left_hand"):
+        item = getattr(session, slot, None)
+        if not item:
+            continue
+        names = (
+            str(item.get("name") or "").lower(),
+            str(item.get("short_name") or "").lower(),
+            str(item.get("noun") or "").lower(),
+        )
+        if not any(target in name for name in names if name):
+            continue
+        if travel_mgr:
+            lines = travel_mgr.gaze_travel_item(session, item)
+            if lines:
+                for line in lines:
+                    await session.send_line(line)
+                return
+        await session.send_line("You see nothing unusual.")
+        return
+
+    await session.send_line("You are not holding that.")
 
 
 # =========================================================

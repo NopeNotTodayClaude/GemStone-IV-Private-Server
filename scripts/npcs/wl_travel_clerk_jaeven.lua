@@ -1,6 +1,7 @@
 -- NPC: Post clerk Jaeven
 -- Zone/Town: auto-placed  |  Room: 8632
 local NPC = {}
+local TravelOfficeNPC = require("globals.travel_office_npc")
 
 NPC.template_id    = "wl_travel_clerk_jaeven"
 NPC.name           = "Post clerk Jaeven"
@@ -22,10 +23,15 @@ NPC.is_bot         = false
 NPC.is_invasion    = false
 
 NPC.dialogues = {
-    default = "Post clerk Jaeven doesn't respond.",
+    travel = "If you need a road guide, name your town cleanly.",
+    destinations = "I can route you through the other guide offices if you qualify.",
+    fares = "Guide travel is cheap.  The wasted time from wandering is not.",
+    default = "Post clerk Jaeven squints over a stack of manifests.  'Name the town and keep the line moving.'",
 }
 NPC.ambient_emotes = {}
 NPC.ambient_chance = 0.02
 NPC.emote_cooldown = 60
+
+TravelOfficeNPC.attach(NPC, "wl_travel")
 
 return NPC

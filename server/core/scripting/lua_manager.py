@@ -159,6 +159,10 @@ class LuaManager:
         from server.core.scripting.loaders.encumbrance_loader import load_encumbrance_cfg
         return self._load_once("encumbrance_cfg", lambda: load_encumbrance_cfg(self._engine))
 
+    def get_ucs_cfg(self) -> dict:
+        from server.core.scripting.loaders.ucs_loader import load_ucs_cfg
+        return self._load_once("ucs_cfg", lambda: load_ucs_cfg(self._engine))
+
     def get_crafting(self) -> Optional[dict]:
         from server.core.scripting.loaders.crafting_loader import load_crafting
         return self._load_once("crafting", lambda: load_crafting(self._engine))
@@ -198,6 +202,18 @@ class LuaManager:
     def get_rogue_guild_training(self) -> Optional[dict]:
         from server.core.scripting.loaders.rogue_guild_training_loader import load_rogue_guild_training
         return self._load_once("rogue_guild_training", lambda: load_rogue_guild_training(self._engine))
+
+    def get_ferries(self) -> Optional[dict]:
+        from server.core.scripting.loaders.ferries_loader import load_ferries
+        return self._load_once("ferries", lambda: load_ferries(self._engine))
+
+    def get_travel_offices(self) -> Optional[dict]:
+        from server.core.scripting.loaders.travel_offices_loader import load_travel_offices
+        return self._load_once("travel_offices", lambda: load_travel_offices(self._engine))
+
+    def get_justice(self) -> Optional[dict]:
+        from server.core.scripting.loaders.justice_loader import load_justice
+        return self._load_once("justice", lambda: load_justice(self._engine))
 
     # ── Spell seeding ─────────────────────────────────────────────────────────
 

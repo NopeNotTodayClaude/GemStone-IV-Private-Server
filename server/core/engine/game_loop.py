@@ -123,6 +123,24 @@ class GameLoop:
             except Exception as e:
                 log.error("Trap tick error: %s", e, exc_info=True)
 
+        if hasattr(self.server, "ferries"):
+            try:
+                await self.server.ferries.tick(self.tick_count)
+            except Exception as e:
+                log.error("Ferry tick error: %s", e, exc_info=True)
+
+        if hasattr(self.server, "travel_offices"):
+            try:
+                await self.server.travel_offices.tick(self.tick_count)
+            except Exception as e:
+                log.error("Travel office tick error: %s", e, exc_info=True)
+
+        if hasattr(self.server, "justice"):
+            try:
+                await self.server.justice.tick(self.tick_count)
+            except Exception as e:
+                log.error("Justice tick error: %s", e, exc_info=True)
+
         # Passive health/mana/stamina regeneration (every ~60 seconds, matching GS4 regen cadence)
         if self.tick_count % 600 == 0:
             try:

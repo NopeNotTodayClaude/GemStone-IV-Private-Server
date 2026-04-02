@@ -1,6 +1,7 @@
 -- NPC: a travel clerk
 -- Zone/Town: auto-placed  |  Room: 1871
 local NPC = {}
+local TravelOfficeNPC = require("globals.travel_office_npc")
 
 NPC.template_id    = "ti_travel_clerk_ti"
 NPC.name           = "a travel clerk"
@@ -22,10 +23,15 @@ NPC.is_bot         = false
 NPC.is_invasion    = false
 
 NPC.dialogues = {
-    default = "a travel clerk doesn't respond.",
+    travel = "The Glaesen Star does not wait on the indecisive.",
+    airship = "If you need passage back to Wehnimer's Landing, say so plainly.",
+    fares = "Airship passage is dearer than road travel, but far faster.",
+    default = "The dwarven clerk taps a copper itinerary board.  'Wehnimer's or nowhere.  Which is it?'",
 }
 NPC.ambient_emotes = {}
 NPC.ambient_chance = 0.02
 NPC.emote_cooldown = 60
+
+TravelOfficeNPC.attach(NPC, "kd_airship")
 
 return NPC

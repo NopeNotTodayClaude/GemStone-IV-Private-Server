@@ -9,6 +9,7 @@ import time
 import random
 import logging
 from server.core.engine.combat.status_effects import get_combat_mods as get_status_combat_mods
+from server.core.engine.combat.ucs_runtime import derive_fallback_udf
 from server.core.scripting.loaders.body_types_loader import get_locations
 
 log = logging.getLogger(__name__)
@@ -410,7 +411,7 @@ class Creature:
         _status_as_mod, status_ds_mod = get_status_combat_mods(self)
         base = int(getattr(self, "udf", 0) or 0)
         if base <= 0:
-            return max(1, self.get_melee_ds())
+            return derive_fallback_udf(getattr(self, "level", 1), self.get_melee_ds())
         return max(1, base + int(status_ds_mod or 0))
 
     def apply_wound(self, location: str, crit_rank: int) -> int:

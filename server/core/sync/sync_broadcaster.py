@@ -556,6 +556,30 @@ def _build_npc_actions(session, server, npc) -> list[dict]:
         add("Sell...", "sell ", prefill=True)
         add("Appraise...", "appraise ", prefill=True)
 
+    travel_mgr = getattr(server, "travel_offices", None)
+    if travel_mgr:
+        try:
+            for entry in travel_mgr.get_actions_for_npc(session, npc):
+                label = str(entry.get("label") or "").strip()
+                command = str(entry.get("command") or "").strip()
+                prefill = bool(entry.get("prefill"))
+                if label and command:
+                    add(label, command, prefill=prefill)
+        except Exception:
+            log.exception("Failed building travel-office actions for NPC %s", getattr(npc, "template_id", "?"))
+
+    justice_mgr = getattr(server, "justice", None)
+    if justice_mgr:
+        try:
+            for entry in justice_mgr.get_actions_for_npc(session, npc):
+                label = str(entry.get("label") or "").strip()
+                command = str(entry.get("command") or "").strip()
+                prefill = bool(entry.get("prefill"))
+                if label and command:
+                    add(label, command, prefill=prefill)
+        except Exception:
+            log.exception("Failed building justice actions for NPC %s", getattr(npc, "template_id", "?"))
+
     pets = getattr(server, "pets", None)
     room = getattr(session, "current_room", None)
     if pets and room and pets.is_pet_shop_room(getattr(room, "id", 0)):

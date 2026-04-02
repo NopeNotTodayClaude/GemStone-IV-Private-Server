@@ -1877,6 +1877,13 @@ async def cmd_inspect(session, cmd, args, server):
     except Exception as e:
         log.error("Locker INSPECT hook failed: %s", e)
 
+    try:
+        justice_mgr = getattr(server, "justice", None)
+        if justice_mgr and await justice_mgr.maybe_handle_service_inspect(session, target):
+            return
+    except Exception as e:
+        log.error("Justice INSPECT hook failed: %s", e)
+
     # Search: hands first, then worn, then containers, then loose
     item, _ = _find_in_hands(session, target)
     if not item:
@@ -2156,8 +2163,9 @@ async def cmd_loot(session, cmd, args, server):
 
     if can_remove_corpse(creature):
         server.creatures.remove_creature(creature)
-    session.set_roundtime(3)
-    await session.send_line(roundtime_msg(3))
+    if found_anything:
+        session.set_roundtime(3)
+        await session.send_line(roundtime_msg(3))
 # =========================================================
 # YELL
 # =========================================================

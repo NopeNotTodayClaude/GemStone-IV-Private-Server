@@ -1,6 +1,7 @@
 -- NPC: a travel clerk
 -- Zone/Town: auto-placed  |  Room: 3411
 local NPC = {}
+local TravelOfficeNPC = require("globals.travel_office_npc")
 
 NPC.template_id    = "imt_travel_clerk_imt"
 NPC.name           = "a travel clerk"
@@ -22,10 +23,15 @@ NPC.is_bot         = false
 NPC.is_invasion    = false
 
 NPC.dialogues = {
-    default = "a travel clerk doesn't respond.",
+    travel = "The snow doesn't slow the roads half so much as indecision does.",
+    destinations = "If you want out of Icemule, say where.",
+    fares = "Travel guide fees are cheaper than getting lost in a drift.",
+    default = "The halfling clerk peers over a stack of route cards.  'Pick your town.'",
 }
 NPC.ambient_emotes = {}
 NPC.ambient_chance = 0.02
 NPC.emote_cooldown = 60
+
+TravelOfficeNPC.attach(NPC, "imt_travel")
 
 return NPC

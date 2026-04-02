@@ -2,6 +2,7 @@
 -- Role: service  |  Room: 10302
 -- Source: scripts/data/npc_data.py → migrated to Lua
 local NPC = {}
+local TravelOfficeNPC = require("globals.travel_office_npc")
 
 -- ── Identity ──────────────────────────────────────────────────────────────────
 NPC.template_id    = "travel_clerk"
@@ -42,5 +43,7 @@ NPC.ambient_emotes = {
 }
 NPC.ambient_chance  = 0.02
 NPC.emote_cooldown  = 60
+
+TravelOfficeNPC.attach(NPC, "tv_travel")
 
 return NPC

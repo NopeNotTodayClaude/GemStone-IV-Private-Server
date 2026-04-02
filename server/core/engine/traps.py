@@ -678,16 +678,12 @@ class TrapManager:
         if not harmed:
             return
         room = self.server.world.get_room(room_id) if room_id else None
-        offense = {
-            "type": "trap_public_disturbance",
-            "trap_type": trap_type,
-            "room_id": room_id,
-            "victims": [p.character_name for p in harmed],
-            "timestamp": int(time.time()),
-        }
-        incidents = list(getattr(offender, "justice_incidents", []) or [])
-        incidents.append(offense)
-        offender.justice_incidents = incidents
+        justice_mgr = getattr(self.server, "justice", None)
+        if justice_mgr:
+            try:
+                await justice_mgr.on_public_disturbance(offender, room_id, trap_type, harmed)
+            except Exception:
+                log.exception("Justice disturbance note failed for trap %s in room %s", trap_type, room_id)
         if room and getattr(room, "safe", False):
             await offender.send_line(colorize(
                 "  The collateral damage from that trap would be considered a serious public disturbance here.",

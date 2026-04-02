@@ -133,6 +133,14 @@ class NPCManager:
 
         # ── Phase 1: Lua NPC files (authoritative) ────────────────────────────
         lua_templates = load_all_npc_luas(scripts_path)
+        justice_mgr = getattr(self.server, "justice", None)
+        if justice_mgr:
+            try:
+                for tid, template in (justice_mgr.get_npc_templates() or {}).items():
+                    if tid:
+                        lua_templates[str(tid)] = dict(template)
+            except Exception:
+                log.exception("NPCManager: failed loading justice NPC templates")
         self._lua_count = len(lua_templates)
 
         # ── Phase 2: SQL registry (room overrides + alive state) ─────────────
@@ -289,15 +297,36 @@ class NPCManager:
 
         lua_module = template.get("lua_module")
         lua_file = template.get("lua_file")
+        lua_context = dict(template.get("lua_context") or {})
         try:
             if lua_file and os.path.exists(lua_file):
                 npc._lua_table = engine.load_file(lua_file)
             elif lua_module:
-                npc._lua_table = engine.require(lua_module)
+                if lua_context:
+                    scripts_path = os.path.abspath(self.server.config.get("paths.scripts", "./scripts"))
+                    module_rel = str(lua_module).replace(".", os.sep) + ".lua"
+                    module_file = os.path.join(scripts_path, module_rel)
+                    if os.path.exists(module_file):
+                        npc._lua_table = engine.load_file(module_file)
+                    else:
+                        npc._lua_table = engine.require(lua_module)
+                else:
+                    npc._lua_table = engine.require(lua_module)
         except Exception as e:
             log.error("NPC Lua load failed (%s): %s", npc.template_id, e)
             npc._lua_table = None
             return
+
+        if npc._lua_table and lua_context:
+            try:
+                ctx = engine.python_to_lua(lua_context)
+                attached = engine.call_npc_hook(npc._lua_table, "attach", ctx)
+                if attached is not None:
+                    npc._lua_table = attached
+                else:
+                    engine.call_npc_hook(npc._lua_table, "configure", ctx)
+            except Exception as e:
+                log.error("NPC attach/configure hook error (%s): %s", npc.template_id, e)
 
         if npc._lua_table and npc.has_hook("on_load"):
             try:

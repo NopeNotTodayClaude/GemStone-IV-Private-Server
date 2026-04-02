@@ -58,6 +58,8 @@ class CreatureManager:
     # ── Initialization ────────────────────────────────────────────────────
 
     async def initialize(self):
+        if getattr(self.server, "lua", None):
+            self.server.lua.get_ucs_cfg()
         scripts_path = self.server.config.get("paths.scripts", "./scripts")
         self._spawn_registries = load_zone_spawn_registries(scripts_path)
 

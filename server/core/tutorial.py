@@ -829,7 +829,7 @@ class TutorialManager:
         if session.current_room:
             self.server.world.remove_player_from_room(session, session.current_room.id)
 
-        town = room.zone.name if room and room.zone else "the world"
+        town = (getattr(room, "zone_name", "") or (room.zone.name if room and room.zone else "")) or "the world"
 
         await session.send_line("")
         await session.send_line("=" * 55)

@@ -97,6 +97,12 @@ async def _send_npc_response(session, npc, topic, server):
             return
         response = npc.get_talk_response(server, session, topic)
         if isinstance(response, dict):
+            justice_mgr = getattr(server, "justice", None)
+            if justice_mgr and await justice_mgr.maybe_handle_npc_response(session, npc, topic, response):
+                return
+            travel_mgr = getattr(server, "travel_offices", None)
+            if travel_mgr and await travel_mgr.maybe_handle_npc_response(session, npc, topic, response):
+                return
             if await maybe_handle_guild_npc_action(session, npc, topic, response, server):
                 return
             text = None

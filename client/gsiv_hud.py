@@ -300,7 +300,7 @@ AIM_CLEAR_RE = re.compile(r"You're now no longer aiming at anything in particula
 # EXP command output parsing
 EXP_TOTAL_RE  = re.compile(r"Total experience:\s*([\d,]+)", re.I)
 EXP_TNL_RE    = re.compile(r"(?:Exp(?:erience)?\s+(?:needed|to next level)|TNL)\s*:?\s*([\d,]+)", re.I)
-EXP_MIND_RE   = re.compile(r"Mind\s+State\s*:\s*(.+)", re.I)
+EXP_MIND_RE   = re.compile(r"(?:Mind\s+State|Mind)\s*:\s*(.+)", re.I)
 EXP_LEVEL_RE  = re.compile(r"(?:Current\s+)?[Ll]evel\s*:\s*(\d+)", re.I)
 # Inline mind state from combat kill line: "You gained 240 experience [kill].  Mind: becoming saturated"
 EXP_MIND_INLINE_RE = re.compile(r"\bMind:\s+(.+)", re.I)
@@ -347,11 +347,17 @@ ARRIVED_RE = re.compile(
     r"^(?:A|An|The)\s+([\w\s\-]+?)\s+(?:just arrived|just entered|appears?|emerges?|rushes? in|charges? in|runs? in)",
     re.IGNORECASE)
 
-# GS4 mind states in order of absorption % (0=clear → 12=mind lock)
+# Server mind states in order of absorption % (empty → full).
 MIND_STATES = [
-    "clear", "dabbling", "processing", "learning", "contemplating",
-    "muddled", "becoming", "concentrating", "discerning", "deliberating",
-    "ruminating", "focusing", "mind lock",
+    "clear as a bell",
+    "clear",
+    "fresh and clear",
+    "fresh",
+    "muddled",
+    "becoming saturated",
+    "saturated",
+    "you must rest!",
+    "fried",
 ]
 
 
@@ -1237,7 +1243,12 @@ class RoomGraph:
         return self.rooms.get(int(room_id))
 
     def _is_blocked_path_edge(self, current_room_id: int, exit_key: str, next_room_id: int) -> bool:
-        return str(exit_key or "").strip().lower() in PATHFIND_BLOCKED_EXIT_KEYS
+        key = str(exit_key or "").strip().lower()
+        if key in PATHFIND_BLOCKED_EXIT_KEYS:
+            return True
+        if key.startswith("event_transport_"):
+            return True
+        return False
 
     def _iter_edges(self, room: dict):
         for edge in room.get("edges", []) or []:
@@ -2234,6 +2245,7 @@ class HUDApp:
         self._exp_tnl:     int = 0
         self._exp_level:   int = 0
         self._mind_state:  str = "clear"
+        self._mind_fill_pct: int = 0
 
         # Time & Weather panel state (populated via sync)
         self._tw_day_name:    str = "—"
@@ -2915,6 +2927,12 @@ class HUDApp:
             self._exp_level = xp.get("level",      self._exp_level)
             self._exp_total = xp.get("total",      self._exp_total)
             self._exp_tnl   = xp.get("tnl",        self._exp_tnl)
+            absorb = xp.get("absorption_pct")
+            if absorb is not None:
+                try:
+                    self._mind_fill_pct = max(0, min(100, int(absorb)))
+                except (TypeError, ValueError):
+                    pass
             mind = xp.get("mind_state", "")
             if mind:
                 self._mind_state = mind
@@ -3564,10 +3582,7 @@ class HUDApp:
     def _update_mind_bar(self):
         """Redraw the mind state bar."""
         try:
-            state  = self._mind_state.lower().strip()
-            idx    = next((i for i, s in enumerate(MIND_STATES) if s in state), 0)
-            total  = len(MIND_STATES) - 1   # 12
-            pct    = idx / total
+            pct = self._mind_fill_fraction()
 
             w = self._mind_canvas.winfo_width() or 140
             h = self._mind_canvas.winfo_height() or 10
@@ -3587,6 +3602,20 @@ class HUDApp:
         except Exception:
             pass
 
+    def _mind_fill_fraction(self):
+        """Prefer synced absorption %, fall back to the textual mind state ladder."""
+        try:
+            pct = float(int(getattr(self, "_mind_fill_pct", 0) or 0)) / 100.0
+        except Exception:
+            pct = 0.0
+        if pct > 0.0:
+            return max(0.0, min(1.0, pct))
+
+        state = self._mind_state.lower().strip()
+        idx = next((i for i, s in enumerate(MIND_STATES) if s in state or state in s), 0)
+        total = max(1, len(MIND_STATES) - 1)
+        return idx / total
+
     def _update_exp_panel(self):
         """Push latest exp values to the panel labels."""
         self._exp_lvl_lbl.config(text=str(self._exp_level) if self._exp_level else "—")
@@ -3595,10 +3624,7 @@ class HUDApp:
         self._exp_total_lbl.config(text=xp_str)
         self._exp_tnl_lbl.config(text=tnl_str)
 
-        state = self._mind_state.lower().strip()
-        idx   = next((i for i, s in enumerate(MIND_STATES) if s in state), 0)
-        total = len(MIND_STATES) - 1
-        pct   = idx / total
+        pct = self._mind_fill_fraction()
         if pct < 0.35:
             color = ACCENT_GRN
         elif pct < 0.60:
@@ -6210,9 +6236,12 @@ class HUDApp:
                     for gkey, nid in exits.items():
                         last = gkey.split("_")[-1]
                         spaced = gkey.replace("_", " ")
-                        suffix_map[last] = (spaced, nid)
+                        is_transport = gkey.startswith("event_transport_")
+                        if not is_transport:
+                            suffix_map[last] = (spaced, nid)
                         # also store full spaced key directly
-                        suffix_map[spaced] = (spaced, nid)
+                        if spaced not in suffix_map or not is_transport:
+                            suffix_map[spaced] = (spaced, nid)
                         # store display name (prefix stripped, underscores to spaces)
                         # so "go_verdant_path" -> clickable "verdant path"
                         for prefix in ("go_", "climb_", "swim_"):
@@ -6277,11 +6306,13 @@ class HUDApp:
         msm = EXP_MIND_RE.search(clean)
         if msm:
             self._mind_state = msm.group(1).strip().lower()
+            self._mind_fill_pct = 0
             self._update_exp_panel()
         # Inline mind state from kill XP line: "You gained 240 experience [kill].  Mind: becoming saturated"
         msm2 = EXP_MIND_INLINE_RE.search(clean)
         if msm2 and not msm:
             self._mind_state = msm2.group(1).strip().lower()
+            self._mind_fill_pct = 0
             self._update_exp_panel()
         elm = EXP_LEVEL_RE.search(clean)
         if elm:

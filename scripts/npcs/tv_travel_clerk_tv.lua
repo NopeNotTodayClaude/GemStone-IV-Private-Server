@@ -1,6 +1,7 @@
 -- NPC: a travel clerk
 -- Zone/Town: auto-placed  |  Room: 10302
 local NPC = {}
+local TravelOfficeNPC = require("globals.travel_office_npc")
 
 NPC.template_id    = "tv_travel_clerk_tv"
 NPC.name           = "a travel clerk"
@@ -35,5 +36,7 @@ NPC.ambient_emotes = {
 }
 NPC.ambient_chance = 0.02
 NPC.emote_cooldown = 80
+
+TravelOfficeNPC.attach(NPC, "tv_travel")
 
 return NPC

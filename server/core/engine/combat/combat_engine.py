@@ -39,6 +39,7 @@ from server.core.scripting.loaders.body_types_loader import (
 from server.core.engine.combat.material_combat import (
     resolve_flare, get_crit_phantom, resolve_armor_flare
 )
+from server.core.engine.combat.ucs_runtime import get_ucs_mm_for_stance, get_ucs_ratio_cap
 from server.core.engine.combat.status_effects import get_combat_mods
 from server.core.scripting.lua_bindings.weapon_api import set_reaction_trigger
 from server.core.scripting.lua_bindings.combat_maneuver_api import (
@@ -1100,22 +1101,23 @@ class CombatEngine:
             _raw_udf = getattr(creature, 'udf', 0)
             udf = max(1, _raw_udf if _raw_udf > 0 else getattr(creature, 'ds_melee', creature.level * 3))
 
-        # Tier 1 (decent) base MM — stance penalizes MM per wiki note
-        mm_stance = {
-            "offensive": 20, "advance": 10, "forward": 5,
-            "neutral": 0, "guarded": -15, "defensive": -25,
-        }
-        mm = 100 + mm_stance.get(session.stance, 0)
+        # Tier 1 (decent) MM comes from stance and is data-driven from Lua.
+        mm = get_ucs_mm_for_stance(getattr(session, "stance", "neutral"))
 
         d100    = random.randint(1, 100)
-        ratio   = uaf / udf
+        raw_ratio = (uaf / udf) if udf > 0 else float(uaf)
+        ratio_cap = get_ucs_ratio_cap()
+        ratio   = min(raw_ratio, ratio_cap)
         endroll = int(ratio * mm) + d100
 
         creature_display = fmt_creature_name(creature.full_name_with_level)
         swing_line = f"You punch at {creature_display}!"
+        ratio_text = f"{raw_ratio:.3f}"
+        if raw_ratio > ratio:
+            ratio_text += f" (capped to {ratio:.3f})"
         roll_line  = (
             f"  You have decent positioning against {creature.full_name}.\n"
-            f"  UAF: {uaf} vs UDF: {udf} = {ratio:.3f} * MM: {mm} + d100: {d100} = {endroll}"
+            f"  UAF: {uaf} vs UDF: {udf} = {ratio_text} * MM: {mm} + d100: {d100} = {endroll}"
         )
 
         # Miss

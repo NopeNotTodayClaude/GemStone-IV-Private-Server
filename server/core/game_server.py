@@ -41,6 +41,9 @@ from server.core.engine.tracking.trail_tracker import TrailTracker
 from server.core.engine.pets.pet_manager import PetManager
 from server.core.engine.traps import TrapManager
 from server.core.engine.hotbar_manager import HotbarManager
+from server.core.engine.ferry_manager import FerryManager
+from server.core.engine.travel_office_manager import TravelOfficeManager
+from server.core.engine.justice_manager import JusticeManager
 from server.core.commands.player.training import _try_load_lua_skills
 from server.core.commands.player.inventory import restore_inventory_state
 from server.core.scripting.loaders.ambush_loader import load_ambush_cfg
@@ -97,6 +100,9 @@ class GameServer:
         self.pets = PetManager(self)
         self.traps = TrapManager(self)
         self.hotbar = HotbarManager(self)
+        self.ferries = FerryManager(self)
+        self.travel_offices = TravelOfficeManager(self)
+        self.justice = JusticeManager(self)
         self.perception_cfg  = {}                           # Loaded from globals/perception.lua after Lua init
 
         self._tcp_server  = None
@@ -188,6 +194,15 @@ class GameServer:
         await self.world.initialize()
         log.info("World loaded: %d zones, %d rooms",
                  self.world.zone_count, self.world.room_count)
+
+        await self.ferries.initialize()
+        log.info("Ferry system ready")
+
+        await self.travel_offices.initialize()
+        log.info("Travel office system ready")
+
+        await self.justice.initialize()
+        log.info("Justice system ready")
 
         # Spawn creatures
         log.info("Spawning creatures...")
@@ -496,7 +511,7 @@ class GameServer:
         if not room:
             room = self.world.get_room(221)
 
-        town = room.zone.name if room and room.zone else "the world"
+        town = (getattr(room, "zone_name", "") or (room.zone.name if room and room.zone else "")) or "the world"
 
         await session.send_line("\r\n" + "=" * 55)
         await session.send_line(colorize(

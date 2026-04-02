@@ -126,7 +126,7 @@ async def cmd_look(session, cmd, args, server):
     # Build GS4-style title: [Zone Name, Location Name]
     # Lua rooms store full title already (e.g. "Fearling Pass, Rocky Trail")
     # DB rooms store title=location_name and zone comes from the zone object
-    zone_name  = getattr(getattr(room, "zone", None), "name", "") or ""
+    zone_name  = getattr(room, "zone_name", "") or getattr(getattr(room, "zone", None), "name", "") or ""
     room_label = getattr(room, "location_name", "") or room.title
     if zone_name and not room_label.startswith(zone_name):
         full_title = f"{zone_name}, {room_label}"
@@ -145,6 +145,9 @@ async def cmd_look(session, cmd, args, server):
     if hasattr(server, 'pets'):
         for entity in server.pets.get_visible_entities_in_room(room.id, viewer=session):
             lines.append(server.pets.format_room_line(entity))
+
+    if hasattr(server, 'ferries'):
+        lines.extend(server.ferries.get_room_lines(room.id, session))
 
     # Show creatures
     if hasattr(server, 'creatures'):
@@ -256,6 +259,13 @@ async def _look_at(session, target, server):
         entity = server.pets.find_visible_entity(room.id, target, viewer=session)
         if entity:
             for line in server.pets.look_lines_for_entity(entity):
+                await session.send_line(line)
+            return
+
+    if hasattr(server, 'ferries'):
+        ferry_lines = server.ferries.describe_target(room.id, target)
+        if ferry_lines:
+            for line in ferry_lines:
                 await session.send_line(line)
             return
 
@@ -444,6 +454,13 @@ async def _look_at(session, target, server):
         nn = (session.right_hand.get('noun') or '').lower()
         if target in sn or target in nn:
             await session.send_line('You see ' + fmt_item_name(session.right_hand.get('short_name') or 'something') + ' in your right hand.')
+            travel_mgr = getattr(server, "travel_offices", None)
+            if travel_mgr:
+                lines = travel_mgr.look_travel_item(session.right_hand, session=session)
+                if lines:
+                    for line in lines[1:]:
+                        await session.send_line('  ' + line)
+                    return
             desc = session.right_hand.get('description')
             if desc:
                 await session.send_line('  ' + desc)
@@ -454,6 +471,13 @@ async def _look_at(session, target, server):
         nn = (session.left_hand.get('noun') or '').lower()
         if target in sn or target in nn:
             await session.send_line('You see ' + fmt_item_name(session.left_hand.get('short_name') or 'something') + ' in your left hand.')
+            travel_mgr = getattr(server, "travel_offices", None)
+            if travel_mgr:
+                lines = travel_mgr.look_travel_item(session.left_hand, session=session)
+                if lines:
+                    for line in lines[1:]:
+                        await session.send_line('  ' + line)
+                    return
             desc = session.left_hand.get('description')
             if desc:
                 await session.send_line('  ' + desc)
@@ -503,6 +527,14 @@ async def cmd_move(session, cmd, args, server):
         return
     if not await _check_special_access(session, room, target_room):
         return
+    if hasattr(server, "ferries"):
+        ok = await server.ferries.before_move(session, room, target_room_id, direction)
+        if not ok:
+            return
+    if hasattr(server, "justice"):
+        ok = await server.justice.before_move(session, room, target_room_id, direction)
+        if not ok:
+            return
 
     # Break combat on movement -- only send flee message if truly mid-combat.
     # exited_combat grace period (set after kill) suppresses the message so
@@ -595,6 +627,14 @@ async def cmd_go(session, cmd, args, server):
         return
     if not await _check_special_access(session, room, target_room):
         return
+    if hasattr(server, "ferries"):
+        ok = await server.ferries.before_move(session, room, target_room_id, 'go_' + target)
+        if not ok:
+            return
+    if hasattr(server, "justice"):
+        ok = await server.justice.before_move(session, room, target_room_id, 'go_' + target)
+        if not ok:
+            return
 
     # Same logic as cmd_move -- suppress flee message during post-combat grace period
     status_mgr = getattr(server, 'status', None)
@@ -763,6 +803,13 @@ async def _move_player(session, from_room, to_room, direction, server, sneaking=
     # Context-sensitive command hints
     from server.core.world.room_hints import show_room_hints
     await show_room_hints(session, to_room, server)
+
+    justice_mgr = getattr(server, "justice", None)
+    if justice_mgr:
+        try:
+            await justice_mgr.after_move(session, to_room)
+        except Exception as e:
+            log.error("Justice after_move failed: %s", e, exc_info=True)
 
     try:
         guild_engine = getattr(server, "guild", None)

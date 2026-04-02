@@ -738,6 +738,13 @@ async def cmd_help(session, cmd, args, server):
     """HELP [topic] - Show available commands or help on a specific topic."""
     topic = (args or '').strip().lower()
 
+    try:
+        justice_mgr = getattr(server, "justice", None)
+        if justice_mgr and topic and await justice_mgr.maybe_handle_help(session, topic):
+            return
+    except Exception as e:
+        log.error("Justice HELP hook failed: %s", e)
+
     help_topics = {
         # ── Movement ──────────────────────────────────────────────────────
         'look':      'LOOK [target] — Look at your surroundings, a creature, player, or item.',

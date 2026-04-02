@@ -1,6 +1,7 @@
 -- NPC: a travel clerk
 -- Zone/Town: auto-placed  |  Room: 9055
 local NPC = {}
+local TravelOfficeNPC = require("globals.travel_office_npc")
 
 NPC.template_id    = "sol_travel_clerk_sol"
 NPC.name           = "a travel clerk"
@@ -22,10 +23,15 @@ NPC.is_bot         = false
 NPC.is_invasion    = false
 
 NPC.dialogues = {
-    default = "a travel clerk doesn't respond.",
+    travel = "Vornavian schedules run cleaner when the passengers do not dither.",
+    destinations = "Name the office you want and I will sort the paperwork.",
+    fares = "The guide fare is posted.  The sea air is free.",
+    default = "The clerk glances up from a tide chart.  'Which office do you need?'",
 }
 NPC.ambient_emotes = {}
 NPC.ambient_chance = 0.02
 NPC.emote_cooldown = 60
+
+TravelOfficeNPC.attach(NPC, "sol_travel")
 
 return NPC

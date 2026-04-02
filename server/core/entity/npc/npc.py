@@ -22,6 +22,7 @@ import random
 import time
 import logging
 from server.core.engine.combat.status_effects import get_combat_mods as get_status_combat_mods
+from server.core.engine.combat.ucs_runtime import derive_fallback_udf
 from server.core.protocol.colors import npc_emote, npc_speech, npc_name, colorize, TextPresets
 
 log = logging.getLogger(__name__)
@@ -217,6 +218,10 @@ class NPC:
 
         # ── Guild ─────────────────────────────────────────────────────────────
         self.guild_id     = template.get("guild_id", None)
+        self.service_tags = {str(tag).strip().lower() for tag in (template.get("service_tags") or []) if str(tag).strip()}
+        self.justice_role = str(template.get("justice_role", "") or "").strip().lower() or None
+        self.justice_jurisdiction = str(template.get("justice_jurisdiction", "") or "").strip().lower() or None
+        self.lua_context = dict(template.get("lua_context") or {})
 
         # ── Bot ───────────────────────────────────────────────────────────────
         self.bot_hunt       = bool(template.get("bot_hunt", False))
@@ -361,7 +366,7 @@ class NPC:
         _status_as_mod, status_ds_mod = get_status_combat_mods(self)
         base = int(getattr(self, "udf", 0) or 0)
         if base <= 0:
-            return max(1, self.get_melee_ds())
+            return derive_fallback_udf(getattr(self, "level", 1), self.get_melee_ds())
         return max(1, base + int(status_ds_mod or 0))
 
     # ── Dialogue ──────────────────────────────────────────────────────────────
@@ -392,7 +397,7 @@ class NPC:
         return " ".join(pieces).lower()
 
     def get_service_tags(self) -> set[str]:
-        tags: set[str] = set()
+        tags: set[str] = set(self.service_tags)
         text = self._service_text()
 
         if self.can_shop and self.shop_id:
@@ -417,6 +422,10 @@ class NPC:
             tags.add("pawnbroker")
         if "priest" in text or "acolyte" in text or "arkati" in text or "temple" in text:
             tags.add("priest")
+        if self.justice_role or self.justice_jurisdiction:
+            tags.add("justice")
+            if self.justice_role:
+                tags.add(self.justice_role)
         return tags
 
     def matches_service(self, tag: str) -> bool:

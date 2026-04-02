@@ -7,8 +7,6 @@ import os
 import logging
 from typing import Dict, Optional, List
 
-from server.core.world.lich_wayto import enrich_room_from_lich_wayto
-
 log = logging.getLogger(__name__)
 
 # Direction aliases for player convenience
@@ -44,6 +42,7 @@ class Room:
         self.zone = None
         self.lich_uid = 0
         self.title = "An Unknown Room"
+        self.zone_name = ""
         self.location_name = ""   # sub-location label (e.g. "Victory Road")
         self.description = "You see nothing of interest."
         self.exits: Dict[str, int] = {}         # direction -> room_id (all exits, incl. special)
@@ -60,6 +59,8 @@ class Room:
         self.objects: List[dict] = []
         self.lich_exit_aliases: Dict[str, int] = {}
         self.lich_preferred_exit_names: Dict[int, str] = {}
+        self.visible_path_hints: List[str] = []
+        self.local_exits: Dict[str, int] = {}
 
     @classmethod
     def from_db_row(cls, row: dict, zone) -> 'Room':
@@ -70,6 +71,7 @@ class Room:
         room.zone          = zone
         room.lich_uid      = int(row.get("lich_uid") or 0)
         room.title         = row.get("title") or "An Unknown Room"
+        room.zone_name     = getattr(zone, "name", "") or ""
         room.location_name = row.get("location_name") or room.title
         room.description   = row.get("description") or "You see nothing of interest."
         room.safe          = bool(row.get("is_safe",      False))
@@ -92,7 +94,6 @@ class Room:
                     room.tags = [str(tag) for tag in parsed if tag is not None]
             except Exception:
                 room.tags = []
-        enrich_room_from_lich_wayto(room)
         return room
 
     @classmethod
@@ -106,6 +107,8 @@ class Room:
 
         room.id = data.get("id", 0)
         room.title = data.get("title", "An Unknown Room")
+        room.zone_name = getattr(zone, "name", "") or ""
+        room.location_name = room.title
         room.description = data.get("description", "You see nothing of interest.")
         room.indoor = data.get("indoor", zone.indoor)
         room.dark = data.get("dark", False)
@@ -123,7 +126,6 @@ class Room:
         # Runtime set: directions revealed to specific sessions this server session
         # { direction: set(character_id) }  — populated by cmd_search
         room._revealed_hidden_exits = {}
-        enrich_room_from_lich_wayto(room)
 
         if room.id == 0:
             log.warning("Room in %s has id=0, may be template", filepath)
@@ -336,6 +338,10 @@ class Room:
             if pets:
                 for key in sorted((pets.get_dynamic_room_exits(session, self) or {}).keys()):
                     display_names.append(self.display_exit_name(key) + " (hidden path)")
+            ferries = getattr(server, "ferries", None) if server else None
+            if ferries:
+                for key in sorted((ferries.get_dynamic_room_exits(session, self) or {}).keys()):
+                    display_names.append(self.display_exit_name(key))
 
         seen = set()
         ordered: List[str] = []
@@ -378,6 +384,11 @@ class Room:
                 for key, target_id in (pets.get_dynamic_room_exits(session, self) or {}).items():
                     if direction in self._exit_aliases(key):
                         matches[key] = target_id
+            ferries = getattr(server, "ferries", None) if server else None
+            if ferries:
+                for key, target_id in (ferries.get_dynamic_room_exits(session, self) or {}).items():
+                    if direction in self._exit_aliases(key):
+                        matches[key] = target_id
 
         return matches
 
@@ -415,6 +426,16 @@ class Room:
         pets = getattr(server, "pets", None) if server else None
         if pets:
             for key, target_id in (pets.get_dynamic_room_exits(session, self) or {}).items():
+                key_lower = normalize_exit_key(key)
+                match_keys = {key_lower}
+                if "_" in key_lower:
+                    match_keys.add(key_lower.split("_", 1)[1])
+                if direction_lower in match_keys:
+                    return target_id
+
+        ferries = getattr(server, "ferries", None) if server else None
+        if ferries:
+            for key, target_id in (ferries.get_dynamic_room_exits(session, self) or {}).items():
                 key_lower = normalize_exit_key(key)
                 match_keys = {key_lower}
                 if "_" in key_lower:

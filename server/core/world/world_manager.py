@@ -9,6 +9,7 @@ import time
 from typing import Optional, Dict, List
 from server.core.world.room import Room
 from server.core.world.zone import Zone
+from server.core.world.lich_wayto import sync_world_from_lich
 
 log = logging.getLogger(__name__)
 
@@ -71,6 +72,38 @@ class WorldManager:
 
         # ── Phase 2: Database rooms (the 33k+ rooms built by the team) ─────────
         await self._load_from_database()
+
+        ferry_skip_rooms: set[int] = set()
+        try:
+            ferry_defs = getattr(getattr(self.server, "lua", None), "get_ferries", lambda: {})() or {}
+            for ferr in ferry_defs.values():
+                try:
+                    ferry_skip_rooms.add(int(ferr.get("ferry_room_id") or 0))
+                except Exception:
+                    pass
+                for rid in ferr.get("onboard_room_ids") or []:
+                    try:
+                        ferry_skip_rooms.add(int(rid))
+                    except Exception:
+                        continue
+                for side in (ferr.get("sides") or {}).values():
+                    try:
+                        ferry_skip_rooms.add(int((side or {}).get("room_id") or 0))
+                    except Exception:
+                        continue
+            ferry_skip_rooms.discard(0)
+        except Exception as e:
+            log.warning("Failed reading ferry definitions before LICH sync: %s", e)
+            ferry_skip_rooms = set()
+
+        sync_summary = sync_world_from_lich(self, skip_exit_room_ids=ferry_skip_rooms)
+        log.info(
+            "Lich world sync applied: %d/%d rooms matched, %d reciprocal exits added, %d ferry-managed rooms skipped for exit overlay",
+            sync_summary.get("lich_rooms", 0),
+            sync_summary.get("rooms_considered", 0),
+            sync_summary.get("reciprocal_added", 0),
+            sync_summary.get("skip_exit_rooms", 0),
+        )
 
         log.info(
             "World initialization complete: %d zones, %d rooms total "
