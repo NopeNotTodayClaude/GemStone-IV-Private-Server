@@ -14,3 +14,8 @@ logging:
   console: true
   file: true
   log_dir: "./logs/server"
+
+services:
+  persistence_writer:
+    enabled: true
+    queue_size: 2048

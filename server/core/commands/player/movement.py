@@ -149,6 +149,9 @@ async def cmd_look(session, cmd, args, server):
     if hasattr(server, 'ferries'):
         lines.extend(server.ferries.get_room_lines(room.id, session))
 
+    if hasattr(server, 'town_trouble'):
+        lines.extend(server.town_trouble.get_room_lines(room.id, session))
+
     # Show creatures
     if hasattr(server, 'creatures'):
         living = server.creatures.get_creatures_in_room(room.id)

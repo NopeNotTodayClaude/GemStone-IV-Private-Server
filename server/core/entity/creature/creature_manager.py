@@ -16,10 +16,13 @@ There is NO hardcoded creature or spawn data in Python — Lua is the only sourc
 """
 
 import asyncio
+import concurrent.futures
+import os
 import random
 import re
 import time
 import logging
+from collections import deque
 from typing import Dict, List, Optional
 
 from server.core.entity.creature.ai_runtime import (
@@ -30,6 +33,7 @@ from server.core.entity.creature.ai_runtime import (
     sniff_bonus,
 )
 from server.core.entity.creature.creature import Creature
+from server.core.entity.creature.creature_planner import plan_creature_actions
 from server.core.entity.creature.creature_data import get_template, get_all_templates, register_templates
 from server.core.entity.creature.lua_mob_loader import load_all_mob_luas
 from server.core.entity.creature.lua_spawn_registry_loader import load_zone_spawn_registries
@@ -54,12 +58,28 @@ class CreatureManager:
         self._zone_level_spawn_threshold = 10
         self._spawn_registries: dict = {}
         self._spawn_registry_blocks: dict = {}
+        self._settings: dict = {
+            "active_player_bubble_rooms": 60,
+            "planner_workers": 0,
+            "planner_queue_multiplier": 2,
+            "planner_submit_interval_ticks": 30,
+            "wander_submit_interval_ticks": 150,
+            "perf_log_interval_seconds": 60,
+        }
+        self._planner_pool = None
+        self._planner_future = None
+        self._perf = {"planner_submit": 0, "planner_done": 0}
+        self._last_perf_log_at = 0.0
 
     # ── Initialization ────────────────────────────────────────────────────
 
     async def initialize(self):
         if getattr(self.server, "lua", None):
             self.server.lua.get_ucs_cfg()
+            spawn_settings = self.server.lua.get_creature_spawns() or {}
+            self._settings = dict((spawn_settings.get("defaults") or {}))
+        self._init_planner_pool()
+        self._last_perf_log_at = time.time()
         scripts_path = self.server.config.get("paths.scripts", "./scripts")
         self._spawn_registries = load_zone_spawn_registries(scripts_path)
 
@@ -75,16 +95,19 @@ class CreatureManager:
         self._build_spawn_configs(lua_templates, sql_configs, self._spawn_registries)
 
         # ── Phase 4: Initial spawn ────────────────────────────────────────
+        bubble_rooms = self._active_player_bubble()
         spawned = 0
-        for config in self._spawn_config:
-            template = get_template(config["template_id"])
-            if not template or not config["rooms"]:
-                continue
-            desired = self._desired_population_for_config(config)
-            for _ in range(desired):
-                room_id = random.choice(config["rooms"])
-                if self.spawn_creature(config["template_id"], room_id):
-                    spawned += 1
+        if bubble_rooms:
+            for config in self._spawn_config:
+                template = get_template(config["template_id"])
+                candidate_rooms = [room_id for room_id in (config["rooms"] or []) if int(room_id or 0) in bubble_rooms]
+                if not template or not candidate_rooms:
+                    continue
+                desired = self._desired_population_for_config(config)
+                for _ in range(desired):
+                    room_id = random.choice(candidate_rooms)
+                    if self.spawn_creature(config["template_id"], room_id):
+                        spawned += 1
 
         log.info(
             "CreatureManager initialized: %d creatures spawned, %d configs "
@@ -93,6 +116,26 @@ class CreatureManager:
             self._lua_config_count, self._sql_config_count,
             len(self._hunting_rooms)
         )
+
+    def shutdown(self):
+        pool = self._planner_pool
+        self._planner_pool = None
+        self._planner_future = None
+        if pool:
+            try:
+                pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                log.debug("Creature planner pool shutdown failed", exc_info=True)
+
+    def _init_planner_pool(self):
+        workers = max(0, int(self._settings.get("planner_workers") or 0))
+        if workers <= 0:
+            self._planner_pool = None
+            return
+        cpu_total = max(1, int(os.cpu_count() or 1))
+        workers = max(1, min(workers, max(1, cpu_total - 1)))
+        self._planner_pool = concurrent.futures.ProcessPoolExecutor(max_workers=workers)
+        log.info("CreatureManager planner pool ready (%d worker processes)", workers)
 
     # ── SQL creature loader ─────────────────────────────────────────────────
 
@@ -463,9 +506,9 @@ class CreatureManager:
 
     # ── Spawn helpers ─────────────────────────────────────────────────────
 
-    def spawn_creature(self, template_id: str, room_id: int) -> Optional[Creature]:
+    def spawn_creature(self, template_id: str, room_id: int, *, allow_safe: bool = False, spawn_context: dict | None = None) -> Optional[Creature]:
         room = self.server.world.get_room(room_id)
-        if room and room.safe:
+        if room and room.safe and not allow_safe:
             log.warning("Blocked creature spawn in safe room %d", room_id)
             return None
         template = get_template(template_id)
@@ -474,6 +517,7 @@ class CreatureManager:
             return None
         creature = Creature(template)
         creature.current_room_id = room_id
+        creature.spawn_context = dict(spawn_context or {})
         self._creatures[creature.id] = creature
         self._room_creatures.setdefault(room_id, []).append(creature.id)
         return creature
@@ -531,12 +575,26 @@ class CreatureManager:
     # ── Tick ──────────────────────────────────────────────────────────────
 
     async def tick(self, tick_count: int):
+        await self._collect_planner_actions()
+        if tick_count % 20 == 0:
+            bubble_rooms = self._active_player_bubble()
+            self._cull_outside_player_bubble(bubble_rooms)
         if tick_count % 50  == 0: await self._check_respawns(time.time())
-        if tick_count % 30  == 0: await self._creature_ai_tick(time.time())
-        if tick_count % 150 == 0: await self._wander_tick()
+        planner_interval = max(5, int(self._settings.get("planner_submit_interval_ticks") or 30))
+        wander_interval = max(planner_interval, int(self._settings.get("wander_submit_interval_ticks") or 150))
+        if self._planner_pool:
+            if tick_count % planner_interval == 0:
+                self._submit_planner_actions(time.time(), allow_wander=(tick_count % wander_interval == 0))
+        else:
+            if tick_count % planner_interval == 0:
+                await self._creature_ai_tick(time.time())
+            if tick_count % wander_interval == 0:
+                await self._wander_tick()
         if tick_count % 80  == 0: await self._sniff_tick()
+        self._maybe_log_perf()
 
     async def _check_respawns(self, now: float):
+        bubble_rooms = self._active_player_bubble()
         for creature in [c for c in self._dead_creatures if now - c.death_time >= c.respawn_time]:
             self._dead_creatures.remove(creature)
             self.remove_creature(creature)
@@ -544,10 +602,11 @@ class CreatureManager:
             for cfg in self._spawn_config:
                 if cfg["template_id"] == creature.template_id:
                     valid = [r for r in cfg["rooms"]
-                             if not (self.server.world.get_room(r) and self.server.world.get_room(r).safe)]
+                             if r in bubble_rooms
+                             and not (self.server.world.get_room(r) and self.server.world.get_room(r).safe)]
                     break
             if not valid:
-                if creature.current_room_id in self._hunting_rooms:
+                if creature.current_room_id in self._hunting_rooms and creature.current_room_id in bubble_rooms:
                     valid = [creature.current_room_id]
                 else:
                     continue
@@ -558,7 +617,7 @@ class CreatureManager:
                     room_id,
                     creature_arrival(new_c.full_name, "scurries in from the shadows")
                 )
-        await self._maintain_zone_populations()
+        await self._maintain_zone_populations(bubble_rooms)
 
     def _config_population_bump(self, cfg: dict) -> int:
         base = int(cfg.get("base_max_count", cfg.get("max_count", 1)) or 1)
@@ -582,7 +641,10 @@ class CreatureManager:
             and int(getattr(creature, "current_room_id", 0) or 0) in room_ids
         ]
 
-    async def _maintain_zone_populations(self):
+    async def _maintain_zone_populations(self, bubble_rooms: set[int] | None = None):
+        bubble_rooms = set(bubble_rooms or set())
+        if not bubble_rooms:
+            return
         for cfg in self._spawn_config:
             desired = self._desired_population_for_config(cfg)
             alive = self._alive_creatures_for_config(cfg)
@@ -592,6 +654,8 @@ class CreatureManager:
             spawn_budget = min(deficit, 1)
             candidate_rooms = []
             for room_id in cfg.get("rooms") or []:
+                if int(room_id or 0) not in bubble_rooms:
+                    continue
                 room = self.server.world.get_room(room_id)
                 if not room or room.safe:
                     continue
@@ -607,6 +671,169 @@ class CreatureManager:
                     room_id,
                     creature_arrival(new_c.full_name, "emerges from deeper in the hunting grounds"),
                 )
+
+    def _player_bubble_distance(self) -> int:
+        return max(1, int((self._settings or {}).get("active_player_bubble_rooms") or 60))
+
+    def _active_player_bubble(self) -> set[int]:
+        sessions = list(getattr(self.server, "sessions", None).playing())
+        if not sessions:
+            return set()
+        max_distance = self._player_bubble_distance()
+        visited: set[int] = set()
+        queue = deque()
+        for session in sessions:
+            room = getattr(session, "current_room", None)
+            room_id = int(getattr(room, "id", 0) or 0)
+            if room_id <= 0 or room_id in visited:
+                continue
+            visited.add(room_id)
+            queue.append((room_id, 0))
+        while queue:
+            room_id, dist = queue.popleft()
+            if dist >= max_distance:
+                continue
+            room = self.server.world.get_room(room_id)
+            if not room:
+                continue
+            for next_room_id in (room.exits or {}).values():
+                next_room_id = int(next_room_id or 0)
+                if next_room_id <= 0 or next_room_id in visited:
+                    continue
+                visited.add(next_room_id)
+                queue.append((next_room_id, dist + 1))
+        return visited
+
+    def _cull_outside_player_bubble(self, bubble_rooms: set[int]):
+        if not bubble_rooms:
+            for creature in list(self._creatures.values()):
+                if creature.alive:
+                    ctx = dict(getattr(creature, "spawn_context", {}) or {})
+                    if ctx.get("ignore_bubble_cull"):
+                        continue
+                    self.remove_creature(creature)
+            return
+        for creature in list(self._creatures.values()):
+            room_id = int(getattr(creature, "current_room_id", 0) or 0)
+            if not creature.alive:
+                continue
+            ctx = dict(getattr(creature, "spawn_context", {}) or {})
+            if ctx.get("ignore_bubble_cull"):
+                continue
+            if room_id <= 0 or room_id not in bubble_rooms:
+                self.remove_creature(creature)
+
+    def _submit_planner_actions(self, now: float, *, allow_wander: bool):
+        if not self._planner_pool or self._planner_future is not None:
+            return
+        creatures = []
+        for creature in list(self._creatures.values()):
+            room = self.server.world.get_room(creature.current_room_id)
+            exits = dict((room.exits or {})) if room else {}
+            creatures.append({
+                "id": int(creature.id),
+                "room_id": int(creature.current_room_id or 0),
+                "alive": bool(creature.alive),
+                "aggressive": bool(creature.aggressive),
+                "in_combat": bool(creature.in_combat),
+                "target_session_id": int(getattr(getattr(creature, "target", None), "id", 0) or 0),
+                "roundtime_end": float(getattr(creature, "roundtime_end", 0.0) or 0.0),
+                "stunned_until": float(getattr(creature, "stunned_until", 0.0) or 0.0),
+                "wander_chance": float(getattr(creature, "wander_chance", 0.0) or 0.0),
+                "wander_rooms": [int(r) for r in (creature.wander_rooms or []) if int(r or 0) > 0],
+                "can_wander": bool(creature.alive and not creature.in_combat),
+                "exits": {str(k): int(v) for k, v in exits.items() if not str(k).startswith("go_") and int(v or 0) > 0},
+            })
+        players = []
+        for session in self.server.sessions.playing():
+            room = getattr(session, "current_room", None)
+            players.append({
+                "session_id": int(getattr(session, "id", 0) or 0),
+                "room_id": int(getattr(room, "id", 0) or 0),
+                "state": str(getattr(session, "state", "") or ""),
+                "hidden": bool(getattr(session, "hidden", False)),
+                "invisible": bool(has_effect(self.server, session, "invisible")),
+                "is_dead": bool(getattr(session, "is_dead", False)),
+            })
+        payload = {
+            "now": float(now),
+            "allow_wander": bool(allow_wander),
+            "seed": random.randint(1, 2**31 - 1),
+            "creatures": creatures,
+            "players": players,
+            "hunting_rooms": list(self._hunting_rooms),
+        }
+        self._planner_future = self._planner_pool.submit(plan_creature_actions, payload)
+        self._perf["planner_submit"] += 1
+
+    async def _collect_planner_actions(self):
+        future = self._planner_future
+        if not future or not future.done():
+            return
+        self._planner_future = None
+        try:
+            actions = list(future.result() or [])
+        except Exception:
+            log.exception("Creature planner failed")
+            return
+        self._perf["planner_done"] += 1
+        for action in actions:
+            kind = str(action.get("kind") or "")
+            creature = self._creatures.get(int(action.get("creature_id") or 0))
+            if not creature or not creature.alive:
+                continue
+            if kind == "clear_target":
+                creature.in_combat = False
+                creature.target = None
+                continue
+            if kind == "attack":
+                session = self.server.sessions.get_session(int(action.get("target_session_id") or 0))
+                if not session:
+                    creature.in_combat = False
+                    creature.target = None
+                    continue
+                creature.target = session
+                creature.in_combat = True
+                creature.choose_stance()
+                if await attempt_special_action(self, creature, session, time.time()):
+                    continue
+                await self._creature_attack(creature, session)
+                continue
+            if kind == "engage":
+                session = self.server.sessions.get_session(int(action.get("target_session_id") or 0))
+                if not session:
+                    continue
+                creature.in_combat = True
+                creature.target = session
+                creature.choose_stance()
+                attack = creature.choose_attack()
+                verb = (attack["verb_third"].replace("{target}", session.character_name)
+                        if attack else f"attacks {session.character_name}")
+                await self.server.world.broadcast_to_room(
+                    creature.current_room_id,
+                    colorize(creature.full_name.capitalize(), TextPresets.CREATURE_NAME) + " " + verb + "!"
+                )
+                continue
+            if kind == "wander":
+                await self._move_creature(
+                    creature,
+                    int(action.get("target_room_id") or 0),
+                    str(action.get("direction") or "out"),
+                )
+
+    def _maybe_log_perf(self):
+        interval = max(15.0, float(self._settings.get("perf_log_interval_seconds") or 60))
+        now = time.time()
+        if now - self._last_perf_log_at < interval:
+            return
+        self._last_perf_log_at = now
+        log.info(
+            "Creature perf: planner_submit=%d planner_done=%d alive=%d dead=%d",
+            int(self._perf.get("planner_submit", 0)),
+            int(self._perf.get("planner_done", 0)),
+            int(self.alive_count),
+            int(len(self._dead_creatures)),
+        )
 
     async def _creature_ai_tick(self, now: float):
         for creature in list(self._creatures.values()):

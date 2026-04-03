@@ -41,6 +41,7 @@ import argparse
 import heapq
 from collections import deque
 from typing import Optional, Dict, List, Tuple
+from pathlib import Path
 
 # Sync client (same directory)
 import sys as _sys
@@ -70,16 +71,19 @@ except ImportError:
 # ─────────────────────────────────────────────
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 4901
-GRAPH_PATH   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "room_graph.json")
-REGIONS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "map_regions.json")
-CONFIG_PATH  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "hud_config.json")
-LICH_MAP_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "map-1773601222.json")
-AUDIO_RULES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "audio_regions.json")
-SHOP_ROOM_IDS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "shop_room_ids.json")
-CLIENTMEDIA_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "clientmedia")
+_CLIENT_DIR = Path(os.path.abspath(__file__)).parent
+_ROOT_DIR = Path(os.environ.get("GEMSTONE_ROOT") or (_CLIENT_DIR.parent)).resolve()
+_LICH_ROOT = Path(os.environ.get("LICH_ROOT") or os.environ.get("RUBY4LICH_ROOT") or "").expanduser() if (os.environ.get("LICH_ROOT") or os.environ.get("RUBY4LICH_ROOT")) else None
+GRAPH_PATH   = str(_CLIENT_DIR / "data" / "room_graph.json")
+REGIONS_PATH = str(_CLIENT_DIR / "data" / "map_regions.json")
+CONFIG_PATH  = str(_CLIENT_DIR / "data" / "hud_config.json")
+LICH_MAP_PATH = str(_ROOT_DIR / "map-1773601222.json")
+AUDIO_RULES_PATH = str(_CLIENT_DIR / "data" / "audio_regions.json")
+SHOP_ROOM_IDS_PATH = str(_CLIENT_DIR / "data" / "shop_room_ids.json")
+CLIENTMEDIA_ROOT = str(_ROOT_DIR / "clientmedia")
 LICH_MAP_DIR_CANDIDATES = [
-    r"N:\Ruby4Lich5\R4LInstall\Lich5.15.1\maps",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "maps"),
+    str(_LICH_ROOT / "maps") if _LICH_ROOT else "",
+    str(_CLIENT_DIR / "data" / "maps"),
 ]
 
 # Temporary pathfinder denylist for incomplete areas we do not want AUTO/map pathing to use.

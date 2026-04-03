@@ -434,13 +434,6 @@ async def cmd_train(session, cmd, args, server):
     TRAIN LIST           - Show all skills with costs.
     """
     _try_load_lua_skills(server)
-    inns = getattr(server, "inns", None)
-    if inns and not inns.can_use_character_manager(session):
-        await session.send_line(colorize(
-            inns.training_gate_message(),
-            TextPresets.WARNING
-        ))
-        return
 
     if not args:
         if not hasattr(server, 'training_web') or not server.training_web:

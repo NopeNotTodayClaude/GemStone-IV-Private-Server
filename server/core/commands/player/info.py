@@ -454,9 +454,14 @@ async def cmd_info(session, cmd, args, server):
 async def cmd_who(session, cmd, args, server):
     """WHO - Show all connected players."""
     playing = server.sessions.playing()
+    synthetic = list(getattr(getattr(server, "fake_players", None), "get_all", lambda: [])() or [])
+    total_online = len(playing) + len(synthetic)
 
     await session.send_line('')
-    await session.send_line(colorize('  Players currently online: ' + str(len(playing)), TextPresets.SYSTEM))
+    await session.send_line(colorize(
+        '  Online now: {} real, {} synthetic, {} total'.format(len(playing), len(synthetic), total_online),
+        TextPresets.SYSTEM,
+    ))
     await session.send_line('')
     await session.send_line('  {:<25} {:<8} {:<15} {}'.format('Name', 'Level', 'Profession', 'Location'))
     await session.send_line('  ' + '-' * 65)
@@ -466,6 +471,16 @@ async def cmd_who(session, cmd, args, server):
         level = str(s.level)
         prof = PROFESSIONS.get(s.profession_id, '???')
         loc = s.current_room.title if s.current_room else 'Unknown'
+        await session.send_line('  {:<25} {:<8} {:<15} {}'.format(
+            fmt_player_name(name), level, prof, loc
+        ))
+
+    for s in sorted(synthetic, key=lambda row: (str(getattr(row, "character_name", "") or "").lower(), int(getattr(row, "synthetic_id", 0) or 0))):
+        name = '{} [Sim]'.format(getattr(s, "character_name", None) or '???')
+        level = str(int(getattr(s, "level", 0) or 0))
+        prof = PROFESSIONS.get(int(getattr(s, "profession_id", 0) or 0), getattr(s, "profession", '???') or '???')
+        room = getattr(s, "current_room", None)
+        loc = getattr(room, "title", None) or getattr(room, "name", None) or 'Unknown'
         await session.send_line('  {:<25} {:<8} {:<15} {}'.format(
             fmt_player_name(name), level, prof, loc
         ))

@@ -12,16 +12,18 @@ import os
 import re
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
+from pathlib import Path
 
 
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT_DIR = str(Path(os.environ.get("GEMSTONE_ROOT") or Path(__file__).resolve().parents[1]).resolve())
 CLIENT_DIR = os.path.join(ROOT_DIR, "client")
 DATA_DIR = os.path.join(CLIENT_DIR, "data")
 GRAPH_PATH = os.path.join(DATA_DIR, "room_graph.json")
 REGIONS_PATH = os.path.join(DATA_DIR, "map_regions.json")
+_LICH_ROOT = os.environ.get("LICH_ROOT") or os.environ.get("RUBY4LICH_ROOT") or ""
 
 DEFAULT_LICH_JSON_CANDIDATES = [
-    r"N:\Ruby4Lich5\R4LInstall\Lich5.15.1\data\GSIV\map-1773601222.json",
+    str(Path(_LICH_ROOT).expanduser() / "data" / "GSIV" / "map-1773601222.json") if _LICH_ROOT else "",
     os.path.join(ROOT_DIR, "map-1773601222.json"),
 ]
 DEFAULT_ROOM_EXITS_TSV = os.path.join(ROOT_DIR, "tmp_room_exits.tsv")

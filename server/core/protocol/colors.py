@@ -49,6 +49,8 @@ BRIGHT_BLUE = "\033[94m"
 BRIGHT_MAGENTA = "\033[95m"
 BRIGHT_CYAN = "\033[96m"
 BRIGHT_WHITE = "\033[97m"
+ORANGE = "\033[38;5;208m"
+BRIGHT_ORANGE = "\033[38;5;214m"
 
 # Background colors
 BG_BLACK = "\033[40m"
@@ -70,6 +72,7 @@ class TextPresets:
     # Communication
     SPEECH = GREEN
     SPEECH_QUOTE = BRIGHT_GREEN
+    SYNTHETIC_SPEECH_QUOTE = BRIGHT_ORANGE
     WHISPER = MAGENTA
     WHISPER_QUOTE = BRIGHT_MAGENTA
     THOUGHT = BRIGHT_CYAN
@@ -123,9 +126,9 @@ class TextPresets:
     CHANNEL_TRADE   = YELLOW               # Trade    — OOC global
     CHANNEL_GUILD   = BRIGHT_BLUE          # Guild    — IC profession-only
     CHANNEL_PRIVATE = MAGENTA              # THINK TO <player> private
-    YELL_LOCAL      = BOLD + YELLOW        # Yell in same room
-    YELL_NEAR       = YELLOW               # Yell heard 1 room away
-    YELL_FAR        = DIM + YELLOW         # Yell heard 2 rooms away
+    YELL_LOCAL      = BOLD + BRIGHT_MAGENTA # client-safe loud speech
+    YELL_NEAR       = MAGENTA               # client-safe nearby yell/shout
+    YELL_FAR        = DIM + MAGENTA         # client-safe distant yell
 
 
 def colorize(text, color_code):

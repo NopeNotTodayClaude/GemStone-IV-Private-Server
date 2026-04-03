@@ -463,9 +463,14 @@ def _transfer_stolen_player_item(session, target, item, source_kind, server):
     elif item in getattr(target, "inventory", []):
         target.inventory.remove(item)
 
-    if item.get("inv_id") and getattr(server, "db", None):
+    item_inv_id = item.get("inv_id")
+    try:
+        item_inv_id_num = int(item_inv_id)
+    except Exception:
+        item_inv_id_num = 0
+    if item_inv_id_num > 0 and getattr(server, "db", None):
         ok = server.db.transfer_inventory_item(
-            item["inv_id"],
+            item_inv_id_num,
             session.character_id,
             slot=destination_slot,
             container_id=(destination_container.get("inv_id") if destination_container else None),
@@ -908,6 +913,13 @@ async def _do_emote(session, args, server,
             for p in server.world.get_players_in_room(session.current_room.id):
                 if p != session and p != target:
                     await p.send_line(room_target_msg.format(name=name, target=tname))
+        if hasattr(server, "fake_players"):
+            await server.fake_players.on_player_social(
+                session,
+                "emote",
+                self_target_msg.format(name=name, target=tname),
+                target=target,
+            )
     else:
         await session.send_line(self_msg.format(name=name))
         if session.current_room:
@@ -916,6 +928,8 @@ async def _do_emote(session, args, server,
                 room_msg.format(name=name),
                 exclude=session
             )
+        if hasattr(server, "fake_players"):
+            await server.fake_players.on_player_social(session, "emote", self_msg.format(name=name))
 
 
 # =========================================================
@@ -2037,3 +2051,5 @@ async def cmd_emote(session, cmd, args, server):
         await server.world.broadcast_to_room(
             session.current_room.id, room_msg, exclude=session
         )
+    if hasattr(server, "fake_players"):
+        await server.fake_players.on_player_social(session, "emote", text)

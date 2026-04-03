@@ -4,6 +4,8 @@ import ast
 import re
 import subprocess
 import sys
+import os
+import shutil
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -82,13 +84,15 @@ def _authored_low_level_abilities() -> set[str]:
 
 def _validate_lua_compile() -> list[str]:
     luac = None
-    for candidate in (
-        Path(r"C:\Users\unrea\AppData\Local\Programs\Lua\bin\luac.exe"),
-        Path("luac.exe"),
-    ):
+    override = str(os.environ.get("LUAC_PATH") or "").strip()
+    if override:
+        candidate = Path(override).expanduser()
         if candidate.exists():
             luac = candidate
-            break
+    if not luac:
+        found = shutil.which("luac")
+        if found:
+            luac = Path(found)
     if not luac:
         return ["luac.exe not found"]
 

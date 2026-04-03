@@ -215,9 +215,21 @@ class LuaManager:
         from server.core.scripting.loaders.travel_offices_loader import load_travel_offices
         return self._load_once("travel_offices", lambda: load_travel_offices(self._engine))
 
+    def get_creature_spawns(self) -> Optional[dict]:
+        from server.core.scripting.loaders.creature_spawns_loader import load_creature_spawns
+        return self._load_once("creature_spawns", lambda: load_creature_spawns(self._engine))
+
     def get_justice(self) -> Optional[dict]:
         from server.core.scripting.loaders.justice_loader import load_justice
         return self._load_once("justice", lambda: load_justice(self._engine))
+
+    def get_fake_players(self) -> Optional[dict]:
+        from server.core.scripting.loaders.fake_players_loader import load_fake_players
+        return self._load_once("fake_players", lambda: load_fake_players(self._engine))
+
+    def get_town_trouble(self) -> Optional[dict]:
+        from server.core.scripting.loaders.town_trouble_loader import load_town_trouble
+        return self._load_once("town_trouble", lambda: load_town_trouble(self._engine))
 
     # ── Spell seeding ─────────────────────────────────────────────────────────
 

@@ -381,6 +381,12 @@ class SessionManager:
             if assault_task and not assault_task.done():
                 assault_task.cancel()
             session.weapon_assault_state = None
+            try:
+                fake_players = getattr(self.server, "fake_players", None)
+                if fake_players:
+                    fake_players.on_player_logout(session)
+            except Exception as _fake_err:
+                log.debug("Fake player logout hook failed: %s", _fake_err)
 
             # Save character before removing
             if session.character_id:

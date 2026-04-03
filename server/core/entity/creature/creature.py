@@ -119,6 +119,7 @@ class Creature:
         self._ability_cooldowns: dict = {}
         self._temp_bonuses: dict = {}
         self._temp_states: dict = {}
+        self.spawn_context: dict = {}
 
         # ── Wound tracking (GS4 wiki: wounds reduce AS/DS per location) ──────
         # wounds = {location: severity}  severity 1-5 (minor→crippling)

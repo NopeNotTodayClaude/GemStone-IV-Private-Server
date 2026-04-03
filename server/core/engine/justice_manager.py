@@ -112,6 +112,12 @@ class JusticeManager:
                 await self._tick_session(session, now)
             except Exception:
                 log.exception("Justice tick failed for %s", getattr(session, "character_name", "?"))
+        if hasattr(self.server, "fake_players"):
+            for actor in self.server.fake_players.get_all():
+                try:
+                    await self._tick_session(actor, now)
+                except Exception:
+                    log.exception("Justice tick failed for synthetic %s", getattr(actor, "character_name", "?"))
 
     async def _tick_session(self, session, now: datetime):
         if not getattr(session, "character_id", None):

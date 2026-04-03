@@ -22,6 +22,20 @@ _CATEGORY_TO_SKILL_NAME = {
 }
 
 
+def _public_defs_only(data: dict | None) -> dict:
+    out = {}
+    for key, value in dict(data or {}).items():
+        mnemonic = str(key or "").strip()
+        if not mnemonic or mnemonic.startswith("_"):
+            continue
+        if not isinstance(value, dict):
+            continue
+        if not str((value or {}).get("category") or "").strip():
+            continue
+        out[mnemonic] = dict(value or {})
+    return out
+
+
 def load_weapon_techniques(engine) -> dict:
     """Load scripts/weapon_techniques/definitions.lua and return a Python dict."""
     if not engine or not engine.available:
@@ -30,8 +44,9 @@ def load_weapon_techniques(engine) -> dict:
         data = engine.require("weapon_techniques/definitions")
         data = engine.lua_to_python(data) if data else None
         if isinstance(data, dict) and data:
-            log.info("weapon_techniques_loader: loaded %d technique defs", len(data))
-            return data
+            public = _public_defs_only(data)
+            log.info("weapon_techniques_loader: loaded %d technique defs", len(public))
+            return public
         log.warning("weapon_techniques_loader: empty or invalid technique defs")
         return None
     except Exception as e:
@@ -56,7 +71,7 @@ def sync_weapon_techniques(db, defs: dict) -> int:
 
     synced = 0
     for mnemonic, tech in sorted(defs.items()):
-        if not isinstance(tech, dict):
+        if str(mnemonic).startswith("_") or not isinstance(tech, dict):
             continue
         category = str(tech.get("category") or "").strip().lower()
         skill_name = _CATEGORY_TO_SKILL_NAME.get(category, "")

@@ -10,7 +10,8 @@ const fs   = require('fs');
 const path = require('path');
 
 const BATCH_SIZE = 300;
-const MAP_DIR    = 'N:\\GemStoneIVServer';
+const ROOT_DIR   = process.env.GEMSTONE_ROOT || path.resolve(__dirname, '..');
+const MAP_DIR    = ROOT_DIR;
 const OUT_FILE   = 'C:\\Temp\\gemstone_map_import.sql';
 
 // ── Direction normalisation ─────────────────────────────────────────

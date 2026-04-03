@@ -13,6 +13,18 @@ import re
 log = logging.getLogger(__name__)
 
 
+def _public_defs_only(data: dict | None) -> dict:
+    out = {}
+    for key, value in dict(data or {}).items():
+        mnemonic = str(key or "").strip()
+        if not mnemonic or mnemonic.startswith("_"):
+            continue
+        if not isinstance(value, dict):
+            continue
+        out[mnemonic] = dict(value or {})
+    return out
+
+
 def load_combat_maneuvers(engine) -> dict | None:
     """Load scripts/combat_maneuvers/definitions.lua and return a Python dict."""
     if not engine or not engine.available:
@@ -21,8 +33,9 @@ def load_combat_maneuvers(engine) -> dict | None:
         data = engine.require("combat_maneuvers/definitions")
         data = engine.lua_to_python(data) if data else None
         if isinstance(data, dict) and data:
-            log.info("combat_maneuvers_loader: loaded %d maneuver defs", len(data))
-            return data
+            public = _public_defs_only(data)
+            log.info("combat_maneuvers_loader: loaded %d maneuver defs", len(public))
+            return public
         log.warning("combat_maneuvers_loader: empty or invalid definitions")
         return None
     except Exception as exc:

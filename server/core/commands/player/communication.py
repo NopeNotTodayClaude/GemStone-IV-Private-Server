@@ -52,6 +52,8 @@ async def cmd_say(session, cmd, args, server):
                 await other.send_line(
                     speech(session.character_name, verb_other, message)
                 )
+    if hasattr(server, "fake_players"):
+        await server.fake_players.on_player_social(session, "say", message)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -128,6 +130,8 @@ async def cmd_whisper(session, cmd, args, server):
         return
 
     await _send_whisper(session, target, message, wtype, players_in_room)
+    if hasattr(server, "fake_players"):
+        await server.fake_players.on_player_social(session, "whisper", message, target=target)
 
 
 async def _send_whisper(sender, target, message, wtype, room_players):
@@ -218,6 +222,8 @@ async def cmd_yell(session, cmd, args, server):
         for _, far_id in adj_room.exits.items():
             if far_id != room.id and far_id not in one_hop_ids:
                 await server.world.broadcast_to_room(far_id, far_msg)
+    if hasattr(server, "fake_players"):
+        await server.fake_players.on_player_social(session, "yell", args or "")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -245,6 +251,8 @@ async def cmd_shout(session, cmd, args, server):
         for other_room_id in room.zone.rooms:
             if other_room_id != room.id:
                 await server.world.broadcast_to_room(other_room_id, text_zone)
+    if hasattr(server, "fake_players"):
+        await server.fake_players.on_player_social(session, "shout", args or "")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

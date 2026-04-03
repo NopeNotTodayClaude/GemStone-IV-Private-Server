@@ -938,6 +938,10 @@ class WoundBridge:
 
     async def load_wounds(self, session):
         """Load wounds from DB into session.wounds on character login."""
+        if getattr(session, "is_synthetic_player", False):
+            session.wounds = dict(getattr(session, "wounds", {}) or {})
+            self.sync_session_state(session)
+            return
         char_id = getattr(session, 'character_id', None)
         if not char_id or not self._server.db:
             session.wounds = {}
@@ -1007,6 +1011,10 @@ class WoundBridge:
 
     def save_wounds_now(self, session):
         """Persist session.wounds to DB immediately using canonical location keys."""
+        if getattr(session, "is_synthetic_player", False):
+            session.wounds = dict(getattr(session, "wounds", {}) or {})
+            self.sync_session_state(session)
+            return
         char_id = getattr(session, 'character_id', None)
         wounds  = getattr(session, 'wounds', {}) or {}
         if not char_id or not self._server.db:

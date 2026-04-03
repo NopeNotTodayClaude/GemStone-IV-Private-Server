@@ -741,6 +741,15 @@ def _build_player_actions(other) -> list[dict]:
     name = str(getattr(other, "character_name", "") or "").strip()
     if not name:
         return []
+    if getattr(other, "is_synthetic_player", False):
+        return [
+            {"label": "Look", "command": f"look {name}", "prefill": False},
+            {"label": "Glance", "command": f"glance {name}", "prefill": False},
+            {"label": "Whisper...", "command": f"whisper {name} ", "prefill": True},
+            {"label": "Wave", "command": f"wave {name}", "prefill": False},
+            {"label": "Smile", "command": f"smile {name}", "prefill": False},
+            {"label": "Nod", "command": f"nod {name}", "prefill": False},
+        ]
     return [
         {"label": "Look", "command": f"look {name}", "prefill": False},
         {"label": "Glance", "command": f"glance {name}", "prefill": False},

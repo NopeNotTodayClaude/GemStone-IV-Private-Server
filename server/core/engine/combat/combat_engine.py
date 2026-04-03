@@ -129,6 +129,24 @@ def _apply_player_wards(server, session, hp_damage: int) -> tuple[int, list[str]
     return damage, notes
 
 
+def _record_town_trouble_damage(server, attacker, creature, amount: int):
+    manager = getattr(server, "town_trouble", None)
+    if manager:
+        try:
+            manager.record_damage(attacker, creature, int(amount or 0))
+        except Exception:
+            log.exception("Town trouble damage hook failed")
+
+
+async def _record_town_trouble_kill(server, attacker, creature):
+    manager = getattr(server, "town_trouble", None)
+    if manager:
+        try:
+            await manager.record_kill(attacker, creature)
+        except Exception:
+            log.exception("Town trouble kill hook failed")
+
+
 # ── Skill IDs (match skills seed auto-increment) ─────────────────────────────
 SKILL_TWC               = 1
 SKILL_ARMOR_USE         = 2
@@ -817,6 +835,7 @@ class CombatEngine:
         # Scale HP damage (original raw_damage — phantom does not inflate HP)
         hp_damage = max(1, int((endroll - 100) * (0.42 + (weapon_df * 0.25)) * loc_df_mult) + crit_rank * 3)
         actual_damage = creature.take_damage(hp_damage)
+        _record_town_trouble_damage(self.server, session, creature, actual_damage)
 
         # ── Weapon elemental flare proc ────────────────────────────────────────
         # Counter-based: fires every 5th successful hit per weapon slot.
@@ -1000,6 +1019,7 @@ class CombatEngine:
                 exclude=session
             )
             self.server.creatures.mark_dead(creature)
+            await _record_town_trouble_kill(self.server, session, creature)
             session.target = None
             remaining = [
                 c for c in self.server.creatures.get_creatures_in_room(session.current_room.id)
@@ -1166,6 +1186,7 @@ class CombatEngine:
                          if crit_rank_max > 0 else 0)
         hp_damage     = max(1, int((endroll - 100) * 0.4) + crit_rank * 2)
         actual_damage = creature.take_damage(hp_damage)
+        _record_town_trouble_damage(self.server, session, creature, actual_damage)
         _bt           = getattr(creature, 'body_type', 'biped') or 'biped'
         location, _   = self._resolve_hit_location(session, creature)
 
@@ -1213,6 +1234,7 @@ class CombatEngine:
                 exclude=session
             )
             self.server.creatures.mark_dead(creature)
+            await _record_town_trouble_kill(self.server, session, creature)
             session.target = None
             remaining = [
                 c for c in self.server.creatures.get_creatures_in_room(session.current_room.id)
@@ -1317,6 +1339,7 @@ class CombatEngine:
         crit_rank     = random.randint(max(1, (crit_rank_max + 1) // 2), crit_rank_max) if crit_rank_max > 0 else 0
         hp_damage     = max(1, int((endroll - 100) * (0.42 + (weapon_df * 0.25)) * loc_df_mult) + crit_rank * 3)
         actual_damage = creature.take_damage(hp_damage)
+        _record_town_trouble_damage(self.server, session, creature, actual_damage)
 
         # Off-hand flare proc — tracked separately from main-hand counter
         off_flare = await resolve_flare(session, creature, off_weapon, "left")
@@ -1409,6 +1432,7 @@ class CombatEngine:
                 exclude=session
             )
             self.server.creatures.mark_dead(creature)
+            await _record_town_trouble_kill(self.server, session, creature)
             session.target = None
             remaining = [
                 c for c in self.server.creatures.get_creatures_in_room(session.current_room.id)
@@ -1426,6 +1450,7 @@ class CombatEngine:
             return
         if maybe_auto_stand_before_attack(session, self.server):
             await session.send_line(colorize("  Combat Mobility snaps you back to your feet!", TextPresets.SYSTEM))
+        was_in_combat = bool(getattr(session, "in_combat", False))
 
         # Dead players are untouchable — drop aggro and bail
         if getattr(session, "is_dead", False):
@@ -1512,6 +1537,14 @@ class CombatEngine:
                 f"  {roll_line}",
                 exclude=session
             )
+            creature.in_combat = True
+            creature.target = session
+            session.in_combat = True
+            session.target = creature
+            if getattr(session, "is_synthetic_player", False) and not was_in_combat and getattr(creature, "alive", False):
+                session.synthetic_flags["next_action_at"] = 0.0
+                if session.get_roundtime() <= 0:
+                    await self.player_attacks_creature(session, creature)
             return
 
         # Miss — show flavor text based on which DS component saved us
@@ -1549,6 +1582,14 @@ class CombatEngine:
                 f"  {roll_line}",
                 exclude=session
             )
+            creature.in_combat = True
+            creature.target = session
+            session.in_combat = True
+            session.target = creature
+            if getattr(session, "is_synthetic_player", False) and not was_in_combat and getattr(creature, "alive", False):
+                session.synthetic_flags["next_action_at"] = 0.0
+                if session.get_roundtime() <= 0:
+                    await self.player_attacks_creature(session, creature)
             return
 
         # Hit!
@@ -1721,10 +1762,15 @@ class CombatEngine:
             await self._player_death(session, creature)
 
         # Keep combat
-        creature.in_combat = True
-        creature.target = session
-        session.in_combat = True
-        session.target = creature
+        if not getattr(session, "is_dead", False):
+            creature.in_combat = True
+            creature.target = session
+            session.in_combat = True
+            session.target = creature
+            if getattr(session, "is_synthetic_player", False) and not was_in_combat and getattr(creature, "alive", False):
+                session.synthetic_flags["next_action_at"] = 0.0
+                if session.get_roundtime() <= 0:
+                    await self.player_attacks_creature(session, creature)
 
     async def _player_death(self, session, killer):
         """Hand off to DeathManager for the full death flow."""

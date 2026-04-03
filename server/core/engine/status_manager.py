@@ -437,6 +437,8 @@ class StatusManager:
 
         # Tick players
         sessions = list(self._server.world.get_all_players())
+        if hasattr(self._server, "fake_players"):
+            sessions.extend(self._server.fake_players.get_all())
         for session in sessions:
             if not session.connected or session.state != "playing":
                 continue

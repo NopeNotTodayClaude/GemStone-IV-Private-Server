@@ -2,7 +2,7 @@
   "music": {
     "zones": {
       "Ta'Vaalor": {
-        "file": "Dark Elf Music - Nightfall Sanctuary.mp3",
+        "file": "Bustle of the Capital.mp3",
         "fade_in_ms": 2800,
         "fade_out_ms": 3200,
         "loop_crossfade_ms": 5500

@@ -45,6 +45,9 @@ from server.core.engine.ferry_manager import FerryManager
 from server.core.engine.inn_manager import InnManager
 from server.core.engine.travel_office_manager import TravelOfficeManager
 from server.core.engine.justice_manager import JusticeManager
+from server.core.engine.fake_player_manager import FakePlayerManager
+from server.core.engine.town_trouble_manager import TownTroubleManager
+from server.core.services.persistence_writer import PersistenceWriterService
 from server.core.commands.player.training import _try_load_lua_skills
 from server.core.commands.player.inventory import restore_inventory_state
 from server.core.scripting.loaders.ambush_loader import load_ambush_cfg
@@ -78,6 +81,7 @@ class GameServer:
         self.commands = CommandRouter(self)
         self.game_loop = GameLoop(self)
         self.db = Database(config)
+        self.persistence_writer = PersistenceWriterService(config)
         self.char_creator = CharacterCreator(self)
         self.tutorial = TutorialManager(self)
         self.lua = LuaManager(self)
@@ -105,6 +109,8 @@ class GameServer:
         self.inns = InnManager(self)
         self.travel_offices = TravelOfficeManager(self)
         self.justice = JusticeManager(self)
+        self.fake_players = FakePlayerManager(self)
+        self.town_trouble = TownTroubleManager(self)
         self.perception_cfg  = {}                           # Loaded from globals/perception.lua after Lua init
 
         self._tcp_server  = None
@@ -131,6 +137,10 @@ class GameServer:
         db_ok = self.db.connect()
         if db_ok:
             log.info("Database connected.")
+            try:
+                self.persistence_writer.start()
+            except Exception as _writer_exc:
+                log.error("Persistence writer failed to start: %s", _writer_exc, exc_info=True)
         else:
             log.warning("Database unavailable - running without persistence!")
 
@@ -218,6 +228,12 @@ class GameServer:
         log.info("Spawning NPCs...")
         await self.npcs.initialize()
         log.info("NPCs spawned: %d total", len(self.npcs._npcs))
+
+        await self.fake_players.initialize()
+        log.info("Fake player system ready")
+
+        await self.town_trouble.initialize()
+        log.info("Town trouble system ready")
 
         # Load experience level table from DB
         log.info("Loading experience level table...")
@@ -569,6 +585,16 @@ class GameServer:
                 await self.pets.on_login(session)
             except Exception as _pet_err:
                 log.error("Pet login hook failed for %s: %s", session.character_name, _pet_err, exc_info=True)
+        if getattr(self, "fake_players", None):
+            try:
+                self.fake_players.on_player_login(session)
+            except Exception as _fake_err:
+                log.error("Fake player login hook failed for %s: %s", session.character_name, _fake_err, exc_info=True)
+        if getattr(self, "town_trouble", None):
+            try:
+                await self.town_trouble.on_player_login(session)
+            except Exception as _trouble_err:
+                log.error("Town trouble login hook failed for %s: %s", session.character_name, _trouble_err, exc_info=True)
 
     # ===== WEB CHARACTER CREATOR =====
 
@@ -736,6 +762,21 @@ class GameServer:
 
         if self._tcp_server:
             self._tcp_server.close()
+        if getattr(self, "fake_players", None):
+            try:
+                self.fake_players.shutdown()
+            except Exception as _fake_shutdown_err:
+                log.debug("Fake player shutdown cleanup failed: %s", _fake_shutdown_err)
+        if getattr(self, "creatures", None):
+            try:
+                self.creatures.shutdown()
+            except Exception as _creature_shutdown_err:
+                log.debug("Creature shutdown cleanup failed: %s", _creature_shutdown_err)
+        if getattr(self, "persistence_writer", None):
+            try:
+                self.persistence_writer.shutdown()
+            except Exception as _writer_shutdown_err:
+                log.debug("Persistence writer shutdown cleanup failed: %s", _writer_shutdown_err)
         if self._loop and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._loop.stop)
 

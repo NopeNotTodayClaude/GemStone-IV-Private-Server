@@ -336,6 +336,8 @@ async def _perform_missile_attack(session, creature, weapon, server, *, verb, sk
     crit_rank = random.randint(max(1, (crit_rank_max + 1) // 2), crit_rank_max) if crit_rank_max > 0 else 0
     hp_damage = max(1, int((endroll - 100) * (0.42 + (weapon_df * 0.25)) * loc_df_mult) + crit_rank * 3)
     actual_damage = creature.take_damage(hp_damage)
+    from server.core.engine.combat.combat_engine import _record_town_trouble_damage
+    _record_town_trouble_damage(server, session, creature, actual_damage)
 
     await session.send_line(swing_line)
     await session.send_line(colorize(roll_line, TextPresets.COMBAT_HIT))
@@ -389,6 +391,8 @@ async def _perform_missile_attack(session, creature, weapon, server, *, verb, sk
             exclude=session,
         )
         server.creatures.mark_dead(creature)
+        from server.core.engine.combat.combat_engine import _record_town_trouble_kill
+        await _record_town_trouble_kill(server, session, creature)
         session.target = None
         remaining = [
             c for c in server.creatures.get_creatures_in_room(session.current_room.id)

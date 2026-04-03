@@ -91,6 +91,11 @@ class GameLoop:
                         mult = getattr(session, 'death_stat_mult', 1.0)
                         if mult < 1.0:
                             await self.server.death.stat_penalty_tick(session)
+                    if hasattr(self.server, "fake_players"):
+                        for actor in self.server.fake_players.get_all():
+                            mult = getattr(actor, 'death_stat_mult', 1.0)
+                            if mult < 1.0:
+                                await self.server.death.stat_penalty_tick(actor)
                 except Exception as e:
                     log.error("Stat penalty recovery error: %s", e, exc_info=True)
 
@@ -140,6 +145,18 @@ class GameLoop:
                 await self.server.justice.tick(self.tick_count)
             except Exception as e:
                 log.error("Justice tick error: %s", e, exc_info=True)
+
+        if hasattr(self.server, "fake_players"):
+            try:
+                await self.server.fake_players.tick(self.tick_count)
+            except Exception as e:
+                log.error("Fake player tick error: %s", e, exc_info=True)
+
+        if hasattr(self.server, "town_trouble"):
+            try:
+                await self.server.town_trouble.tick(self.tick_count)
+            except Exception as e:
+                log.error("Town trouble tick error: %s", e, exc_info=True)
 
         # Passive health/mana/stamina regeneration (every ~60 seconds, matching GS4 regen cadence)
         if self.tick_count % 600 == 0:

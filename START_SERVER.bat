@@ -3,5 +3,11 @@ title GemStone IV - Server
 echo Starting GemStone IV Private Server...
 echo.
 cd /d "%~dp0"
-"C:\Users\unrea\AppData\Local\Python\pythoncore-3.14-64\python.exe" server\main.py
+set "GEMSTONE_ROOT=%~dp0"
+where py >nul 2>nul
+if %ERRORLEVEL%==0 (
+    py -3 server\main.py
+) else (
+    python server\main.py
+)
 pause
