@@ -12,9 +12,7 @@ CREATE TABLE IF NOT EXISTS items (
     base_name           VARCHAR(64)  NOT NULL,       -- "longsword"
     noun                VARCHAR(32)  NOT NULL,        -- "longsword"
     article             VARCHAR(8)   DEFAULT 'a',
-    item_type           ENUM('weapon','armor','shield','jewelry','gem',
-                             'container','consumable','herb','skin',
-                             'key','scroll','wand','misc') DEFAULT 'misc',
+    item_type           VARCHAR(32)  DEFAULT 'misc',
 
     -- Material
     material            VARCHAR(32)  DEFAULT NULL,   -- steel, mithril, oak, leather…

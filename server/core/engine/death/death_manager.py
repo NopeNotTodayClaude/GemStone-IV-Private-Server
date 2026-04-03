@@ -59,6 +59,7 @@ CLERIC_NAMES = [
 # ── Stat penalty constants ─────────────────────────────────────────────────────
 DEATH_STAT_MULT       = 0.10   # 10% of normal stats after ghost revival
 STAT_RECOVERY_PER_5S  = 0.015  # +1.5% of base every 5 seconds
+SYNTHETIC_BEEFY_STALE_SECONDS = 45.0
 
 # ── Beefy arrival emote sequence ──────────────────────────────────────────────
 # Each entry is (delay_before_line_seconds, message)
@@ -102,6 +103,44 @@ class DeathManager:
         self.server = server
         # Track active Beefy tasks: session_id -> asyncio.Task
         self._beefy_tasks: dict = {}
+
+    def has_active_beefy_task(self, session) -> bool:
+        task = self._beefy_tasks.get(id(session))
+        if not task:
+            return False
+        if task.done():
+            self._beefy_tasks.pop(id(session), None)
+            return False
+        return True
+
+    def reset_synthetic_beefy_state(self, session, *, cancel_task: bool = False, reason: str = ""):
+        if not getattr(session, "is_synthetic_player", False):
+            return
+        task = self._beefy_tasks.get(id(session))
+        if cancel_task and task and not task.done():
+            task.cancel()
+        flags = getattr(session, "synthetic_flags", None)
+        if isinstance(flags, dict):
+            flags.pop("beefy_started", None)
+            flags.pop("beefy_started_at", None)
+        if reason:
+            log.info(
+                "Resetting synthetic Beefy state for %s (%s)",
+                getattr(session, "character_name", "?"),
+                reason,
+            )
+
+    def synthetic_beefy_needs_restart(self, session, now: float | None = None) -> bool:
+        if not getattr(session, "is_synthetic_player", False) or not getattr(session, "is_dead", False):
+            return False
+        flags = getattr(session, "synthetic_flags", None) or {}
+        if not flags.get("beefy_started"):
+            return False
+        now_ts = float(now if now is not None else time.time())
+        started_at = float(flags.get("beefy_started_at") or 0.0)
+        if not self.has_active_beefy_task(session):
+            return True
+        return started_at > 0.0 and (now_ts - started_at) >= SYNTHETIC_BEEFY_STALE_SECONDS
 
     # ══════════════════════════════════════════════════════════════════════════
     # Entry point — called from combat engine when HP hits 0
@@ -858,7 +897,7 @@ class DeathManager:
         if getattr(session, "is_synthetic_player", False):
             manager = getattr(session, "manager", None)
             if manager and hasattr(manager, "_save_actor"):
-                manager._save_actor(session)
+                manager._save_actor(session, active=1 if getattr(session, "connected", False) else 0)
             return
         if self.server.db and session.character_id:
             self.server.db.save_character_resources(

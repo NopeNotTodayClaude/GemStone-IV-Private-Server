@@ -11,6 +11,7 @@ Mind state warnings:
 """
 
 import logging
+import random
 from server.core.protocol.colors import (
     colorize, TextPresets, experience_msg, level_up_msg
 )
@@ -193,6 +194,181 @@ class ExperienceManager:
             return {"general": {}, "profession": {}}
         return lua.get_level_milestones() or {"general": {}, "profession": {}}
 
+    def _seal_config(self) -> dict:
+        lua = getattr(self.server, "lua", None)
+        if not lua:
+            return {}
+        return lua.get_seals() or {}
+
+    def _seal_source_allowed(self, seal_cfg: dict, source: str) -> bool:
+        allowed = [str(entry).strip().lower() for entry in (seal_cfg.get("allowed_sources") or []) if str(entry).strip()]
+        if not allowed or "*" in allowed or "all" in allowed:
+            return True
+        return str(source or "").strip().lower() in allowed
+
+    def _find_worn_backpack(self, session):
+        for item in list(getattr(session, "inventory", []) or []):
+            if item.get("container_id"):
+                continue
+            slot = str(item.get("slot") or "").strip().lower()
+            if slot in {"right_hand", "left_hand"}:
+                continue
+            noun = str(item.get("noun") or "").strip().lower()
+            short_name = str(item.get("short_name") or item.get("name") or "").strip().lower()
+            if noun == "backpack" or "backpack" in short_name:
+                return item
+        return None
+
+    async def _grant_stackable_award(self, session, template: dict, seal_cfg: dict) -> int:
+        from server.core.commands.player.inventory import auto_stow_item
+        from server.core.commands.player.shop import _merge_extra_data
+
+        if not self.server.db or not session.character_id:
+            return 0
+
+        item_id = int(template.get("id") or 0)
+        if item_id <= 0:
+            return 0
+
+        quantity = max(1, int(seal_cfg.get("quantity", 1) or 1))
+        stack_cap = max(1, int(seal_cfg.get("stack_cap", 999) or 999))
+        auto_mark = bool(seal_cfg.get("auto_mark", True))
+        display_name = str(seal_cfg.get("display_name") or template.get("name") or "seal").strip()
+        backpack = self._find_worn_backpack(session)
+        backpack_inv_id = int(backpack.get("inv_id") or 0) if backpack else 0
+        backpack_capacity = max(0, int((backpack or {}).get("container_capacity") or 10)) if backpack_inv_id > 0 else 0
+        remaining = quantity
+
+        candidates = []
+        for item in list(getattr(session, "inventory", []) or []):
+            if int(item.get("item_id") or 0) != item_id:
+                continue
+            inv_id = int(item.get("inv_id") or 0)
+            if inv_id <= 0:
+                continue
+            item_qty = max(1, int(item.get("quantity", 1) or 1))
+            if item_qty >= stack_cap:
+                continue
+            if backpack_inv_id > 0 and int(item.get("container_id") or 0) != backpack_inv_id:
+                continue
+            priority = 0 if backpack_inv_id else 1
+            candidates.append((priority, item_qty, inv_id, item))
+
+        candidates.sort(key=lambda row: (row[0], row[1], row[2]))
+        for _, _, inv_id, item in candidates:
+            current_qty = max(1, int(item.get("quantity", 1) or 1))
+            room_left = stack_cap - current_qty
+            if room_left <= 0:
+                continue
+            add_qty = min(remaining, room_left)
+            changed = self.server.db.execute_update(
+                "UPDATE character_inventory SET quantity = quantity + %s WHERE id = %s",
+                (int(add_qty), int(inv_id)),
+            )
+            if changed <= 0:
+                continue
+            item["quantity"] = current_qty + add_qty
+            if auto_mark and not item.get("is_marked"):
+                _merge_extra_data(self.server, item, {"is_marked": True})
+            remaining -= add_qty
+            if remaining <= 0:
+                break
+
+        while remaining > 0:
+            chunk = min(remaining, stack_cap)
+            item_dict = {
+                "item_id": item_id,
+                "name": template.get("name") or display_name,
+                "short_name": template.get("short_name") or display_name.lower(),
+                "noun": template.get("noun") or "seal",
+                "article": template.get("article") or "a",
+                "item_type": template.get("item_type") or "seal",
+                "weight": float(template.get("weight") or 0),
+                "value": int(template.get("value") or 0),
+                "description": template.get("description") or "",
+                "quantity": chunk,
+                "max_stack": stack_cap,
+                "is_marked": auto_mark,
+            }
+
+            backpack_free = 0
+            if backpack_inv_id > 0:
+                backpack_used = sum(
+                    1
+                    for item in (getattr(session, "inventory", []) or [])
+                    if int(item.get("container_id") or 0) == backpack_inv_id
+                )
+                backpack_free = max(0, backpack_capacity - backpack_used)
+
+            if backpack_inv_id > 0 and backpack_free > 0:
+                inv_id = self.server.db.add_item_to_inventory(
+                    session.character_id,
+                    item_id,
+                    quantity=chunk,
+                    max_stack=stack_cap,
+                )
+                if not inv_id:
+                    break
+                self.server.db.execute_update(
+                    "UPDATE character_inventory SET container_id = %s WHERE id = %s",
+                    (backpack_inv_id, int(inv_id)),
+                )
+                item_dict["inv_id"] = inv_id
+                item_dict["slot"] = None
+                item_dict["container_id"] = backpack_inv_id
+                session.inventory.append(item_dict)
+                if auto_mark:
+                    _merge_extra_data(self.server, item_dict, {"is_marked": True})
+                remaining -= chunk
+                continue
+
+            success, _, fail_msg = auto_stow_item(session, self.server, item_dict)
+            if not success:
+                if quantity == remaining:
+                    await session.send_line(colorize(
+                        f"  You would have received {display_name}, but you have nowhere to stow it.  {fail_msg or ''}".strip(),
+                        TextPresets.WARNING
+                    ))
+                break
+            if auto_mark and item_dict.get("inv_id"):
+                _merge_extra_data(self.server, item_dict, {"is_marked": True})
+            remaining -= chunk
+
+        granted = quantity - remaining
+        if granted > 0 and bool(seal_cfg.get("announce", True)):
+            msg = str(seal_cfg.get("message") or "").strip()
+            if not msg:
+                plural = "" if granted == 1 else "s"
+                msg = f"  You receive {granted} {display_name}{plural}."
+            await session.send_line(colorize(msg, TextPresets.ITEM_NAME))
+        return granted
+
+    async def _maybe_award_seals(self, session, xp_awarded: int, source: str) -> None:
+        if xp_awarded <= 0 or not self.server.db or not session.character_id:
+            return
+
+        cfg = self._seal_config()
+        if not cfg or not bool(cfg.get("enabled", True)):
+            return
+
+        for seal_cfg in (cfg.get("seal_types") or {}).values():
+            if not isinstance(seal_cfg, dict):
+                continue
+            if not self._seal_source_allowed(seal_cfg, source):
+                continue
+            chance = max(0.0, min(1.0, float(seal_cfg.get("drop_chance", 0.0) or 0.0)))
+            if chance <= 0.0 or random.random() > chance:
+                continue
+
+            short_name = str(seal_cfg.get("item_short_name") or "").strip().lower()
+            if not short_name:
+                continue
+            template = self.server.db.get_item_template_by_short_name(short_name)
+            if not template:
+                log.warning("Seal award skipped: item template '%s' not found", short_name)
+                continue
+            await self._grant_stackable_award(session, template, seal_cfg)
+
     def _profession_name(self, session) -> str:
         explicit = getattr(session, "profession_name", None) or getattr(session, "profession", None)
         if explicit:
@@ -338,6 +514,8 @@ class ExperienceManager:
                 session.character_id, session.level,
                 session.experience, session.field_experience
             )
+
+        await self._maybe_award_seals(session, xp_to_add, source)
 
         return xp_to_add
 

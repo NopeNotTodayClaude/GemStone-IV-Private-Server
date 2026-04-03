@@ -756,8 +756,15 @@ def auto_stow_item(session, server, item_dict, *, allow_hands=True, allow_specia
     )
     if best_cont:
         item_id = item_dict.get('item_id') or item_dict.get('id')
+        quantity = max(1, int(item_dict.get('quantity', 1) or 1))
+        max_stack = item_dict.get('max_stack')
         if server.db and session.character_id and item_id:
-            inv_id = server.db.add_item_to_inventory(session.character_id, item_id)
+            inv_id = server.db.add_item_to_inventory(
+                session.character_id,
+                item_id,
+                quantity=quantity,
+                max_stack=max_stack,
+            )
             if inv_id:
                 _db_update_container(server, inv_id, best_cont.get('inv_id'))
                 # Persist box lock/trap/contents so they survive refresh
@@ -780,8 +787,16 @@ def auto_stow_item(session, server, item_dict, *, allow_hands=True, allow_specia
     # Try hands
     if not session.right_hand:
         item_id = item_dict.get('item_id') or item_dict.get('id')
+        quantity = max(1, int(item_dict.get('quantity', 1) or 1))
+        max_stack = item_dict.get('max_stack')
         if server.db and session.character_id and item_id:
-            inv_id = server.db.add_item_to_inventory(session.character_id, item_id, slot='right_hand')
+            inv_id = server.db.add_item_to_inventory(
+                session.character_id,
+                item_id,
+                slot='right_hand',
+                quantity=quantity,
+                max_stack=max_stack,
+            )
             if inv_id:
                 _db_save_item_state(server, inv_id, item_dict)
                 item_dict['inv_id'] = inv_id
@@ -800,8 +815,16 @@ def auto_stow_item(session, server, item_dict, *, allow_hands=True, allow_specia
 
     elif not session.left_hand:
         item_id = item_dict.get('item_id') or item_dict.get('id')
+        quantity = max(1, int(item_dict.get('quantity', 1) or 1))
+        max_stack = item_dict.get('max_stack')
         if server.db and session.character_id and item_id:
-            inv_id = server.db.add_item_to_inventory(session.character_id, item_id, slot='left_hand')
+            inv_id = server.db.add_item_to_inventory(
+                session.character_id,
+                item_id,
+                slot='left_hand',
+                quantity=quantity,
+                max_stack=max_stack,
+            )
             if inv_id:
                 _db_save_item_state(server, inv_id, item_dict)
                 item_dict['inv_id'] = inv_id

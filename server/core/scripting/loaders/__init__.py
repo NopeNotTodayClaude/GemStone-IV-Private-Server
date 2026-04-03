@@ -19,6 +19,7 @@ from .appearance_loader   import load_appearance
 from .ambush_loader       import load_ambush_cfg
 from .customize_loader    import load_customize_cfg
 from .encumbrance_loader  import load_encumbrance_cfg
+from .seals_loader        import load_seals_cfg
 from .perception_loader   import load_perception_cfg
 from .crafting_loader     import load_crafting
 from .perception_loader   import load_perception_cfg
@@ -43,6 +44,7 @@ __all__ = [
     "load_ambush_cfg",
     "load_customize_cfg",
     "load_encumbrance_cfg",
+    "load_seals_cfg",
     "load_perception_cfg",
     "load_crafting",
     "load_perception_cfg",

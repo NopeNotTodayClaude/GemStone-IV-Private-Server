@@ -218,6 +218,10 @@ def _pawn_snapshot(item: dict) -> dict:
     }
 
 
+def _item_can_be_sold(item: dict) -> bool:
+    return str((item or {}).get("item_type") or "").strip().lower() != "seal"
+
+
 def _load_shop_by_room(server, room_id):
     if not server.db:
         return None
@@ -1383,6 +1387,15 @@ async def cmd_sell(session, cmd, args, server):
         )
         return
 
+    if not _item_can_be_sold(sell_item):
+        await session.send_line(
+            colorize(
+                f"  {sell_item.get('name', 'That item')} cannot be sold.",
+                TextPresets.WARNING
+            )
+        )
+        return
+
     eff_mult = _trade_sell_mult(session, shop["sell_multiplier"])
     sell_price = max(1, int(sell_item.get("value", 0) * eff_mult))
 
@@ -1437,6 +1450,7 @@ async def _sell_container_contents(session, server, shop, npc, container):
     sold_lines   = []
     skipped_marked   = []
     skipped_locked   = []
+    skipped_unsellable = []
 
     for item in contents:
         iname = item.get("name") or item.get("short_name") or "something"
@@ -1452,6 +1466,10 @@ async def _sell_container_contents(session, server, shop, npc, container):
         # Rule 2: skip locked containers
         if item.get("item_type") == "container" and item.get("is_locked"):
             skipped_locked.append(iname)
+            continue
+
+        if not _item_can_be_sold(item):
+            skipped_unsellable.append(iname)
             continue
 
         # Sell it
@@ -1473,7 +1491,7 @@ async def _sell_container_contents(session, server, shop, npc, container):
     if not sold_lines:
         await session.send_line(
             npc_speech(npc.name,
-                f"looks through your {cont_name} but everything is either marked or locked.")
+                f"looks through your {cont_name} but finds nothing there that can actually be sold.")
         )
         if skipped_marked:
             await session.send_line(colorize(
@@ -1481,6 +1499,9 @@ async def _sell_container_contents(session, server, shop, npc, container):
         if skipped_locked:
             await session.send_line(colorize(
                 f"  Locked containers (skipped): {', '.join(skipped_locked)}", TextPresets.SYSTEM))
+        if skipped_unsellable:
+            await session.send_line(colorize(
+                f"  Unsellable (skipped): {', '.join(skipped_unsellable)}", TextPresets.SYSTEM))
         return
 
     # Pay out
@@ -1507,6 +1528,9 @@ async def _sell_container_contents(session, server, shop, npc, container):
     if skipped_locked:
         await session.send_line(colorize(
             f"  Locked containers (skipped): {', '.join(skipped_locked)}", TextPresets.SYSTEM))
+    if skipped_unsellable:
+        await session.send_line(colorize(
+            f"  Unsellable (skipped): {', '.join(skipped_unsellable)}", TextPresets.SYSTEM))
 
     await server.world.broadcast_to_room(
         session.current_room.id,
@@ -1650,6 +1674,12 @@ async def cmd_appraise(session, cmd, args, server):
 
     if not appraise_item:
         await session.send_line(f"You aren't holding anything like '{args.strip()}'.")
+        return
+
+    if not _item_can_be_sold(appraise_item):
+        await session.send_line(
+            npc_speech(npc.name, f'says, "{appraise_item.get("name", "That item")} cannot be sold."')
+        )
         return
 
     base_value = appraise_item.get("value", 0)

@@ -381,7 +381,11 @@ class WoundBridge:
             # result = (new_rank, did_bleed, msg, updated_entry) in Lua
             # lupa returns multiple returns as a tuple
             if isinstance(result, tuple):
-                new_rank, did_bleed, msg, updated_entry = result
+                parts = list(result)
+                new_rank = parts[0] if len(parts) >= 1 else 0
+                did_bleed = parts[1] if len(parts) >= 2 else False
+                msg = parts[2] if len(parts) >= 3 else None
+                updated_entry = parts[3] if len(parts) >= 4 else None
             else:
                 # Single return (no wound assigned at this crit rank)
                 new_rank = int(result) if result else 0
@@ -402,6 +406,15 @@ class WoundBridge:
                         'is_bleeding': bool(entry.get('is_bleeding', did_bleed)),
                         'bandaged':    bool(entry.get('bandaged',    False)),
                     }
+            elif new_rank > 0:
+                existing = dict(wounds.get(location, {}) or {})
+                wounds[location] = {
+                    'wound_rank': max(int(existing.get('wound_rank', 0) or 0), new_rank),
+                    'scar_rank': int(existing.get('scar_rank', 0) or 0),
+                    'is_bleeding': bool(did_bleed or existing.get('is_bleeding', False)),
+                    'bandaged': bool(existing.get('bandaged', False) and not did_bleed),
+                }
+            if new_rank > 0:
                 self._set_wounds(session, wounds)
                 self.sync_session_state(session)
 

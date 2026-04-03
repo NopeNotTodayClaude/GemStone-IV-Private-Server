@@ -2261,11 +2261,14 @@ class Database:
         finally:
             conn.close()
 
-    def add_item_to_inventory(self, character_id, item_id, slot=None, quantity=1):
+    def add_item_to_inventory(self, character_id, item_id, slot=None, quantity=1, max_stack=None):
         """Add an item to a character's inventory. Returns inventory row id."""
         conn = self._get_conn()
         try:
             cur = conn.cursor()
+            quantity = max(1, int(quantity or 1))
+            if max_stack is not None:
+                max_stack = max(1, int(max_stack or 1))
             if slot in ("right_hand", "left_hand"):
                 cur.execute(
                     "UPDATE character_inventory SET slot = NULL "
@@ -2277,20 +2280,55 @@ class Database:
                 SELECT ci.id, ci.quantity FROM character_inventory ci
                 JOIN items i ON ci.item_id = i.id
                 WHERE ci.character_id = %s AND ci.item_id = %s AND i.is_stackable = TRUE
+                ORDER BY ci.quantity ASC, ci.id ASC
             """, (character_id, item_id))
-            existing = cur.fetchone()
-            if existing:
-                cur.execute(
-                    "UPDATE character_inventory SET quantity = quantity + %s WHERE id = %s",
-                    (quantity, existing[0])
-                )
-                return existing[0]
-            else:
-                cur.execute(
-                    "INSERT INTO character_inventory (character_id, item_id, slot, quantity) VALUES (%s, %s, %s, %s)",
-                    (character_id, item_id, slot, quantity)
-                )
-                return cur.lastrowid
+            existing_rows = cur.fetchall() or []
+            if existing_rows:
+                if max_stack is None:
+                    existing = existing_rows[0]
+                    cur.execute(
+                        "UPDATE character_inventory SET quantity = quantity + %s WHERE id = %s",
+                        (quantity, existing[0])
+                    )
+                    return existing[0]
+
+                remaining = quantity
+                target_id = None
+                for row_id, current_qty in existing_rows:
+                    current_qty = int(current_qty or 0)
+                    if current_qty >= max_stack:
+                        continue
+                    add_qty = min(remaining, max_stack - current_qty)
+                    if add_qty <= 0:
+                        continue
+                    cur.execute(
+                        "UPDATE character_inventory SET quantity = quantity + %s WHERE id = %s",
+                        (add_qty, row_id)
+                    )
+                    if target_id is None:
+                        target_id = row_id
+                    remaining -= add_qty
+                    if remaining <= 0:
+                        return target_id
+
+                target_slot = slot
+                while remaining > 0:
+                    chunk = min(remaining, max_stack)
+                    cur.execute(
+                        "INSERT INTO character_inventory (character_id, item_id, slot, quantity) VALUES (%s, %s, %s, %s)",
+                        (character_id, item_id, target_slot, chunk)
+                    )
+                    if target_id is None:
+                        target_id = cur.lastrowid
+                    remaining -= chunk
+                    target_slot = None
+                return target_id
+
+            cur.execute(
+                "INSERT INTO character_inventory (character_id, item_id, slot, quantity) VALUES (%s, %s, %s, %s)",
+                (character_id, item_id, slot, quantity)
+            )
+            return cur.lastrowid
         except Exception as e:
             log.error("Failed to add item to inventory: %s", e)
             return None

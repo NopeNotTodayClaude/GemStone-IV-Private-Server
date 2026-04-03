@@ -612,7 +612,13 @@ class FakePlayerManager:
         return actor
 
     def _activate_existing_actor(self, actor: SyntheticPlayer, room_id: int):
-        room_id = int(room_id or actor.home_room_id or actor.current_room_id or 0)
+        room_id = int(
+            (getattr(actor, "death_room_id", 0) if getattr(actor, "is_dead", False) else 0)
+            or room_id
+            or actor.home_room_id
+            or actor.current_room_id
+            or 0
+        )
         actor.connected = True
         actor.state = "playing"
         actor.synthetic_flags.setdefault("memory", self._load_memory(actor.synthetic_id))
@@ -659,12 +665,27 @@ class FakePlayerManager:
         payload["wounds"] = _json_loads(payload.get("wounds_json"), {})
         payload["state_json"] = _json_loads(payload.get("state_json"), {})
         actor = SyntheticPlayer(self, payload)
+        if actor.is_dead:
+            death_room_id = int(payload.get("death_room_id") or 0)
+            if death_room_id > 0:
+                actor.current_room_id = death_room_id
+            actor.synthetic_flags.pop("beefy_started", None)
+            actor.synthetic_flags.pop("beefy_started_at", None)
+            actor.synthetic_flags["next_action_at"] = min(
+                float(actor.synthetic_flags.get("next_action_at") or (_now() + 2.0)),
+                _now() + 1.0,
+            )
         self._ensure_actor_loadout(actor)
         actor.synthetic_flags.setdefault("memory", self._load_memory(actor.synthetic_id))
         actor.synthetic_flags.setdefault("intent", "idle")
         actor.synthetic_flags.setdefault("next_action_at", _now() + random.uniform(2.0, 8.0))
         if int(row.get("active") or 0):
-            room_id = int(payload.get("current_room_id") or payload.get("home_room_id") or 0)
+            room_id = int(
+                (payload.get("death_room_id") if int(payload.get("is_dead") or 0) else 0)
+                or payload.get("current_room_id")
+                or payload.get("home_room_id")
+                or 0
+            )
             if room_id > 0:
                 self._place_actor(actor, room_id)
         return actor
@@ -858,9 +879,20 @@ class FakePlayerManager:
         if not actor.connected or actor.state != "playing":
             return 0, 0
         if actor.is_dead:
-            if not actor.synthetic_flags.get("beefy_started"):
-                actor.synthetic_flags["beefy_started"] = True
-                await self.server.death._begin_ghost_route(actor)
+            death_manager = getattr(self.server, "death", None)
+            if death_manager and death_manager.synthetic_beefy_needs_restart(actor, now):
+                death_manager.reset_synthetic_beefy_state(
+                    actor,
+                    cancel_task=True,
+                    reason="stale synthetic Beefy route",
+                )
+            if not actor.synthetic_flags.get("beefy_started") and death_manager:
+                log.info(
+                    "Starting Beefy route for dead synthetic player %s in room %s",
+                    actor.character_name,
+                    int(getattr(actor, "death_room_id", 0) or getattr(getattr(actor, "current_room", None), "id", 0) or 0),
+                )
+                await death_manager._begin_ghost_route(actor)
             return 1, 0
         if actor.death_stat_mult < 1.0:
             await self.server.death.stat_penalty_tick(actor)
@@ -1008,26 +1040,34 @@ class FakePlayerManager:
         except Exception:
             log.exception("FakePlayerManager: failed reading active town trouble targets")
             return []
-        scope_rooms = {int(room_id) for room_id in (candidate_rooms or set()) if int(room_id or 0) > 0}
         targets = []
         for raw in raw_targets or []:
             room_ids = [int(room_id) for room_id in (dict(raw or {}).get("room_ids") or []) if int(room_id or 0) > 0]
-            if scope_rooms:
-                room_ids = [room_id for room_id in room_ids if room_id in scope_rooms]
             if not room_ids:
                 continue
             target = dict(raw or {})
             target["room_ids"] = room_ids
             targets.append(target)
+        targets.sort(
+            key=lambda row: (
+                -int(row.get("response_priority") or 0),
+                -int(bool(row.get("emergency_defender_pull"))),
+                int(row.get("incident_id") or 0),
+            )
+        )
         return targets
 
     def _town_trouble_defender_assignments(self, targets: list[dict]) -> dict[int, dict]:
         assignments: dict[int, dict] = {}
-        max_total = max(0, int(self._defaults.get("town_trouble_max_defenders") or 0))
-        if max_total <= 0 or not targets:
+        base_max_total = max(0, int(self._defaults.get("town_trouble_max_defenders") or 0))
+        if base_max_total <= 0 or not targets:
             return assignments
-        per_incident = max(1, int(self._defaults.get("town_trouble_defenders_per_incident") or max_total))
-        max_distance = max(1, int(self._defaults.get("town_trouble_defender_max_distance") or 90))
+        boss_max_total = max(base_max_total, int(self._defaults.get("town_trouble_boss_pull_max_defenders") or base_max_total))
+        max_total = boss_max_total if any(bool(target.get("emergency_defender_pull")) for target in targets) else base_max_total
+        base_per_incident = max(1, int(self._defaults.get("town_trouble_defenders_per_incident") or max_total))
+        base_max_distance = max(1, int(self._defaults.get("town_trouble_defender_max_distance") or 90))
+        boss_per_incident = max(base_per_incident, int(self._defaults.get("town_trouble_boss_pull_per_incident") or base_per_incident))
+        boss_max_distance = max(base_max_distance, int(self._defaults.get("town_trouble_boss_pull_max_distance") or base_max_distance))
         used_actor_ids: set[int] = set()
         for target in targets:
             room_ids = {int(room_id) for room_id in (target.get("room_ids") or []) if int(room_id or 0) > 0}
@@ -1035,6 +1075,21 @@ class FakePlayerManager:
                 continue
             zone_id = int(target.get("city_zone_id") or 0)
             target_level = int(target.get("target_level") or 1)
+            emergency_pull = bool(target.get("emergency_defender_pull"))
+            per_incident = max(
+                1,
+                int(
+                    target.get("defender_cap")
+                    or (boss_per_incident if emergency_pull else base_per_incident)
+                ),
+            )
+            max_distance = max(
+                1,
+                int(
+                    target.get("defender_max_distance")
+                    or (boss_max_distance if emergency_pull else base_max_distance)
+                ),
+            )
             ranked = []
             for actor in self._actors.values():
                 actor_id = int(getattr(actor, "synthetic_id", 0) or 0)
@@ -1046,6 +1101,7 @@ class FakePlayerManager:
                     zone_id=zone_id,
                     target_level=target_level,
                     max_distance=max_distance,
+                    emergency_pull=emergency_pull,
                 )
                 if candidate:
                     ranked.append(candidate)
@@ -1064,6 +1120,8 @@ class FakePlayerManager:
                     "city_zone_id": zone_id,
                     "target_room_id": int(row.get("target_room_id") or 0),
                     "room_ids": sorted(room_ids),
+                    "boss_wave": bool(target.get("boss_wave")),
+                    "emergency_defender_pull": emergency_pull,
                 }
                 assigned_here += 1
         return assignments
@@ -1076,6 +1134,7 @@ class FakePlayerManager:
         zone_id: int,
         target_level: int,
         max_distance: int,
+        emergency_pull: bool,
     ) -> dict | None:
         room = getattr(actor, "current_room", None)
         if not room or not room_ids:
@@ -1099,7 +1158,7 @@ class FakePlayerManager:
         }
         archetype_match = archetype_key in allowed_archetypes if allowed_archetypes else False
         profession_match = profession_name in allowed_professions if allowed_professions else False
-        if not archetype_match and not profession_match:
+        if not emergency_pull and not archetype_match and not profession_match:
             return None
         level_slack = max(0, int(self._defaults.get("town_trouble_defender_level_slack") or 0))
         actor_level = max(1, int(getattr(actor, "level", 1) or 1))
@@ -1107,7 +1166,8 @@ class FakePlayerManager:
             return None
         health_max = max(1, int(getattr(actor, "health_max", 1) or 1))
         health_current = max(0, int(getattr(actor, "health_current", health_max) or health_max))
-        if (health_current / float(health_max)) < 0.45:
+        minimum_health_ratio = 0.35 if emergency_pull else 0.45
+        if (health_current / float(health_max)) < minimum_health_ratio:
             return None
         target_room_id = actor_room_id if actor_room_id in room_ids else self._nearest_known_room(actor_room_id, room_ids)
         if target_room_id <= 0:
@@ -1116,7 +1176,7 @@ class FakePlayerManager:
         if distance >= 10**9 or distance > max_distance:
             return None
         combat_bias = float(self._archetype_bias(actor, "hunt_bias", 0.0)) + float(self._personality(actor, "hunt", 0.18))
-        priority_class = 0 if archetype_match and profession_match else 1 if archetype_match else 2
+        priority_class = 0 if emergency_pull else 0 if archetype_match and profession_match else 1 if archetype_match else 2
         return {
             "actor_id": int(getattr(actor, "synthetic_id", 0) or 0),
             "target_room_id": int(target_room_id),
@@ -2080,6 +2140,9 @@ class FakePlayerManager:
         if room_id in target_room_ids:
             hold_min = max(1.0, float(self._defaults.get("town_trouble_defender_hold_min_seconds") or 2.0))
             hold_max = max(hold_min, float(self._defaults.get("town_trouble_defender_hold_max_seconds") or 5.0))
+            if bool(assignment.get("boss_wave")):
+                hold_min = 0.8
+                hold_max = 1.8
             actor.position = "standing"
             actor.synthetic_flags["next_action_at"] = now + random.uniform(hold_min, hold_max)
             return True
@@ -2090,7 +2153,9 @@ class FakePlayerManager:
             return False
         if await self._move_toward(actor, target_room_id):
             actor.position = "standing"
-            actor.synthetic_flags["next_action_at"] = now + random.uniform(2.5, 5.5)
+            delay_min = 1.4 if bool(assignment.get("boss_wave")) else 2.5
+            delay_max = 3.2 if bool(assignment.get("boss_wave")) else 5.5
+            actor.synthetic_flags["next_action_at"] = now + random.uniform(delay_min, delay_max)
             return True
         return False
 

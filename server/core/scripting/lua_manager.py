@@ -159,6 +159,10 @@ class LuaManager:
         from server.core.scripting.loaders.encumbrance_loader import load_encumbrance_cfg
         return self._load_once("encumbrance_cfg", lambda: load_encumbrance_cfg(self._engine))
 
+    def get_seals(self) -> dict:
+        from server.core.scripting.loaders.seals_loader import load_seals_cfg
+        return self._load_once("seals_cfg", lambda: load_seals_cfg(self._engine))
+
     def get_ucs_cfg(self) -> dict:
         from server.core.scripting.loaders.ucs_loader import load_ucs_cfg
         return self._load_once("ucs_cfg", lambda: load_ucs_cfg(self._engine))

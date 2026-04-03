@@ -277,6 +277,7 @@ class TownTroubleManager:
                     "starts_at_ts": starts_at_ts,
                     "music_override_started": False,
                     "warning_offsets_sent": [],
+                    "stage_repeat_index": 0,
                     "active_creature_ids": [],
                 },
             ),
@@ -290,6 +291,7 @@ class TownTroubleManager:
             "duration_seconds": duration,
             "target_level": target_level,
             "stage_index": 0,
+            "stage_repeat_index": 0,
             "active_creature_ids": [],
             "starts_at_ts": starts_at_ts,
             "music_override_started": False,
@@ -317,15 +319,28 @@ class TownTroubleManager:
         incident_def = self._incident_def(actor)
         stages = list(incident_def.get("stages") or [])
         current_index = int(actor.get("stage_index") or 0)
+        stage = self._stage_def(actor)
+        current_repeat = max(0, int(actor.get("stage_repeat_index") or 0))
+        repeat_total = self._stage_repeat_total(stage)
         if current_index < len(stages):
-            completion_line = str((stages[current_index] or {}).get("completion_announcement") or "").strip()
+            completion_key = "completion_announcement"
+            if current_repeat + 1 < repeat_total:
+                completion_key = "wave_completion_announcement"
+            completion_line = str((stage or {}).get(completion_key) or (stage or {}).get("completion_announcement") or "").strip()
             if completion_line:
                 await self._broadcast_city(
                     int(actor.get("city_zone_id") or 0),
                     self._format_line(actor, completion_line),
                     preset=TextPresets.WARNING,
                 )
+        actor["active_creature_ids"] = []
+        if current_repeat + 1 < repeat_total:
+            actor["stage_repeat_index"] = current_repeat + 1
+            self._save_incident_state(actor)
+            await self._spawn_current_stage(actor)
+            return
         actor["stage_index"] = current_index + 1
+        actor["stage_repeat_index"] = 0
         actor["active_creature_ids"] = []
         self._save_incident_state(actor)
         if actor["stage_index"] >= len(stages):
@@ -334,13 +349,20 @@ class TownTroubleManager:
         await self._spawn_current_stage(actor)
 
     async def _spawn_current_stage(self, actor: dict):
-        incident_def = self._incident_def(actor)
-        stages = list(incident_def.get("stages") or [])
-        stage_index = int(actor.get("stage_index") or 0)
-        if stage_index < 0 or stage_index >= len(stages):
+        stage = self._stage_def(actor)
+        if not stage:
             return
-        stage = dict(stages[stage_index] or {})
         stage_room_ids = [int(rid) for rid in (stage.get("spawn_room_ids") or []) if int(rid or 0) > 0]
+        announcement_key = "start_announcement"
+        if int(actor.get("stage_repeat_index") or 0) > 0:
+            announcement_key = "reinforcement_announcement"
+        announcement = str(stage.get(announcement_key) or "").strip()
+        if announcement:
+            await self._broadcast_city(
+                int(actor.get("city_zone_id") or 0),
+                self._format_line(actor, announcement),
+                preset=TextPresets.WARNING,
+            )
         live_ids = []
         for hostile_cfg in stage.get("hostiles") or []:
             variant_id = str(hostile_cfg.get("variant_id") or "").strip().lower()
@@ -405,9 +427,13 @@ class TownTroubleManager:
         base_level = max(1, int(base.get("level", 1) or 1))
         level_scale = max(0.45, float(target_level) / float(base_level))
         hp_mult = max(0.10, float(variant.get("hp_mult") or 1.0))
+        hp_bonus = int(variant.get("hp_bonus") or 0)
         as_mult = max(0.10, float(variant.get("as_mult") or 1.0))
+        as_bonus = int(variant.get("as_bonus") or 0)
         ds_mult = max(0.10, float(variant.get("ds_mult") or 1.0))
+        ds_bonus = int(variant.get("ds_bonus") or 0)
         td_mult = max(0.10, float(variant.get("td_mult") or 1.0))
+        td_bonus = int(variant.get("td_bonus") or 0)
 
         tmpl = copy.deepcopy(base)
         tmpl["template_id"] = template_id
@@ -415,20 +441,28 @@ class TownTroubleManager:
         tmpl["article"] = str(variant.get("article") or base.get("article") or "a")
         tmpl["description"] = str(variant.get("description") or base.get("description") or "")
         tmpl["level"] = max(1, int(target_level))
-        tmpl["hp"] = max(18, int((int(base.get("hp", 30) or 30) * level_scale * hp_mult)))
-        tmpl["as_melee"] = max(20, int((int(base.get("as_melee", 35) or 35) * level_scale * as_mult)))
-        tmpl["ds_melee"] = max(10, int((int(base.get("ds_melee", 20) or 20) * level_scale * ds_mult)))
-        tmpl["ds_ranged"] = max(10, int((int(base.get("ds_ranged", tmpl["ds_melee"]) or tmpl["ds_melee"]) * level_scale * ds_mult)))
-        tmpl["ds_bolt"] = max(10, int((int(base.get("ds_bolt", tmpl["ds_melee"]) or tmpl["ds_melee"]) * level_scale * ds_mult)))
+        base_hp = int(base.get("hp", 30) or 30)
+        base_as_melee = int(base.get("as_melee", 35) or 35)
+        base_ds_melee = int(base.get("ds_melee", 20) or 20)
+        base_ds_ranged = int(base.get("ds_ranged", base_ds_melee) or base_ds_melee)
+        base_ds_bolt = int(base.get("ds_bolt", base_ds_melee) or base_ds_melee)
+        tmpl["hp"] = max(18, int((base_hp * level_scale * hp_mult) + hp_bonus))
+        tmpl["as_melee"] = max(20, int((base_as_melee * level_scale * as_mult) + as_bonus))
+        tmpl["ds_melee"] = max(10, int((base_ds_melee * level_scale * ds_mult) + ds_bonus))
+        tmpl["ds_ranged"] = max(10, int((base_ds_ranged * level_scale * ds_mult) + ds_bonus))
+        tmpl["ds_bolt"] = max(10, int((base_ds_bolt * level_scale * ds_mult) + ds_bonus))
         base_td = int(base.get("td", base.get("level", 1) * 3) or (base.get("level", 1) * 3))
-        tmpl["td"] = max(5, int(base_td * level_scale * td_mult))
-        tmpl["td_spiritual"] = max(5, int(int(base.get("td_spiritual", tmpl["td"]) or tmpl["td"]) * level_scale * td_mult))
-        tmpl["td_elemental"] = max(5, int(int(base.get("td_elemental", tmpl["td"]) or tmpl["td"]) * level_scale * td_mult))
+        base_td_spiritual = int(base.get("td_spiritual", base_td) or base_td)
+        base_td_elemental = int(base.get("td_elemental", base_td) or base_td)
+        tmpl["td"] = max(5, int((base_td * level_scale * td_mult) + td_bonus))
+        tmpl["td_spiritual"] = max(5, int((base_td_spiritual * level_scale * td_mult) + td_bonus))
+        tmpl["td_elemental"] = max(5, int((base_td_elemental * level_scale * td_mult) + td_bonus))
         tmpl["treasure"] = dict(variant.get("treasure") or {"coins": False, "gems": False, "magic": False, "boxes": False})
         attacks = []
         for attack in list(base.get("attacks") or []):
             row = dict(attack or {})
-            row["as"] = max(20, int((int(row.get("as", tmpl["as_melee"]) or tmpl["as_melee"]) * level_scale * as_mult)))
+            base_attack_as = int(row.get("as", base_as_melee) or base_as_melee)
+            row["as"] = max(20, int((base_attack_as * level_scale * as_mult) + as_bonus))
             attacks.append(row)
         if attacks:
             tmpl["attacks"] = attacks
@@ -443,6 +477,17 @@ class TownTroubleManager:
 
     def _incident_def(self, actor: dict) -> dict:
         return dict(self._incidents.get(str(actor.get("incident_key") or "")) or {})
+
+    def _stage_def(self, actor: dict) -> dict:
+        incident_def = self._incident_def(actor)
+        stages = list(incident_def.get("stages") or [])
+        stage_index = int(actor.get("stage_index") or 0)
+        if stage_index < 0 or stage_index >= len(stages):
+            return {}
+        return dict(stages[stage_index] or {})
+
+    def _stage_repeat_total(self, stage: dict | None) -> int:
+        return max(1, int((stage or {}).get("repeat_count") or 1))
 
     def _district_label(self, district_ids: list[str]) -> str:
         labels = []
@@ -542,23 +587,28 @@ class TownTroubleManager:
         return None
 
     def _active_stage_room_ids(self, actor: dict) -> list[int]:
-        incident_def = self._incident_def(actor)
-        stages = list(incident_def.get("stages") or [])
-        stage_index = int(actor.get("stage_index") or 0)
-        if stage_index < 0 or stage_index >= len(stages):
-            return []
-        stage = dict(stages[stage_index] or {})
+        stage = self._stage_def(actor)
         return [int(rid) for rid in (stage.get("spawn_room_ids") or []) if int(rid or 0) > 0]
 
     def get_active_response_targets(self, zone_id: int | None = None) -> list[dict]:
         requested_zone = int(zone_id or 0)
+        now = time.time()
         targets = []
         for actor in sorted(self._active.values(), key=lambda row: int(row.get("id") or 0)):
             actor_zone = int(actor.get("city_zone_id") or 0)
             if requested_zone > 0 and actor_zone != requested_zone:
                 continue
-            if str(actor.get("state") or "").strip().lower() != "active":
+            phase = str(actor.get("state") or "").strip().lower()
+            if phase not in {"prelude", "active"}:
                 continue
+            if phase == "prelude":
+                prelude_window = max(
+                    self._music_lead_seconds(),
+                    int(self._config.get("defender_prelude_seconds") or 60),
+                )
+                starts_at_ts = float(actor.get("starts_at_ts") or 0.0)
+                if starts_at_ts <= 0.0 or now < (starts_at_ts - prelude_window):
+                    continue
             room_ids = []
             creatures = getattr(self.server, "creatures", None)
             if creatures:
@@ -573,6 +623,7 @@ class TownTroubleManager:
                 room_ids = self._active_stage_room_ids(actor)
             if not room_ids:
                 continue
+            stage = self._stage_def(actor)
             targets.append(
                 {
                     "incident_id": int(actor.get("id") or 0),
@@ -582,6 +633,12 @@ class TownTroubleManager:
                     "target_level": int(actor.get("target_level") or 1),
                     "room_ids": room_ids,
                     "district_ids": [str(v) for v in (actor.get("district_ids") or []) if str(v or "").strip()],
+                    "phase": phase,
+                    "boss_wave": bool(stage.get("boss_wave")),
+                    "emergency_defender_pull": bool(stage.get("emergency_defender_pull")),
+                    "defender_cap": max(0, int(stage.get("defender_cap") or 0)),
+                    "defender_max_distance": max(0, int(stage.get("defender_max_distance") or 0)),
+                    "response_priority": (200 if bool(stage.get("boss_wave")) else 100 if phase == "active" else 50),
                 }
             )
         return targets
@@ -683,6 +740,7 @@ class TownTroubleManager:
                 "duration_seconds": max(120, int(row.get("duration_seconds") or incident_def.get("max_duration_seconds") or 600)),
                 "target_level": max(1, int(row.get("target_level") or 1)),
                 "stage_index": max(0, int(row.get("stage_index") or 0)),
+                "stage_repeat_index": max(0, int(state_data.get("stage_repeat_index") or 0)),
                 "active_creature_ids": [
                     int(cid)
                     for cid in (state_data.get("active_creature_ids") or [])
@@ -802,6 +860,7 @@ class TownTroubleManager:
                 for v in (actor.get("warning_offsets_sent") or [])
                 if int(v or 0) >= 0
             ],
+            "stage_repeat_index": max(0, int(actor.get("stage_repeat_index") or 0)),
             "active_creature_ids": [
                 int(cid)
                 for cid in (actor.get("active_creature_ids") or [])
