@@ -123,6 +123,7 @@ def load_justice(lua_engine) -> dict:
                 "display_name": str(raw.get("display_name") or jid.replace("_", " ").title()).strip(),
                 "aliases": [alias.lower() for alias in _to_str_list(raw.get("aliases"))],
                 "zone_aliases": [alias.lower() for alias in _to_str_list(raw.get("zone_aliases"))],
+                "zone_ids": [_to_int(v, 0) for v in (raw.get("zone_ids") or []) if _to_int(v, 0) > 0],
                 "courtroom_room_id": _to_int(raw.get("courtroom_room_id"), 0),
                 "clerk_room_id": _to_int(raw.get("clerk_room_id"), 0),
                 "jail_room_id": _to_int(raw.get("jail_room_id"), 0),

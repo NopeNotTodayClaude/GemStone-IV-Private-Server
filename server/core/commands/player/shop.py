@@ -11,6 +11,7 @@ APPRAISE <item> - Get the sell value of an item in your hands
 
 import json
 import logging
+from datetime import date, datetime
 from decimal import Decimal
 from server.core.protocol.colors import (
     colorize, TextPresets, roundtime_msg, npc_speech, npc_emote,
@@ -203,6 +204,8 @@ def _pawn_snapshot(item: dict) -> dict:
     def _normalize(value):
         if isinstance(value, Decimal):
             return int(value) if value == value.to_integral_value() else float(value)
+        if isinstance(value, (datetime, date)):
+            return value.isoformat()
         if isinstance(value, dict):
             return {k: _normalize(v) for k, v in value.items()}
         if isinstance(value, list):

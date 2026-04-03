@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from server.core.protocol.colors import colorize, npc_speech, TextPresets
 
@@ -23,7 +23,18 @@ def _utcnow() -> datetime:
 def _fmt_dt(dt: datetime | None) -> str:
     if not dt:
         return "unknown"
-    return dt.strftime("%Y-%m-%d %H:%M UTC")
+    try:
+        local_dt = dt.replace(tzinfo=timezone.utc).astimezone()
+        tz_name = str(local_dt.tzname() or "").strip()
+        if "daylight" in tz_name.lower():
+            tz_label = "EDT"
+        elif "standard" in tz_name.lower():
+            tz_label = "EST"
+        else:
+            tz_label = tz_name or "ET"
+        return local_dt.strftime("%Y-%m-%d %I:%M %p ") + tz_label
+    except Exception:
+        return dt.strftime("%Y-%m-%d %H:%M UTC")
 
 
 def _as_dt(value):
@@ -49,6 +60,10 @@ def _norm(text: str | None) -> str:
     return " ".join(str(text or "").strip().lower().replace("_", " ").split())
 
 
+def _norm_phrase(text: str | None) -> str:
+    return _norm(text).replace("'", "")
+
+
 def _json_loads(raw, default):
     if raw in (None, ""):
         return default
@@ -70,6 +85,7 @@ class JusticeManager:
         self._jurisdictions: dict[str, dict] = {}
         self._npc_templates: dict[str, dict] = {}
         self._room_to_jurisdiction: dict[int, str] = {}
+        self._zone_to_jurisdiction: dict[int, str] = {}
 
     async def initialize(self):
         data = getattr(self.server.lua, "get_justice", lambda: {})() or {}
@@ -80,7 +96,12 @@ class JusticeManager:
         self._jurisdictions = dict(data.get("jurisdictions") or {})
         self._npc_templates = dict(data.get("npcs") or {})
         self._room_to_jurisdiction = {}
+        self._zone_to_jurisdiction = {}
         for jurisdiction_id, row in self._jurisdictions.items():
+            for zone_id in row.get("zone_ids") or []:
+                zid = int(zone_id or 0)
+                if zid > 0:
+                    self._zone_to_jurisdiction[zid] = jurisdiction_id
             for room_id in row.get("room_ids") or []:
                 rid = int(room_id or 0)
                 if rid > 0:
@@ -237,11 +258,28 @@ class JusticeManager:
 
     async def maybe_handle_pay(self, session, args: str) -> bool:
         raw = _norm(args)
-        case = self.get_active_case(session)
+        justice_terms = {"fine", "justice", "debt", "warrant"}
+        if raw and raw not in justice_terms:
+            return False
+        local_jurisdiction_id = self._resolve_jurisdiction_id(getattr(session, "current_room", None))
+        local_case = self.get_active_case(session, jurisdiction_id=local_jurisdiction_id) if local_jurisdiction_id else None
+        case = local_case or self.get_active_case(session)
         if not case or str(case.get("status") or "") != "fined":
+            if raw in justice_terms and local_jurisdiction_id:
+                if local_case:
+                    local_status = str(local_case.get("status") or "").replace("_", " ")
+                    await session.send_line(
+                        f"You do not have a payable fine in {self._display_jurisdiction(local_jurisdiction_id)}. "
+                        f"Your local justice status is {local_status}."
+                    )
+                else:
+                    await session.send_line(
+                        f"You have no outstanding justice fine in {self._display_jurisdiction(local_jurisdiction_id)}."
+                    )
+                return True
             return False
-        if raw and raw not in {"fine", "justice", "debt", "warrant"}:
-            return False
+        if local_case and str(local_case.get("status") or "") == "fined":
+            case = local_case
         fine = int(case.get("fine_amount") or 0)
         if fine <= 0:
             await session.send_line("You have no justice fine outstanding.")
@@ -1083,17 +1121,20 @@ class JusticeManager:
         room_id = int(getattr(room, "id", 0) or 0)
         if room_id in self._room_to_jurisdiction:
             return self._room_to_jurisdiction[room_id]
+        zone_id = int(getattr(room, "zone_id", 0) or 0)
+        if zone_id in self._zone_to_jurisdiction:
+            return self._zone_to_jurisdiction[zone_id]
         fields = [
             getattr(room, "zone_name", None),
             getattr(room, "title", None),
             getattr(room, "location_name", None),
         ]
-        combined = " ".join(str(v or "") for v in fields).strip().lower()
+        combined = f" {_norm_phrase(' '.join(str(v or '') for v in fields))} "
         for jurisdiction_id, row in self._jurisdictions.items():
             aliases = set(row.get("aliases") or []) | set(row.get("zone_aliases") or [])
             for alias in aliases:
-                alias = _norm(alias)
-                if alias and alias in _norm(combined):
+                alias = _norm_phrase(alias)
+                if alias and f" {alias} " in combined:
                     return jurisdiction_id
         return None
 

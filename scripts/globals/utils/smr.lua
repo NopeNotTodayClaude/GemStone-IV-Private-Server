@@ -301,7 +301,7 @@ function SMR.roll(attacker, defender, opts)
         offense = off + extra_off,
         defense = def + extra_def,
         bonus   = bonus,
-        msg     = string.format("[SMR result: %d (Open d100: %d, Bonus: %d)]",
+        msg     = string.format("[SMR result: %.2f (Open d100: %d, Bonus: %.2f)]",
                                 total, d100, bonus),
     }
 end

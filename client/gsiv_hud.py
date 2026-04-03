@@ -124,6 +124,11 @@ ACCENT_YEL  = "#e3b341"
 ACCENT_PRP  = "#bc8cff"
 ACCENT_CYN  = "#39c5cf"
 
+# AUTO Heal pacing buffers. Keep these modest so herb use respects roundtime
+# without adding nearly an extra second of dead time between treatments.
+AUTO_HEAL_ROUNDTIME_BUFFER_MS = 150
+AUTO_HEAL_POST_ACTION_DELAY_MS = 400
+
 BAR_BG      = "#21262d"
 BAR_HP      = "#da3633"
 BAR_MP      = "#1f6feb"
@@ -4516,7 +4521,7 @@ class HUDApp:
                 steps.append(("send", "swap"))
                 steps.append(("delay", 500))
         steps.append(("send", "inv full"))
-        steps.append(("delay", 950))
+        steps.append(("delay", AUTO_HEAL_POST_ACTION_DELAY_MS))
         return steps
 
     def _auto_queue_herbalist_visit(self):
@@ -4737,13 +4742,13 @@ class HUDApp:
             return
 
         target = str(plan.get("loc_display") or "").strip()
-        roundtime_ms = max(1250, int(profile.get("roundtime", 10) or 10) * 1000 + 450)
+        roundtime_ms = max(1250, int(profile.get("roundtime", 10) or 10) * 1000 + AUTO_HEAL_ROUNDTIME_BUFFER_MS)
         self._wound_status(f"Treating your {target} with {herb_name}.")
         self._auto_cmd_queue = [
             ("send", f"use {herb_name} on {target}"),
             ("delay", roundtime_ms),
             ("send", "inv full"),
-            ("delay", 950),
+            ("delay", AUTO_HEAL_POST_ACTION_DELAY_MS),
             ("call", "post_use_refresh"),
         ] + getattr(self, "_auto_cmd_queue", [])
         self._auto_run_next()
@@ -4767,7 +4772,7 @@ class HUDApp:
                 steps.append(("send", f"put {herb_name} in {primary}"))
                 steps.append(("delay", 550))
             steps.append(("send", "inv full"))
-            steps.append(("delay", 950))
+            steps.append(("delay", AUTO_HEAL_POST_ACTION_DELAY_MS))
             steps.append(("call", "finish_post_use_refresh"))
             self._auto_cmd_queue = steps + getattr(self, "_auto_cmd_queue", [])
             self._auto_run_next()
@@ -4796,7 +4801,7 @@ class HUDApp:
                 ("send", f"put {herb_name} in {backup}"),
                 ("delay", 550),
                 ("send", "inv full"),
-                ("delay", 950),
+                ("delay", AUTO_HEAL_POST_ACTION_DELAY_MS),
                 ("call", "next_treatment"),
             ] + getattr(self, "_auto_cmd_queue", [])
         else:

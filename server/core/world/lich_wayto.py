@@ -55,6 +55,12 @@ _RECIPROCAL_COMPASS = {
     "out": "in",
 }
 
+_PRESERVED_LOCAL_SPECIAL_EXITS = {
+    # Ta'Vaalor rogue guild entry: keep the local shed access even when the
+    # Lich wayto script for room 3509 is too complex to yield a clean exit.
+    3509: {"go_shed"},
+}
+
 
 def _normalize_exit_key(direction: str) -> str:
     if direction is None:
@@ -432,6 +438,13 @@ def enrich_room_from_lich_wayto(room, *, skip_exit_sync: bool = False) -> None:
         authoritative_exits[exit_key] = target_room_id
         room.lich_exit_aliases[exit_key] = target_room_id
         room.lich_preferred_exit_names[target_room_id] = exit_key
+
+    room_id = int(getattr(room, "id", 0) or 0)
+    for exit_key in _PRESERVED_LOCAL_SPECIAL_EXITS.get(room_id, set()):
+        target_room_id = room.local_exits.get(exit_key)
+        if target_room_id is None or exit_key in authoritative_exits:
+            continue
+        authoritative_exits[exit_key] = target_room_id
 
     room.exits = authoritative_exits
     room.hidden_exits = hidden_exits

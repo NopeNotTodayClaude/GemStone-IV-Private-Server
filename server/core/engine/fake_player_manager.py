@@ -363,6 +363,7 @@ class FakePlayerManager:
                 "direct": bool(direct_target is actor),
                 "spam_event": dict(spam_event or {}),
             }
+            self._expedite_pending_reaction(actor, direct=bool(direct_target is actor))
 
     def _refresh_service_rooms(self, *, force: bool = False):
         now = _now()
@@ -627,6 +628,43 @@ class FakePlayerManager:
         self._place_actor(actor, room_id)
         self._execute("UPDATE synthetic_players_state SET active = 1, current_room_id = %s, updated_at = NOW() WHERE id = %s", (room_id, actor.synthetic_id))
 
+    def _normalize_loaded_next_action(self, actor: SyntheticPlayer, *, now: float | None = None):
+        now = float(now or _now())
+        if getattr(actor, "is_dead", False):
+            actor.synthetic_flags["next_action_at"] = min(
+                float(actor.synthetic_flags.get("next_action_at") or (now + 2.0)),
+                now + 1.0,
+            )
+            return
+        max_delay = max(2.0, float(self._defaults.get("loaded_actor_max_idle_delay") or 6.0))
+        quick_min = min(1.0, max_delay)
+        quick_max = min(max_delay, max(1.6, quick_min + 1.8))
+        try:
+            next_action_at = float(actor.synthetic_flags.get("next_action_at") or 0.0)
+        except Exception:
+            next_action_at = 0.0
+        if next_action_at <= 0.0 or next_action_at < now - max_delay or next_action_at > now + max_delay:
+            actor.synthetic_flags["next_action_at"] = now + random.uniform(quick_min, max(quick_min, quick_max))
+            return
+        actor.synthetic_flags["next_action_at"] = next_action_at
+
+    def _expedite_pending_reaction(self, actor: SyntheticPlayer, *, now: float | None = None, direct: bool = False):
+        now = float(now or _now())
+        max_wait = max(0.25, float(self._defaults.get("pending_reaction_max_wait") or 1.2))
+        if direct:
+            delay_min = max(0.05, float(self._defaults.get("direct_reaction_min_delay") or 0.25))
+            delay_max = max(delay_min, float(self._defaults.get("direct_reaction_max_delay") or 0.9))
+        else:
+            delay_min = min(0.35, max_wait)
+            delay_max = max(delay_min, max_wait)
+        deadline = now + random.uniform(delay_min, delay_max)
+        try:
+            current = float(actor.synthetic_flags.get("next_action_at") or 0.0)
+        except Exception:
+            current = 0.0
+        if current <= 0.0 or current > deadline:
+            actor.synthetic_flags["next_action_at"] = deadline
+
     def _deactivate_actor(self, actor: SyntheticPlayer):
         self._save_actor(actor, active=0)
         room = getattr(actor, "current_room", None)
@@ -671,14 +709,11 @@ class FakePlayerManager:
                 actor.current_room_id = death_room_id
             actor.synthetic_flags.pop("beefy_started", None)
             actor.synthetic_flags.pop("beefy_started_at", None)
-            actor.synthetic_flags["next_action_at"] = min(
-                float(actor.synthetic_flags.get("next_action_at") or (_now() + 2.0)),
-                _now() + 1.0,
-            )
         self._ensure_actor_loadout(actor)
         actor.synthetic_flags.setdefault("memory", self._load_memory(actor.synthetic_id))
         actor.synthetic_flags.setdefault("intent", "idle")
         actor.synthetic_flags.setdefault("next_action_at", _now() + random.uniform(2.0, 8.0))
+        self._normalize_loaded_next_action(actor)
         if int(row.get("active") or 0):
             room_id = int(
                 (payload.get("death_room_id") if int(payload.get("is_dead") or 0) else 0)
@@ -912,6 +947,8 @@ class FakePlayerManager:
         if await self._maybe_defend_town_trouble(actor, tick_context, now):
             return 1, 0
         reaction = actor.synthetic_flags.get("pending_reaction")
+        if reaction:
+            self._expedite_pending_reaction(actor, now=now, direct=bool(reaction.get("direct")))
         if reaction and now >= float(actor.synthetic_flags.get("next_action_at") or 0):
             if await self._perform_reaction(actor, reaction):
                 actor.synthetic_flags.pop("pending_reaction", None)
