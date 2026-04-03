@@ -16,7 +16,7 @@ import time
 import concurrent.futures
 from collections import deque
 
-from server.core.commands.player.boxpick import _db_claim, _db_complete, _db_get_job, _db_get_pending, _db_submit
+from server.core.commands.player.boxpick import _db_claim, _db_complete, _db_get_job, _db_get_pending, _db_submit, _is_locksmith_box
 from server.core.commands.player.foraging import _consume_room_slot, _match_requested_candidate, _room_forage_candidates, _room_remaining_slots
 from server.core.commands.player.shop import _insert_item_into_pawn_backroom, _is_pawn_shop, _load_shop_by_room
 from server.core.engine.fake_player_planner import plan_actor_action
@@ -133,6 +133,7 @@ class FakePlayerManager:
         self._actors: dict[int, SyntheticPlayer] = {}
         self._actor_ids_by_character: dict[int, int] = {}
         self._service_rooms = {"inn": set(), "pawn": set(), "locksmith": set()}
+        self._locksmith_pending_cache = {"expires_at": 0.0, "count": 0}
         self._last_save_at = 0.0
         self._justice_id_offset = 1000000000
         self._population_target = 0
@@ -146,6 +147,7 @@ class FakePlayerManager:
         self._recent_dialogue_global: dict[str, float] = {}
         self._dirty_dialogue_global: dict[str, float] = {}
         self._pair_social_until: dict[str, float] = {}
+        self._room_last_social_at: dict[int, float] = {}
         self._room_arguments: dict[int, dict] = {}
         self._room_conversations: dict[int, dict] = {}
         self._room_prompts: dict[int, dict] = {}
@@ -156,6 +158,16 @@ class FakePlayerManager:
         self._distance_cache: dict[tuple[int, int], tuple[float, int]] = {}
         self._perf = {"tick_ms": 0.0, "planner_submit": 0, "planner_done": 0, "path_cache_hit": 0, "path_cache_miss": 0}
         self._last_perf_log_at = 0.0
+        self._service_rooms_refresh_at = 0.0
+        self._session_scope_reconcile_at = 0.0
+        self._active_scope_version = 0
+        self._tick_context_static_cache = {
+            "version": -1,
+            "expires_at": 0.0,
+            "room_safe": {},
+            "hunt_candidates": [],
+            "forage_candidates": [],
+        }
 
     async def initialize(self):
         self._cfg = getattr(self.server.lua, "get_fake_players", lambda: {})() or {}
@@ -187,7 +199,7 @@ class FakePlayerManager:
         else:
             self._archetypes = list(raw_archetypes or [])
         self._justice_id_offset = int(self._defaults.get("justice_id_offset") or 1000000000)
-        self._refresh_service_rooms()
+        self._refresh_service_rooms(force=True)
         self._load_global_dialogue_history()
         self._load_active_rows()
         self._init_planner_pool()
@@ -352,7 +364,10 @@ class FakePlayerManager:
                 "spam_event": dict(spam_event or {}),
             }
 
-    def _refresh_service_rooms(self):
+    def _refresh_service_rooms(self, *, force: bool = False):
+        now = _now()
+        if not force and now < float(self._service_rooms_refresh_at or 0.0):
+            return
         self._service_rooms["inn"] = {int(rid) for rid in getattr(getattr(self.server, "inns", None), "_front_desks", {}).keys()}
         locksmith = set()
         pawn = set()
@@ -373,9 +388,13 @@ class FakePlayerManager:
                     continue
         self._service_rooms["locksmith"] = locksmith
         self._service_rooms["pawn"] = pawn
+        self._service_rooms_refresh_at = now + max(10.0, float(self._defaults.get("service_room_refresh_seconds") or 120.0))
 
     def _active_bubble(self) -> tuple[set[int], list[int]]:
-        self._bootstrap_active_scope_from_sessions()
+        now = _now()
+        if now >= float(self._session_scope_reconcile_at or 0.0):
+            self._bootstrap_active_scope_from_sessions()
+            self._session_scope_reconcile_at = now + max(5.0, float(self._defaults.get("session_scope_reconcile_seconds") or 30.0))
         return set(self._active_scope_rooms), list(self._active_scope_anchors)
 
     def _reachable_rooms(self, start_room_id: int, max_distance: int) -> set[int]:
@@ -428,12 +447,13 @@ class FakePlayerManager:
             self._rebuild_active_scope()
 
     def _rebuild_active_scope(self):
-        radius = max(10, int(self._defaults.get("login_city_scope_radius") or 140))
         region_keys = {str(key).strip().lower() for key in self._session_region_keys.values() if str(key).strip().lower() in self._regions}
         self._active_region_keys = region_keys
         if not region_keys:
             self._active_scope_rooms = set()
             self._active_scope_anchors = []
+            self._active_scope_version += 1
+            self._tick_context_static_cache["version"] = -1
             return
         rooms: set[int] = set()
         anchors: list[int] = []
@@ -445,10 +465,12 @@ class FakePlayerManager:
             anchors.extend(region_anchor_ids)
             for field in ("anchor_room_ids", "hotspot_room_ids", "rest_room_ids", "travel_room_ids", "crafting_room_ids"):
                 rooms.update(int(rid) for rid in (region.get(field) or []) if int(rid or 0) > 0)
-            for anchor_room_id in region_anchor_ids:
-                rooms.update(self._reachable_rooms(anchor_room_id, radius))
+        if not rooms:
+            rooms.update(int(rid) for rid in anchors if int(rid or 0) > 0)
         self._active_scope_rooms = rooms
         self._active_scope_anchors = list(dict.fromkeys(anchors))
+        self._active_scope_version += 1
+        self._tick_context_static_cache["version"] = -1
 
     def _cull_outside_bubble(self, bubble_rooms: set[int]):
         if not bubble_rooms:
@@ -848,8 +870,14 @@ class FakePlayerManager:
             actor.synthetic_flags["next_action_at"] = now + random.uniform(6.0, 12.0)
             return 1, 0
         self._passive_recovery(actor, now)
+        room_threats = self._room_threats(actor)
+        if room_threats and not actor.in_combat:
+            if await self._engage_room_threat(actor, room_threats, now):
+                return 1, 0
         if actor.in_combat:
             await self._combat_tick(actor, now)
+            return 1, 0
+        if await self._maybe_defend_town_trouble(actor, tick_context, now):
             return 1, 0
         reaction = actor.synthetic_flags.get("pending_reaction")
         if reaction and now >= float(actor.synthetic_flags.get("next_action_at") or 0):
@@ -859,6 +887,13 @@ class FakePlayerManager:
                 return 1, 0
         if now < float(actor.synthetic_flags.get("next_action_at") or 0):
             return 0, 0
+        if self._room_social_overdue(actor, now):
+            force_chance = max(0.05, min(1.0, float(self._defaults.get("room_social_force_chance") or 0.68)))
+            if random.random() < force_chance and await self._force_room_social(actor):
+                delay_min = float(self._defaults.get("room_social_force_min_delay") or 2.0)
+                delay_max = float(self._defaults.get("room_social_force_max_delay") or 4.0)
+                actor.synthetic_flags["next_action_at"] = now + random.uniform(delay_min, max(delay_min, delay_max))
+                return 1, 0
         if actor_updates_left <= 0:
             actor.synthetic_flags["next_action_at"] = now + random.uniform(0.6, 1.6)
             return 0, 0
@@ -912,34 +947,180 @@ class FakePlayerManager:
             room_id = int(getattr(getattr(session, "current_room", None), "id", 0) or 0)
             if room_id > 0:
                 room_player_counts[room_id] = room_player_counts.get(room_id, 0) + 1
+        locksmith_open_jobs = self._pending_locksmith_jobs()
 
-        hunt_candidates = []
-        forage_candidates = []
-        room_safe: dict[int, bool] = {}
-        for room_id in set(bubble_rooms or set()):
-            room = self.server.world.get_room(room_id)
-            if not room:
-                continue
-            room_safe[int(room_id)] = bool(getattr(room, "safe", False))
-            if not room_safe[int(room_id)]:
+        now = _now()
+        static_cache = self._tick_context_static_cache
+        if (
+            static_cache.get("version") != self._active_scope_version
+            or now >= float(static_cache.get("expires_at") or 0.0)
+        ):
+            hunt_candidates = []
+            forage_candidates = []
+            room_safe: dict[int, bool] = {}
+            candidate_rooms = {int(room_id) for room_id in (bubble_rooms or set()) if int(room_id or 0) > 0}
+            town_trouble_targets = self._active_town_trouble_targets(candidate_rooms)
+            for room_id in candidate_rooms:
+                room = self.server.world.get_room(room_id)
+                if not room:
+                    continue
+                is_safe = bool(getattr(room, "safe", False))
+                room_safe[room_id] = is_safe
+                if is_safe:
+                    continue
                 creatures = [c for c in self.server.creatures.get_creatures_in_room(room_id) if getattr(c, "alive", False)]
                 if creatures:
                     levels = [int(getattr(c, "level", 1) or 1) for c in creatures]
                     hunt_candidates.append({
-                        "room_id": int(room_id),
+                        "room_id": room_id,
                         "min_level": min(levels),
                         "max_level": max(levels),
                     })
                 room_lich_uid = int(getattr(room, "lich_uid", 0) or 0)
                 if room_lich_uid > 0 and _room_remaining_slots(self.server, room_lich_uid) > 0 and _room_forage_candidates(self.server, room):
-                    forage_candidates.append(int(room_id))
+                    forage_candidates.append(room_id)
+            static_cache = {
+                "version": self._active_scope_version,
+                "expires_at": now + max(3.0, float(self._defaults.get("world_context_refresh_seconds") or 12.0)),
+                "room_safe": room_safe,
+                "hunt_candidates": hunt_candidates,
+                "forage_candidates": forage_candidates,
+                "town_trouble_assignments": self._town_trouble_defender_assignments(town_trouble_targets),
+            }
+            self._tick_context_static_cache = static_cache
 
         return {
             "room_synth_counts": room_synth_counts,
             "room_player_counts": room_player_counts,
-            "room_safe": room_safe,
-            "hunt_candidates": hunt_candidates,
-            "forage_candidates": forage_candidates,
+            "locksmith_open_jobs": locksmith_open_jobs,
+            "room_safe": dict(static_cache.get("room_safe") or {}),
+            "hunt_candidates": list(static_cache.get("hunt_candidates") or []),
+            "forage_candidates": list(static_cache.get("forage_candidates") or []),
+            "town_trouble_assignments": dict(static_cache.get("town_trouble_assignments") or {}),
+        }
+
+    def _active_town_trouble_targets(self, candidate_rooms: set[int]) -> list[dict]:
+        manager = getattr(self.server, "town_trouble", None)
+        if not manager or not hasattr(manager, "get_active_response_targets"):
+            return []
+        try:
+            raw_targets = manager.get_active_response_targets()
+        except Exception:
+            log.exception("FakePlayerManager: failed reading active town trouble targets")
+            return []
+        scope_rooms = {int(room_id) for room_id in (candidate_rooms or set()) if int(room_id or 0) > 0}
+        targets = []
+        for raw in raw_targets or []:
+            room_ids = [int(room_id) for room_id in (dict(raw or {}).get("room_ids") or []) if int(room_id or 0) > 0]
+            if scope_rooms:
+                room_ids = [room_id for room_id in room_ids if room_id in scope_rooms]
+            if not room_ids:
+                continue
+            target = dict(raw or {})
+            target["room_ids"] = room_ids
+            targets.append(target)
+        return targets
+
+    def _town_trouble_defender_assignments(self, targets: list[dict]) -> dict[int, dict]:
+        assignments: dict[int, dict] = {}
+        max_total = max(0, int(self._defaults.get("town_trouble_max_defenders") or 0))
+        if max_total <= 0 or not targets:
+            return assignments
+        per_incident = max(1, int(self._defaults.get("town_trouble_defenders_per_incident") or max_total))
+        max_distance = max(1, int(self._defaults.get("town_trouble_defender_max_distance") or 90))
+        used_actor_ids: set[int] = set()
+        for target in targets:
+            room_ids = {int(room_id) for room_id in (target.get("room_ids") or []) if int(room_id or 0) > 0}
+            if not room_ids:
+                continue
+            zone_id = int(target.get("city_zone_id") or 0)
+            target_level = int(target.get("target_level") or 1)
+            ranked = []
+            for actor in self._actors.values():
+                actor_id = int(getattr(actor, "synthetic_id", 0) or 0)
+                if actor_id <= 0 or actor_id in used_actor_ids:
+                    continue
+                candidate = self._town_trouble_defender_candidate(
+                    actor,
+                    room_ids=room_ids,
+                    zone_id=zone_id,
+                    target_level=target_level,
+                    max_distance=max_distance,
+                )
+                if candidate:
+                    ranked.append(candidate)
+            ranked.sort(key=lambda row: row["sort_key"])
+            assigned_here = 0
+            for row in ranked:
+                if len(assignments) >= max_total or assigned_here >= per_incident:
+                    break
+                actor_id = int(row.get("actor_id") or 0)
+                if actor_id <= 0 or actor_id in used_actor_ids:
+                    continue
+                used_actor_ids.add(actor_id)
+                assignments[actor_id] = {
+                    "incident_id": int(target.get("incident_id") or 0),
+                    "incident_key": str(target.get("incident_key") or ""),
+                    "city_zone_id": zone_id,
+                    "target_room_id": int(row.get("target_room_id") or 0),
+                    "room_ids": sorted(room_ids),
+                }
+                assigned_here += 1
+        return assignments
+
+    def _town_trouble_defender_candidate(
+        self,
+        actor: SyntheticPlayer,
+        *,
+        room_ids: set[int],
+        zone_id: int,
+        target_level: int,
+        max_distance: int,
+    ) -> dict | None:
+        room = getattr(actor, "current_room", None)
+        if not room or not room_ids:
+            return None
+        actor_room_id = int(getattr(room, "id", 0) or getattr(actor, "current_room_id", 0) or 0)
+        if actor_room_id <= 0:
+            return None
+        if zone_id > 0 and int(getattr(room, "zone_id", 0) or 0) != zone_id:
+            return None
+        archetype_key = str(getattr(actor, "archetype", "") or "").strip().lower()
+        profession_name = str(getattr(actor, "profession", "") or "").strip().lower()
+        allowed_archetypes = {
+            str(value or "").strip().lower()
+            for value in (self._defaults.get("town_trouble_defender_archetypes") or [])
+            if str(value or "").strip()
+        }
+        allowed_professions = {
+            str(value or "").strip().lower()
+            for value in (self._defaults.get("town_trouble_defender_professions") or [])
+            if str(value or "").strip()
+        }
+        archetype_match = archetype_key in allowed_archetypes if allowed_archetypes else False
+        profession_match = profession_name in allowed_professions if allowed_professions else False
+        if not archetype_match and not profession_match:
+            return None
+        level_slack = max(0, int(self._defaults.get("town_trouble_defender_level_slack") or 0))
+        actor_level = max(1, int(getattr(actor, "level", 1) or 1))
+        if actor_level + level_slack < max(1, int(target_level or 1)):
+            return None
+        health_max = max(1, int(getattr(actor, "health_max", 1) or 1))
+        health_current = max(0, int(getattr(actor, "health_current", health_max) or health_max))
+        if (health_current / float(health_max)) < 0.45:
+            return None
+        target_room_id = actor_room_id if actor_room_id in room_ids else self._nearest_known_room(actor_room_id, room_ids)
+        if target_room_id <= 0:
+            return None
+        distance = 0 if actor_room_id in room_ids else self._cached_distance(actor_room_id, target_room_id)
+        if distance >= 10**9 or distance > max_distance:
+            return None
+        combat_bias = float(self._archetype_bias(actor, "hunt_bias", 0.0)) + float(self._personality(actor, "hunt", 0.18))
+        priority_class = 0 if archetype_match and profession_match else 1 if archetype_match else 2
+        return {
+            "actor_id": int(getattr(actor, "synthetic_id", 0) or 0),
+            "target_room_id": int(target_room_id),
+            "sort_key": (priority_class, int(distance), -combat_bias, -actor_level, int(getattr(actor, "synthetic_id", 0) or 0)),
         }
 
     def _collect_finished_plans(self):
@@ -966,7 +1147,12 @@ class FakePlayerManager:
         rest_rooms = self._region_rooms(actor.home_region_key, "rest_room_ids")
         crafting_rooms = self._region_rooms(actor.home_region_key, "crafting_room_ids")
         travel_rooms = self._region_rooms(actor.home_region_key, "travel_room_ids")
-        preferred_rooms = {rid for rid in (hotspot_rooms | rest_rooms | crafting_rooms) if rid in bubble_rooms and rid != current_room_id}
+        service_rooms = set()
+        if self._has_locksmith_boxes(actor):
+            service_rooms |= {rid for rid in self._service_rooms["locksmith"] if rid in bubble_rooms and rid != current_room_id}
+        if self._has_pawn_loot(actor):
+            service_rooms |= {rid for rid in self._service_rooms["pawn"] if rid in bubble_rooms and rid != current_room_id}
+        preferred_rooms = {rid for rid in (hotspot_rooms | rest_rooms | crafting_rooms | service_rooms) if rid in bubble_rooms and rid != current_room_id}
         travel_candidates = {rid for rid in travel_rooms if rid in bubble_rooms and rid != current_room_id}
         candidate_rooms = preferred_rooms or travel_candidates
         if not candidate_rooms:
@@ -983,6 +1169,10 @@ class FakePlayerManager:
                 weight += 1.3
             if candidate_room_id in crafting_rooms:
                 weight += 0.8
+            if candidate_room_id in self._service_rooms["locksmith"] and self._has_locksmith_boxes(actor):
+                weight += 2.8
+            if candidate_room_id in self._service_rooms["pawn"] and self._has_pawn_loot(actor):
+                weight += 2.4
             if candidate_room_id in travel_rooms:
                 weight *= travel_weight
             occupancy = int(room_counts.get(candidate_room_id, 0))
@@ -1024,6 +1214,8 @@ class FakePlayerManager:
             max_level = int(row.get("max_level") or min_level)
             gap = min(abs(min_level - actor.level), abs(max_level - actor.level))
             normalized_hunt.append({"room_id": room_candidate_id, "gap": gap})
+        locksmith_open_jobs = int(tick_context.get("locksmith_open_jobs") or 0)
+        can_seed_locksmith_queue = self._can_seed_locksmith_queue(actor, locksmith_open_jobs)
         payload = {
             "seed": int((now * 1000) + actor.synthetic_id),
             "has_room": bool(room),
@@ -1052,12 +1244,22 @@ class FakePlayerManager:
             "town_afk_emote_chance": float(self._defaults.get("town_afk_emote_chance") or 0.24),
             "service_task_chance_safe": float(self._defaults.get("service_task_chance_safe") or 0.20),
             "can_service": bool(getattr(room, "safe", False)),
-            "can_locksmith_customer": bool(room and room.id in self._service_rooms["locksmith"] and any(str(item.get("item_type") or "").lower() == "container" and item.get("is_locked", True) for item in list(actor.inventory or []))),
+            "has_locksmith_boxes": self._has_locksmith_boxes(actor),
+            "can_locksmith_customer": bool(room and room.id in self._service_rooms["locksmith"] and (self._has_locksmith_boxes(actor) or can_seed_locksmith_queue)),
             "can_locksmith_rogue": bool(room and room.id in self._service_rooms["locksmith"] and (int(actor.profession_id or 0) == 2 or "rogue" in actor.profession.lower())),
+            "locksmith_target_room_id": self._service_target_room(actor, "locksmith"),
+            "locksmith_open_jobs": locksmith_open_jobs,
+            "can_seek_locksmith_work": bool((int(actor.profession_id or 0) == 2 or "rogue" in actor.profession.lower()) and locksmith_open_jobs > 0),
+            "can_seed_locksmith_queue": bool(can_seed_locksmith_queue),
+            "has_pawn_loot": self._has_pawn_loot(actor),
             "can_pawn": bool(room and room.id in self._service_rooms["pawn"] and any(str(item.get("item_type") or "").lower() in {"gem", "scroll", "herb", "misc", "weapon", "armor"} for item in list(actor.inventory or []))),
+            "pawn_target_room_id": self._service_target_room(actor, "pawn"),
             "can_inn": bool(getattr(self.server, "inns", None)),
             "has_inn_stay": bool(stay),
             "at_inn_front_desk": bool(room and room.id in self._service_rooms["inn"]),
+            "has_active_pet": bool(getattr(actor, "active_pet", None)),
+            "can_get_pet": bool(getattr(room, "safe", False) and not getattr(actor, "active_pet", None) and self._can_afford_pet(actor)),
+            "pet_action_chance": self._pet_action_chance(actor),
             "can_lawbreak": bool(room),
             "can_hunt": True,
             "can_forage": True,
@@ -1082,20 +1284,34 @@ class FakePlayerManager:
             return await self._maybe_socialize(actor)
         if action == "afk_emote":
             actor.position = random.choice(["standing", "sitting", "resting"])
-            await self._emote(actor, random.choice([
+            pet = dict(getattr(actor, "active_pet", None) or {})
+            lines = [
                 "idles near the wall and watches the room drift around them.",
                 "looks half-afk for a moment, then refocuses on the room.",
                 "settles in like they plan to stay a while and let the gossip come to them.",
                 "checks their gear, then goes still and listens to the room.",
                 "leans back and lets the crowd noise do the work for a while.",
-            ]))
+            ]
+            if pet:
+                pet_name = str(pet.get("pet_name") or "their companion").strip()
+                lines.extend([
+                    f"absently scratches {pet_name} while half-watching the room.",
+                    f"lets {pet_name} settle near their boots while the room talks around them.",
+                ])
+            await self._emote(actor, random.choice(lines))
             return True
         if action == "locksmith_customer":
             return bool(self._maybe_locksmith_customer(actor))
         if action == "locksmith_rogue":
             return bool(self._maybe_locksmith_rogue(actor))
+        if action == "move_locksmith" and target_room_id > 0:
+            return await self._move_toward(actor, target_room_id)
         if action == "pawn":
             return bool(self._maybe_pawn(actor))
+        if action == "move_pawn" and target_room_id > 0:
+            return await self._move_toward(actor, target_room_id)
+        if action == "pet":
+            return await self._maybe_pet_cycle(actor)
         if action == "inn":
             return await self._maybe_inn_cycle(actor, now)
         if action == "lawbreak":
@@ -1180,49 +1396,61 @@ class FakePlayerManager:
             return None
         return thread
 
-    def _conversation_topics_for(self, actor: SyntheticPlayer) -> list[tuple[str, str, str]]:
+    def _conversation_topics_for(self, actor: SyntheticPlayer) -> list[tuple[str, str, str, str]]:
         low_silver = int(getattr(actor, "silver", 0) or 0) < max(150, actor.level * 35)
         has_hunt_loot = any(str(item.get("item_type") or "").lower() in {"container", "gem", "scroll"} for item in list(getattr(actor, "inventory", []) or []))
         profession = str(getattr(actor, "profession", "") or "").lower()
         topics = [
-            ("money_talk", "money_reply", "I could use a cleaner silver route than the one I've got."),
-            ("boss_talk", "boss_reply", "Most people still miss the weak point even when it's right in front of them."),
-            ("hunt_talk", "hunt_reply", "People keep choosing ugly hunting routes and calling it bravery."),
-            ("pawn_talk", "pawn_reply", "The pawn counter keeps eating silver from people who should know better."),
-            ("locksmith_talk", "locksmith_reply", "Most of the locksmith game is patience and not being a moron."),
-            ("training_talk", "training_reply", "Too many builds are made for arguments instead of actual play."),
-            ("spell_talk", "spell_reply", "Casters keep confusing noise with good spell use."),
-            ("gear_talk", "gear_reply", "A clean kit you understand beats expensive nonsense every time."),
-            ("justice_talk", "justice_reply", "Most trouble with the watch starts with someone needing an audience."),
-            ("travel_talk", "travel_reply", "Bad routing wastes more nights than bad luck does."),
-            ("death_talk", "death_reply", "People talk about dying like the bill stops at pride."),
-            ("inn_talk", "inn_reply", "Good rest fixes more plans than one more reckless outing."),
-            ("forage_talk", "forage_reply", "People sneer at foraging right up until it pays their herb bill."),
-            ("encumbrance_talk", "encumbrance_reply", "Half the square is carrying enough junk to lose a fight before it starts."),
-            ("pet_talk", "pet_reply", "A calm companion says more about someone than most speeches do."),
-            ("direct_friendly", "direct_reply_friendly", "This room finally feels alive for once."),
+            ("money_ask", "money_talk", "money_reply", "Anybody got a clean silver route that doesn't make the night feel wasted?"),
+            ("boss_ask", "boss_talk", "boss_reply", "What weakness are people still missing on the uglier fights?"),
+            ("hunt_ask", "hunt_talk", "hunt_reply", "What hunting route is actually paying cleanly lately?"),
+            ("pawn_ask", "pawn_talk", "pawn_reply", "What are people still pawning too cheaply out of laziness?"),
+            ("locksmith_ask", "locksmith_talk", "locksmith_reply", "How are people deciding which boxes are worth the risk now?"),
+            ("locksmith_wait_ask", "locksmith_wait_talk", "locksmith_wait_reply", "How long do you wait on lock service before you start calling people out?"),
+            ("training_ask", "training_talk", "training_reply", "What are people still overtraining because somebody loud told them to?"),
+            ("spell_ask", "spell_talk", "spell_reply", "What spell habit is still getting people killed for no reason?"),
+            ("gear_ask", "gear_talk", "gear_reply", "What gear are people overspending on when the basics would do?"),
+            ("justice_ask", "justice_talk", "justice_reply", "What's the dumbest way people keep landing in justice trouble lately?"),
+            ("travel_ask", "travel_talk", "travel_reply", "Which route is still wasting the most time in town?"),
+            ("death_ask", "death_talk", "death_reply", "What's costing people the most stupid deaths lately?"),
+            ("inn_ask", "inn_talk", "inn_reply", "Why are people still pretending exhaustion is discipline?"),
+            ("forage_ask", "forage_talk", "forage_reply", "What forage route is still paying better than people admit?"),
+            ("encumbrance_ask", "encumbrance_talk", "encumbrance_reply", "Why are so many people still hauling their whole life on their back?"),
+            ("pet_ask", "pet_talk", "pet_reply", "What companion is actually earning its keep these days?"),
+            ("help_ask", "help_talk", "help_reply", "Who's actually good for real help in this room instead of noise?"),
+            ("auction_ask", "auction_talk", "auction_reply", "What do you think clean gear would really fetch on an auction board?"),
+            ("beg_ask", "beg_talk", "beg_reply", "What's the least shameful thing to beg for in town when your purse is dead?"),
+            ("direct_question", "direct_friendly", "direct_reply_friendly", "Anybody else hear enough nonsense in this room to start a real argument?"),
         ]
         weighted = []
-        for talk_key, reply_key, fallback in topics:
+        for ask_key, talk_key, reply_key, fallback in topics:
             weight = 1.0
             if low_silver and talk_key in {"money_talk", "pawn_talk", "locksmith_talk", "forage_talk"}:
                 weight += 2.0
+            if low_silver and talk_key in {"beg_talk", "auction_talk", "help_talk", "locksmith_wait_talk"}:
+                weight += 1.4
             if has_hunt_loot and talk_key in {"boss_talk", "hunt_talk", "gear_talk", "death_talk"}:
                 weight += 1.5
+            if has_hunt_loot and talk_key in {"pawn_talk", "auction_talk", "locksmith_wait_talk"}:
+                weight += 1.1
             if profession in {"rogue"} and talk_key in {"locksmith_talk", "encumbrance_talk", "money_talk"}:
                 weight += 1.2
+            if profession in {"rogue"} and talk_key in {"locksmith_wait_talk", "auction_talk"}:
+                weight += 1.1
             if profession in {"wizard", "sorcerer", "cleric", "empath"} and talk_key in {"spell_talk", "boss_talk", "gear_talk"}:
                 weight += 1.2
             if profession in {"ranger"} and talk_key in {"forage_talk", "travel_talk", "hunt_talk"}:
                 weight += 1.2
             if profession in {"bard"} and talk_key in {"inn_talk", "gear_talk", "money_talk"}:
                 weight += 1.0
+            if profession in {"bard"} and talk_key in {"auction_talk", "help_talk"}:
+                weight += 0.8
             if profession in {"monk", "paladin", "warrior"} and talk_key in {"training_talk", "gear_talk", "death_talk"}:
                 weight += 1.0
-            weighted.append((talk_key, reply_key, fallback, weight))
+            weighted.append((ask_key, talk_key, reply_key, fallback, weight))
         random.shuffle(weighted)
-        weighted.sort(key=lambda row: random.random() * row[3], reverse=True)
-        return [(talk_key, reply_key, fallback) for talk_key, reply_key, fallback, _ in weighted]
+        weighted.sort(key=lambda row: random.random() * row[4], reverse=True)
+        return [(ask_key, talk_key, reply_key, fallback) for ask_key, talk_key, reply_key, fallback, _ in weighted]
 
     async def _emit_conversation_turn(self, actor: SyntheticPlayer, target, thread: dict, use_reply: bool) -> bool:
         room = getattr(actor, "current_room", None)
@@ -1273,8 +1501,9 @@ class FakePlayerManager:
             return False
         if random.random() > max(0.18, float(self._personality(actor, "social", 0.25)) * 0.9):
             return False
-        for talk_key, reply_key, fallback in self._conversation_topics_for(actor):
+        for ask_key, talk_key, reply_key, fallback in self._conversation_topics_for(actor):
             thread = {
+                "ask_key": ask_key,
                 "talk_key": talk_key,
                 "reply_key": reply_key,
                 "fallback": fallback,
@@ -1285,7 +1514,18 @@ class FakePlayerManager:
                 "next_turn_at": _now(),
             }
             self._room_conversations[int(room.id)] = thread
-            if await self._emit_conversation_turn(actor, target, thread, use_reply=False):
+            tokens = {"target": getattr(target, "character_name", "you"), "player": getattr(target, "character_name", "you")}
+            question = self._pick_dialogue(str(ask_key or ""), fallback, actor=actor, tokens=tokens)
+            if question:
+                await self._say(actor, question)
+                thread["last_speaker_id"] = actor.synthetic_id
+                thread["next_speaker_id"] = int(getattr(target, "synthetic_id", 0) or 0)
+                thread["next_turn_at"] = _now() + random.uniform(
+                    float(self._defaults.get("conversation_reply_min_seconds") or 12),
+                    float(self._defaults.get("conversation_reply_max_seconds") or 30),
+                )
+                self._room_conversations[int(room.id)] = thread
+                self._set_pair_cooldown(actor, target, seconds=18.0)
                 return True
         return False
 
@@ -1316,10 +1556,14 @@ class FakePlayerManager:
         thread["turns"] = int(thread.get("turns") or 0) + 1
         thread["last_speaker_id"] = actor.synthetic_id
         thread["next_speaker_id"] = int(getattr(target, "synthetic_id", 0) or 0)
-        thread["next_turn_at"] = now + random.uniform(
-            float(self._defaults.get("argument_reply_min_seconds") or 15),
-            float(self._defaults.get("argument_reply_max_seconds") or 45),
-        )
+        delay_min = float(self._defaults.get("argument_reply_min_seconds") or 15)
+        delay_max = float(self._defaults.get("argument_reply_max_seconds") or 45)
+        burst_chance = max(0.0, min(1.0, float(self._defaults.get("argument_burst_chance") or 0.0)))
+        rude = float(self._personality(actor, "rude", 0.18))
+        if int(thread.get("turns") or 0) <= 8 and random.random() < min(0.92, burst_chance + (rude * 0.35)):
+            delay_min = float(self._defaults.get("argument_burst_min_seconds") or 1.0)
+            delay_max = float(self._defaults.get("argument_burst_max_seconds") or 3.0)
+        thread["next_turn_at"] = now + random.uniform(delay_min, max(delay_min, delay_max))
         self._room_arguments[int(room.id)] = thread
         self._set_pair_cooldown(actor, target, seconds=22.0 if mode == "emote" else 12.0)
         return True
@@ -1471,9 +1715,45 @@ class FakePlayerManager:
                 self._place_actor(actor, room_id)
             actor.synthetic_flags["next_action_at"] = now + random.uniform(2.0, 5.0)
             return
+        room_threats = self._room_threats(actor)
+        if room_threats:
+            if await self._engage_room_threat(actor, room_threats, now):
+                return
+        locksmith_target_room_id = self._service_target_room(actor, "locksmith")
+        pawn_target_room_id = self._service_target_room(actor, "pawn")
+        open_locksmith_jobs = self._pending_locksmith_jobs()
+        is_locksmith_rogue = bool(int(actor.profession_id or 0) == 2 or "rogue" in actor.profession.lower())
         occupants = self._room_occupants_except(actor)
         safe_room_suppression = min(0.98, float(self._defaults.get("safe_room_task_suppression") or 0.72))
         if getattr(room, "safe", False):
+            if (self._has_locksmith_boxes(actor) or self._can_seed_locksmith_queue(actor, open_locksmith_jobs)) and locksmith_target_room_id > 0 and room.id != locksmith_target_room_id:
+                if await self._move_toward(actor, locksmith_target_room_id):
+                    actor.synthetic_flags["next_action_at"] = now + random.uniform(4.0, 9.0)
+                    return
+            if is_locksmith_rogue and open_locksmith_jobs > 0 and locksmith_target_room_id > 0 and room.id != locksmith_target_room_id:
+                if await self._move_toward(actor, locksmith_target_room_id):
+                    actor.synthetic_flags["next_action_at"] = now + random.uniform(4.0, 9.0)
+                    return
+            if self._has_pawn_loot(actor) and pawn_target_room_id > 0 and room.id != pawn_target_room_id:
+                if await self._move_toward(actor, pawn_target_room_id):
+                    actor.synthetic_flags["next_action_at"] = now + random.uniform(4.0, 9.0)
+                    return
+            service_gate = min(
+                0.97,
+                max(
+                    0.30,
+                    float(self._defaults.get("service_task_chance_safe") or 0.20)
+                    * (0.80 + float(self._archetype_bias(actor, "locksmith_bias", 0.10)) + float(self._archetype_bias(actor, "pawn_bias", 0.10))),
+                ),
+            )
+            if room.id in self._service_rooms["locksmith"] and random.random() < service_gate:
+                if self._maybe_locksmith_customer(actor) or (open_locksmith_jobs > 0 and self._maybe_locksmith_rogue(actor)):
+                    actor.synthetic_flags["next_action_at"] = now + random.uniform(14.0, 24.0)
+                    return
+            if room.id in self._service_rooms["pawn"] and random.random() < service_gate:
+                if self._maybe_pawn(actor):
+                    actor.synthetic_flags["next_action_at"] = now + random.uniform(12.0, 20.0)
+                    return
             synthetic_count = 1 + sum(1 for other in occupants if getattr(other, "is_synthetic_player", False))
             spill_threshold = max(2, int(self._defaults.get("safe_room_crowd_spill_threshold") or 4))
             spill_chance = max(0.0, min(1.0, float(self._defaults.get("safe_room_crowd_spill_chance") or 0.78)))
@@ -1755,8 +2035,8 @@ class FakePlayerManager:
         room = getattr(actor, "current_room", None)
         if not room:
             return False
-        creatures_here = [c for c in self.server.creatures.get_creatures_in_room(room.id) if getattr(c, "alive", False)]
-        if creatures_here and not getattr(room, "safe", False):
+        creatures_here = self._room_threats(actor, include_wilds=True)
+        if creatures_here:
             actor.target = min(creatures_here, key=lambda c: abs(int(getattr(c, "level", actor.level) or actor.level) - actor.level))
             actor.in_combat = True
             await self.server.combat.player_attacks_creature(actor, actor.target)
@@ -1779,6 +2059,40 @@ class FakePlayerManager:
             await self._maybe_announce_hunt_party(actor, hunt_rooms[0][1])
         await self._move_toward(actor, hunt_rooms[0][1])
         return True
+
+    async def _maybe_defend_town_trouble(self, actor: SyntheticPlayer, tick_context: dict, now: float) -> bool:
+        assignments = dict(tick_context.get("town_trouble_assignments") or {})
+        assignment = dict(assignments.get(int(getattr(actor, "synthetic_id", 0) or 0)) or {})
+        if not assignment:
+            return False
+        room = getattr(actor, "current_room", None)
+        if not room:
+            return False
+        target_room_ids = {int(room_id) for room_id in (assignment.get("room_ids") or []) if int(room_id or 0) > 0}
+        if not target_room_ids:
+            return False
+        actor.synthetic_flags["intent"] = "town_trouble_defense"
+        actor.synthetic_flags["town_trouble_incident_id"] = int(assignment.get("incident_id") or 0)
+        room_id = int(getattr(room, "id", 0) or 0)
+        threats = self._room_threats(actor)
+        if threats:
+            return await self._engage_room_threat(actor, threats, now)
+        if room_id in target_room_ids:
+            hold_min = max(1.0, float(self._defaults.get("town_trouble_defender_hold_min_seconds") or 2.0))
+            hold_max = max(hold_min, float(self._defaults.get("town_trouble_defender_hold_max_seconds") or 5.0))
+            actor.position = "standing"
+            actor.synthetic_flags["next_action_at"] = now + random.uniform(hold_min, hold_max)
+            return True
+        target_room_id = int(assignment.get("target_room_id") or 0)
+        if target_room_id <= 0 or target_room_id == room_id:
+            target_room_id = self._nearest_known_room(room_id, target_room_ids)
+        if target_room_id <= 0:
+            return False
+        if await self._move_toward(actor, target_room_id):
+            actor.position = "standing"
+            actor.synthetic_flags["next_action_at"] = now + random.uniform(2.5, 5.5)
+            return True
+        return False
 
     async def _maybe_forage(self, actor: SyntheticPlayer, bubble_rooms: set[int] | None = None) -> bool:
         room = getattr(actor, "current_room", None)
@@ -1868,6 +2182,36 @@ class FakePlayerManager:
                 return True
         return False
 
+    def _room_threats(self, actor: SyntheticPlayer, *, include_wilds: bool = False) -> list:
+        room = getattr(actor, "current_room", None)
+        if not room:
+            return []
+        threats = []
+        for creature in self.server.creatures.get_creatures_in_room(room.id):
+            if not getattr(creature, "alive", False):
+                continue
+            ctx = dict(getattr(creature, "spawn_context", {}) or {})
+            if include_wilds:
+                threats.append(creature)
+                continue
+            if getattr(room, "safe", False):
+                if ctx.get("town_trouble_hostile") or ctx.get("special_spawn") or getattr(creature, "in_combat", False) or getattr(creature, "target", None) is not None:
+                    threats.append(creature)
+            else:
+                threats.append(creature)
+        return threats
+
+    async def _engage_room_threat(self, actor: SyntheticPlayer, threats: list, now: float) -> bool:
+        if not threats:
+            return False
+        target = min(threats, key=lambda c: abs(int(getattr(c, "level", actor.level) or actor.level) - actor.level))
+        actor.target = target
+        actor.in_combat = True
+        actor.position = "standing"
+        await self.server.combat.player_attacks_creature(actor, target)
+        actor.synthetic_flags["next_action_at"] = now + random.uniform(2.0, 4.5)
+        return True
+
     async def _maybe_lawbreaking(self, actor: SyntheticPlayer, active_case: dict | None) -> bool:
         if active_case:
             return False
@@ -1892,9 +2236,20 @@ class FakePlayerManager:
         room = getattr(actor, "current_room", None)
         if not room:
             return False
-        boxes = [item for item in list(actor.inventory or []) if str(item.get("item_type") or "").lower() == "container" and item.get("is_locked", True)]
-        if not boxes or room.id not in self._service_rooms["locksmith"]:
+        boxes = [item for item in list(actor.inventory or []) if _is_locksmith_box(self.server, item, require_locked=True)]
+        if room.id not in self._service_rooms["locksmith"]:
             return False
+        pending_before = self._pending_locksmith_jobs()
+        if not boxes:
+            queue_target = max(1, int(self._defaults.get("locksmith_seed_queue_target") or 4))
+            generate_chance = max(0.0, min(1.0, float(self._defaults.get("locksmith_generate_customer_chance") or 0.0)))
+            if pending_before >= queue_target or random.random() >= generate_chance:
+                return False
+            generated = generate_box(getattr(self.server, "db", None), max(1, int(actor.level or 1)), server=self.server)
+            if not generated or not _is_locksmith_box(self.server, generated, require_locked=True):
+                return False
+            generated["synthetic_item"] = True
+            boxes = [generated]
         try:
             import asyncio
             asyncio.get_running_loop().create_task(self._maybe_announce_locksmith_customer(actor))
@@ -1905,8 +2260,10 @@ class FakePlayerManager:
         job_id = _db_submit(self.server, actor.character_id, actor.character_name, item, fee)
         if not job_id:
             return False
-        actor.inventory.remove(item)
+        if item in actor.inventory:
+            actor.inventory.remove(item)
         actor.silver = max(0, actor.silver - fee)
+        self._locksmith_pending_cache = {"expires_at": _now() + 3.0, "count": pending_before + 1}
         return True
 
     def _maybe_locksmith_rogue(self, actor: SyntheticPlayer) -> bool:
@@ -1919,11 +2276,15 @@ class FakePlayerManager:
         if not jobs:
             return False
         job = _db_get_job(self.server, int(random.choice(jobs).get("id") or 0))
-        if not job or not _db_claim(self.server, int(job["id"]), actor.character_id, actor.character_name, 0):
+        if not job:
             return False
         box = _json_loads(job.get("item_data"), {})
         if not isinstance(box, dict) or not box:
             box = {"name": job.get("item_name") or "a box", "short_name": job.get("item_short_name") or "box", "item_type": "container"}
+        if not _is_locksmith_box(self.server, box):
+            return False
+        if not _db_claim(self.server, int(job["id"]), actor.character_id, actor.character_name, 0):
+            return False
         if box.get("trapped") and not box.get("trap_disarmed"):
             if len(self._room_occupants_except(actor)) > 0:
                 try:
@@ -1972,6 +2333,137 @@ class FakePlayerManager:
             return True
         return False
 
+    async def _maybe_pet_cycle(self, actor: SyntheticPlayer) -> bool:
+        pet = dict(getattr(actor, "active_pet", None) or {})
+        if pet:
+            pet_name = str(pet.get("pet_name") or "their companion").strip()
+            await self._emote(actor, random.choice([
+                f"crouches to scratch {pet_name} under the chin.",
+                f"murmurs something to {pet_name} and gets an eager little response.",
+                f"checks on {pet_name} like the companion's opinion actually matters.",
+                f"glances down at {pet_name} and looks steadier for it.",
+            ]))
+            actor.field_experience += max(1, int(self._defaults.get("idle_field_xp_gain") or 25) // 6)
+            return True
+        if not self._can_afford_pet(actor):
+            return False
+        species_key = self._pick_fake_pet_species()
+        if not species_key:
+            return False
+        species = getattr(getattr(self.server, "pets", None), "species_cfg", lambda _key: {})(species_key) or {}
+        serial = int(actor.synthetic_flags.get("pet_serial") or 0) + 1
+        actor.synthetic_flags["pet_serial"] = serial
+        pet_id = -((int(actor.synthetic_id or 0) * 1000) + serial)
+        pet_name = self._random_fake_pet_name()
+        pet = {
+            "id": pet_id,
+            "character_id": int(actor.character_id or 0),
+            "species_key": species_key,
+            "pet_name": pet_name,
+            "pet_level": 1,
+            "pet_xp": 0,
+            "is_active": True,
+            "is_deleted": False,
+            "is_released": False,
+            "image_key": str(species.get("image_key") or species_key),
+            "extra_state": {"dismissed": False},
+        }
+        actor.silver = max(0, int(actor.silver or 0) - self._pet_purchase_cost(species))
+        actor.pet_progress = {
+            "quest_state": "completed",
+            "first_pet_claimed": True,
+            "path_unlocked": True,
+            "active_pet_id": pet_id,
+        }
+        actor.pets = list(getattr(actor, "pets", []) or [])
+        actor.pets = [row for row in actor.pets if int(row.get("id") or 0) != pet_id]
+        actor.pets.append(pet)
+        actor.active_pet = pet
+        await self._say(actor, f'I finally stopped putting it off and came back with {pet_name}.')
+        await self._emote(actor, f"rests a hand on {pet_name} like the companion has been theirs for years already.")
+        return True
+
+    def _has_locksmith_boxes(self, actor: SyntheticPlayer) -> bool:
+        return any(
+            _is_locksmith_box(self.server, item, require_locked=True)
+            for item in list(getattr(actor, "inventory", []) or [])
+        )
+
+    def _has_pawn_loot(self, actor: SyntheticPlayer) -> bool:
+        return any(
+            str(item.get("item_type") or "").lower() in {"gem", "scroll", "herb", "misc", "weapon", "armor"}
+            for item in list(getattr(actor, "inventory", []) or [])
+        )
+
+    def _pending_locksmith_jobs(self) -> int:
+        now = _now()
+        cached = dict(self._locksmith_pending_cache or {})
+        if now < float(cached.get("expires_at") or 0.0):
+            return max(0, int(cached.get("count") or 0))
+        row = self._fetch_one("SELECT COUNT(*) AS count FROM picking_queue WHERE status = 'pending'")
+        count = max(0, int((row or {}).get("count") or 0))
+        self._locksmith_pending_cache = {"expires_at": now + 3.0, "count": count}
+        return count
+
+    def _can_seed_locksmith_queue(self, actor: SyntheticPlayer, pending_jobs: int | None = None) -> bool:
+        del actor
+        current_pending = self._pending_locksmith_jobs() if pending_jobs is None else max(0, int(pending_jobs or 0))
+        target = max(1, int(self._defaults.get("locksmith_seed_queue_target") or 4))
+        chance = max(0.0, min(1.0, float(self._defaults.get("locksmith_generate_customer_chance") or 0.0)))
+        return current_pending < target and chance > 0.0
+
+    def _service_target_room(self, actor: SyntheticPlayer, service_key: str) -> int:
+        room = getattr(actor, "current_room", None)
+        room_id = int(getattr(room, "id", 0) or getattr(actor, "current_room_id", 0) or 0)
+        if room_id <= 0:
+            return 0
+        candidates = {int(rid) for rid in (self._service_rooms.get(service_key) or set()) if int(rid or 0) > 0}
+        if not candidates:
+            return 0
+        if room_id in candidates:
+            return room_id
+        return self._nearest_known_room(room_id, candidates)
+
+    def _pet_behavior_cfg(self) -> dict:
+        cfg = self._cfg.get("pet_behavior") or {}
+        return dict(cfg) if isinstance(cfg, dict) else {}
+
+    def _pet_action_chance(self, actor: SyntheticPlayer) -> float:
+        pet_cfg = self._pet_behavior_cfg()
+        key = "interaction_chance" if getattr(actor, "active_pet", None) else "acquire_chance"
+        return max(0.0, min(1.0, float(pet_cfg.get(key) or 0.0)))
+
+    def _pet_purchase_cost(self, species: dict) -> int:
+        pet_cfg = self._pet_behavior_cfg()
+        multiplier = max(0.01, float(pet_cfg.get("cost_multiplier") or 0.18))
+        base_price = max(1000, int((species or {}).get("base_price") or 25000))
+        min_silver = max(1000, int(pet_cfg.get("min_silver") or 4500))
+        return max(min_silver, int(base_price * multiplier))
+
+    def _can_afford_pet(self, actor: SyntheticPlayer) -> bool:
+        species_key = self._pick_fake_pet_species()
+        if not species_key:
+            return False
+        species = getattr(getattr(self.server, "pets", None), "species_cfg", lambda _key: {})(species_key) or {}
+        return int(getattr(actor, "silver", 0) or 0) >= self._pet_purchase_cost(species)
+
+    def _pick_fake_pet_species(self) -> str:
+        pet_cfg = self._pet_behavior_cfg()
+        wanted = [str(key or "").strip().lower() for key in (pet_cfg.get("species_keys") or []) if str(key or "").strip()]
+        if not wanted:
+            wanted = ["floofer"]
+        pets_mgr = getattr(self.server, "pets", None)
+        valid = [key for key in wanted if getattr(pets_mgr, "species_cfg", lambda _key: {})(key)]
+        return random.choice(valid) if valid else ""
+
+    def _random_fake_pet_name(self) -> str:
+        names = dict(self._cfg.get("pet_names") or {})
+        prefixes = [str(v).strip() for v in (names.get("prefixes") or []) if str(v).strip()]
+        suffixes = [str(v).strip() for v in (names.get("suffixes") or []) if str(v).strip()]
+        if not prefixes or not suffixes:
+            return "Moonwhisk"
+        return f"{random.choice(prefixes)}{random.choice(suffixes)}"
+
     async def _move_toward(self, actor: SyntheticPlayer, target_room_id: int) -> bool:
         room = getattr(actor, "current_room", None)
         if not room:
@@ -2009,6 +2501,7 @@ class FakePlayerManager:
     async def _say(self, actor: SyntheticPlayer, message: str):
         room = getattr(actor, "current_room", None)
         if room and message:
+            self._note_room_social(room.id)
             rendered = self._render_speech(actor.character_name, message)
             if rendered["mode"] == "emote":
                 await self.server.world.broadcast_to_room(room.id, f"{actor.character_name} {rendered['text']}", exclude=actor)
@@ -2020,6 +2513,7 @@ class FakePlayerManager:
         msg = self._projected_message_text(message)
         if not room or not msg:
             return
+        self._note_room_social(room.id)
         room_msg = colorize(f'{actor.character_name} yells, "{msg}"', TextPresets.YELL_LOCAL)
         await self.server.world.broadcast_to_room(room.id, room_msg, exclude=actor)
 
@@ -2048,6 +2542,7 @@ class FakePlayerManager:
         msg = self._projected_message_text(message)
         if not room or not msg or not getattr(room, "zone", None):
             return
+        self._note_room_social(room.id)
         local_text = colorize(f'{actor.character_name} shouts, "{msg}"', TextPresets.YELL_LOCAL)
         zone_text = colorize(f'You hear someone shout, "{msg}"', TextPresets.YELL_NEAR)
         for other_room_id in room.zone.rooms:
@@ -2057,7 +2552,50 @@ class FakePlayerManager:
     async def _emote(self, actor: SyntheticPlayer, text: str):
         room = getattr(actor, "current_room", None)
         if room and text:
+            self._note_room_social(room.id)
             await self.server.world.broadcast_to_room(room.id, f"{actor.character_name} {text}", exclude=actor)
+
+    def _note_room_social(self, room_id: int):
+        room_id = int(room_id or 0)
+        if room_id > 0:
+            self._room_last_social_at[room_id] = _now()
+
+    def _room_social_overdue(self, actor: SyntheticPlayer, now: float) -> bool:
+        room = getattr(actor, "current_room", None)
+        if not room or not getattr(room, "safe", False):
+            return False
+        occupants = [p for p in self.server.world.get_players_in_room(room.id) if p is not actor]
+        if not occupants:
+            return False
+        silence_seconds = max(20.0, float(self._defaults.get("room_social_silence_seconds") or 75.0))
+        last_at = float(self._room_last_social_at.get(int(room.id), 0.0) or 0.0)
+        return (now - last_at) >= silence_seconds
+
+    async def _force_room_social(self, actor: SyntheticPlayer) -> bool:
+        room = getattr(actor, "current_room", None)
+        if not room:
+            return False
+        occupants = [p for p in self.server.world.get_players_in_room(room.id) if p is not actor]
+        if not occupants:
+            return False
+        if await self._maybe_continue_argument(actor, occupants):
+            return True
+        if await self._maybe_continue_conversation(actor, occupants):
+            return True
+        if float(self._personality(actor, "rude", 0.12)) >= 0.22 and random.random() < 0.34:
+            if await self._maybe_start_argument(actor, occupants):
+                return True
+        if await self._maybe_start_conversation(actor, occupants):
+            return True
+        if await self._maybe_direct_exchange(actor, occupants):
+            return True
+        line_key = "friendly" if random.random() > float(self._personality(actor, "rude", 0.2)) else "rude"
+        text = self._pick_dialogue(line_key, "This room's gone too quiet to trust.", actor=actor)
+        if text:
+            await self._say(actor, text)
+            return True
+        await self._emote(actor, "glances around the room like the silence itself is suspicious.")
+        return True
 
     def _pick_spawn_room(self, bubble_rooms: set[int], anchors: list[int]) -> int:
         weighted: list[tuple[int, float]] = []
@@ -2102,20 +2640,20 @@ class FakePlayerManager:
                 if anchors:
                     dist = self._distance_to_anchor(room_id, anchors)
                     if dist <= 0:
-                        weight += 5.5
+                        weight += 1.2
                     elif dist == 1:
-                        weight += 3.4
-                    elif dist == 2:
-                        weight += 2.2
-                    elif dist == 3:
-                        weight += 1.4
-                    elif dist <= 6:
                         weight += 0.8
+                    elif dist == 2:
+                        weight += 0.5
+                    elif dist == 3:
+                        weight += 0.3
+                    elif dist <= 6:
+                        weight += 0.15
                 occupancy = self._synthetic_room_count(room_id)
                 if occupancy >= soft_cap:
-                    weight *= max(0.04, 0.18 / float((occupancy - soft_cap) + 1))
+                    weight *= max(0.02, 0.10 / float((occupancy - soft_cap) + 1))
                 elif occupancy > 0:
-                    weight *= max(0.50, 1.0 - (0.16 * occupancy))
+                    weight *= max(0.32, 1.0 - (0.22 * occupancy))
                 weighted.append((room_id, weight))
         if not weighted and anchors:
             return int(random.choice(anchors))
@@ -2230,7 +2768,22 @@ class FakePlayerManager:
         normalized_key = str(key or "").strip()
         if normalized_key in self._dialogue_builder_disabled_keys:
             return []
-        builder = dict(self._dialogue_builders.get(normalized_key) or {})
+        raw_builder = self._dialogue_builders.get(normalized_key)
+        if isinstance(raw_builder, dict):
+            builder = dict(raw_builder or {})
+        elif isinstance(raw_builder, (list, tuple, set)):
+            seen = set()
+            candidates = []
+            for row in raw_builder:
+                text = self._format_dialogue_text(row, tokens).strip()
+                lowered = text.lower()
+                if not text or lowered in seen:
+                    continue
+                seen.add(lowered)
+                candidates.append(text)
+            return candidates[: min(max(4, int(limit or 0)), 18)]
+        else:
+            builder = {}
         if not builder:
             return []
         limit = min(max(8, int(limit or 0)), 18)

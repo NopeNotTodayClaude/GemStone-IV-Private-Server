@@ -840,6 +840,13 @@ async def _move_player(session, from_room, to_room, direction, server, sneaking=
     if hasattr(server, "pets"):
         await server.pets.on_room_enter(session, from_room, to_room)
 
+    broadcaster = getattr(server, "sync_broadcaster", None)
+    if broadcaster:
+        try:
+            await broadcaster.broadcast_session(session)
+        except Exception as e:
+            log.error("Immediate movement sync refresh failed for %s: %s", getattr(session, "character_name", "unknown"), e)
+
 
 def _is_hearthstone_room(room) -> bool:
     if not room:

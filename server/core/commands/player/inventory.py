@@ -586,6 +586,7 @@ def _db_save_item_state(server, inv_id, item_dict):
     """Persist runtime item properties (lock, trap, contents) to extra_data JSON.
     Called after adding a generated box/item to inventory so it survives logout."""
     EXTRA_KEYS = (
+        'base_name', 'container_type',
         'creature_level',
         'is_locked', 'lock_difficulty', 'opened',
         'trap_type', 'trapped', 'trap_difficulty', 'trap_checked',

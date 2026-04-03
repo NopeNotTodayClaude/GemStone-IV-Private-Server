@@ -111,9 +111,9 @@ class SyntheticPlayer:
         self.spellbook = []
         self.tutorial_complete = True
         self.tutorial_stage = 999
-        self.pet_progress = {}
-        self.pets = []
-        self.active_pet = None
+        self.pet_progress = dict(self.synthetic_flags.get("pet_progress") or {})
+        self.pets = list(self.synthetic_flags.get("pets") or [])
+        self.active_pet = dict(self.synthetic_flags.get("active_pet") or {}) or None
 
     @property
     def display_name(self) -> str:
@@ -142,6 +142,10 @@ class SyntheticPlayer:
 
     def to_state_row(self) -> dict:
         room_id = int(getattr(getattr(self, "current_room", None), "id", 0) or self.current_room_id or 0)
+        state_json = dict(self.synthetic_flags or {})
+        state_json["pet_progress"] = dict(self.pet_progress or {})
+        state_json["pets"] = list(self.pets or [])
+        state_json["active_pet"] = dict(self.active_pet or {}) if self.active_pet else None
         return {
             "id": self.synthetic_id,
             "character_id": self.character_id,
@@ -196,7 +200,7 @@ class SyntheticPlayer:
             "injuries": dict(self.injuries or {}),
             "status_effects": dict(self.status_effects or {}),
             "wounds": dict(self.wounds or {}),
-            "state_json": dict(self.synthetic_flags or {}),
+            "state_json": state_json,
         }
 
     def __repr__(self):

@@ -521,62 +521,22 @@ async def _attempt_ranged_attack(manager, creature, target, ability_id: str) -> 
 
 
 async def _attempt_theft(manager, creature, target, ability_id: str) -> bool:
-    server = manager.server
-    candidates = _find_player_pickpocket_candidates(target, "")
-    if not candidates or random.random() > 0.45:
-        return False
-    item, _source = candidates[0]
-    removed = _remove_stolen_item_from_player(target, item, server)
-    if not removed:
-        return False
-    creature.stolen_items.append(removed)
-    creature.set_ability_cooldown(ability_id, 20)
-    creature.set_roundtime(5)
-    item_name = removed.get("short_name") or removed.get("name") or "something"
-    await server.world.broadcast_to_room(
-        creature.current_room_id,
-        colorize(
-            f"{creature.full_name.capitalize()} snatches {item_name} from {target.character_name}!",
-            TextPresets.WARNING,
-        ),
-    )
-    if hasattr(target, "send_line"):
-        await target.send_line(colorize(f"  {creature.full_name.capitalize()} steals {item_name} from you!", TextPresets.WARNING))
-    return True
+    return False
 
 
 async def _attempt_disarm(manager, creature, target, ability_id: str) -> bool:
-    if random.random() > 0.40:
-        return False
-    item = getattr(target, "right_hand", None) or getattr(target, "left_hand", None)
-    if not item and ability_id != "sunder_shield":
+    if ability_id != "sunder_shield":
         return False
     line, cooldown = _DISARM_ABILITIES[ability_id]
     creature.set_ability_cooldown(ability_id, cooldown)
     creature.set_roundtime(5)
-    if ability_id == "sunder_shield":
-        status = getattr(manager.server, "status", None)
-        if status:
-            status.apply(target, "demoralized", duration=10)
-        await manager.server.world.broadcast_to_room(
-            creature.current_room_id,
-            colorize(line.format(name=creature.full_name.capitalize(), target=target.character_name), TextPresets.WARNING),
-        )
-        return True
-    removed = _remove_stolen_item_from_player(target, item, manager.server)
-    if not removed:
-        return False
-    creature.stolen_items.append(removed)
-    item_name = removed.get("short_name") or removed.get("name") or "something"
+    status = getattr(manager.server, "status", None)
+    if status:
+        status.apply(target, "demoralized", duration=10)
     await manager.server.world.broadcast_to_room(
         creature.current_room_id,
-        colorize(
-            f"{creature.full_name.capitalize()} {line.format(name=creature.full_name.capitalize(), target=target.character_name)}",
-            TextPresets.WARNING,
-        ),
+        colorize(line.format(name=creature.full_name.capitalize(), target=target.character_name), TextPresets.WARNING),
     )
-    if hasattr(target, "send_line"):
-        await target.send_line(colorize(f"  Your {item_name} is torn from your grip!", TextPresets.WARNING))
     return True
 
 

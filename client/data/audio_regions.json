@@ -7,6 +7,12 @@
         "fade_out_ms": 3200,
         "loop_crossfade_ms": 5500
       },
+      "Ta'Vaalor Trouble": {
+        "file": "Fated Strife -Besieged-.mp3",
+        "fade_in_ms": 1800,
+        "fade_out_ms": 2200,
+        "loop_crossfade_ms": 5200
+      },
       "Victory Road": {
         "file": "Cemetary.mp3",
         "fade_in_ms": 3200,

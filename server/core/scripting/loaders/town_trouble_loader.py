@@ -144,6 +144,7 @@ def load_town_trouble(lua_engine) -> dict:
             incidents[key] = {
                 "key": key,
                 "city_key": str(raw.get("city_key") or "").strip().lower(),
+                "audio_zone_override": str(raw.get("audio_zone_override") or "").strip(),
                 "weight": max(1, _to_int(raw.get("weight"), 1)),
                 "difficulty": max(1, _to_int(raw.get("difficulty"), 1)),
                 "min_duration_seconds": max(120, _to_int(raw.get("min_duration_seconds"), 600)),

@@ -1,5 +1,5 @@
 {
-  "geometry": "2396x1121+497+71",
+  "geometry": "2396x1121+177+70",
   "font_size": 14,
   "font_family": "Georgia",
   "panel_font_size": 13,
@@ -48,7 +48,7 @@
   "input_mode": "command",
   "comm_input_mode": "say",
   "auto_login": {
-    "enabled": false,
+    "enabled": true,
     "username": "admin",
     "password": "admin",
     "char_slot": 1

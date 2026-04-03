@@ -339,6 +339,13 @@ def build_snapshot(session, server) -> dict:
         pass
 
     room = getattr(session, "current_room", None)
+    audio_zone_override = None
+    try:
+        town_trouble = getattr(server, "town_trouble", None)
+        if town_trouble and room:
+            audio_zone_override = town_trouble.get_audio_zone_override(getattr(room, "id", 0))
+    except Exception:
+        audio_zone_override = None
     hotbar = {}
     try:
         hotbar_mgr = getattr(server, "hotbar", None)
@@ -355,6 +362,7 @@ def build_snapshot(session, server) -> dict:
             "id": getattr(room, "id", None),
             "title": getattr(room, "title", ""),
             "zone_name": getattr(room, "zone_name", ""),
+            "audio_zone_override": audio_zone_override,
         } if room else None,
         "vitals":         vitals,
         "xp":             xp,

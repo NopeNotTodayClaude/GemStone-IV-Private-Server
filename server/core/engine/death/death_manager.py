@@ -314,6 +314,11 @@ class DeathManager:
     async def _begin_ghost_route(self, session):
         session.death_choice_pending = False
 
+        if getattr(session, "is_synthetic_player", False):
+            if hasattr(session, "synthetic_flags"):
+                session.synthetic_flags["beefy_started"] = True
+                session.synthetic_flags["beefy_started_at"] = time.time()
+
         await session.send_line("")
         await session.send_line(colorize(
             "  You cry out into the void as a spirit, hoping someone hears...",
@@ -352,11 +357,62 @@ class DeathManager:
             await self._ghost_revive(session, death_room_id, in_place=True)
             return
 
+        if getattr(session, "is_synthetic_player", False):
+            task = asyncio.create_task(
+                self._run_synthetic_beefy_sequence(session, cleric_room_id, death_room_id)
+            )
+            self._beefy_tasks[id(session)] = task
+            return
+
         # Fire and forget Beefy task
         task = asyncio.create_task(
             self._run_beefy_sequence(session, cleric_room_id, death_room_id)
         )
         self._beefy_tasks[id(session)] = task
+
+    async def _run_synthetic_beefy_sequence(self, session, cleric_room_id: int, death_room_id: int):
+        try:
+            world = self.server.world
+            path_to_corpse = world.find_path(cleric_room_id, death_room_id)
+            if not path_to_corpse:
+                await self._ghost_revive(session, death_room_id, in_place=True)
+                return
+
+            await asyncio.sleep(1.0)
+            await world.broadcast_to_room(
+                death_room_id,
+                colorize("Sergeant Beefy arrives at a hard jog, takes one look at the fallen adventurer, and gets to work.", TextPresets.SYSTEM),
+            )
+            await asyncio.sleep(1.2)
+            await world.broadcast_to_room(
+                death_room_id,
+                colorize("Sergeant Beefy hoists the body up and hauls it out toward the nearest shrine.", TextPresets.SYSTEM),
+            )
+
+            dead_room = getattr(session, "current_room", None)
+            if dead_room:
+                try:
+                    world.remove_player_from_room(session, dead_room.id)
+                except Exception:
+                    pass
+            session.current_room = None
+            session.current_room_id = 0
+
+            await asyncio.sleep(min(8.0, max(2.0, float(len(path_to_corpse) - 1) * 0.35)))
+            await world.broadcast_to_room(
+                cleric_room_id,
+                colorize("Sergeant Beefy drags in a battered adventurer and barks for a fast raise.", TextPresets.SYSTEM),
+            )
+            await asyncio.sleep(1.5)
+            await self._ghost_revive(session, cleric_room_id, "Sergeant Beefy and a waiting cleric")
+        except asyncio.CancelledError:
+            log.info("Synthetic Beefy task cancelled for %s", getattr(session, "character_name", "?"))
+        except Exception as e:
+            log.error("Synthetic Beefy sequence error: %s", e, exc_info=True)
+            if session.is_dead:
+                await self._ghost_revive(session, death_room_id, in_place=True)
+        finally:
+            self._beefy_tasks.pop(id(session), None)
 
     async def _run_beefy_sequence(self, session, cleric_room_id: int, death_room_id: int):
         """Full async Beefy journey: spawn → travel → arrive → drag → revive → despawn."""
@@ -618,6 +674,9 @@ class DeathManager:
         session.death_room_id = None
         session.temporal_rift_room_id = None
         session.temporal_rift_release_at = 0
+        if hasattr(session, "synthetic_flags"):
+            session.synthetic_flags.pop("beefy_started", None)
+            session.synthetic_flags.pop("beefy_started_at", None)
 
         # Set HP to 1% (min 1)
         session.health_current = max(1, session.health_max // 100)
@@ -796,6 +855,11 @@ class DeathManager:
     # ══════════════════════════════════════════════════════════════════════════
 
     def _save_session(self, session):
+        if getattr(session, "is_synthetic_player", False):
+            manager = getattr(session, "manager", None)
+            if manager and hasattr(manager, "_save_actor"):
+                manager._save_actor(session)
+            return
         if self.server.db and session.character_id:
             self.server.db.save_character_resources(
                 session.character_id,

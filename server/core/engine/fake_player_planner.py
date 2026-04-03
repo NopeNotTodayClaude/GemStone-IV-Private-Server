@@ -55,6 +55,66 @@ def plan_actor_action(payload: dict) -> dict:
     safe_room_suppression = float(payload.get("safe_room_suppression") or 0.34)
 
     if room_safe:
+        if (payload.get("has_locksmith_boxes") or payload.get("can_seed_locksmith_queue")) and int(payload.get("locksmith_target_room_id") or 0) > 0:
+            if int(payload.get("current_room_id") or 0) != int(payload.get("locksmith_target_room_id") or 0):
+                move_chance = min(0.94, 0.22 + (locksmith_bias * 0.85) + (0.10 if real_player_present else 0.0))
+                if rng.random() < move_chance:
+                    return {
+                        "action": "move_locksmith",
+                        "target_room_id": int(payload.get("locksmith_target_room_id") or 0),
+                        "delay_min": 4.0,
+                        "delay_max": 9.0,
+                    }
+
+        if payload.get("can_seek_locksmith_work") and int(payload.get("locksmith_target_room_id") or 0) > 0:
+            if int(payload.get("current_room_id") or 0) != int(payload.get("locksmith_target_room_id") or 0):
+                move_chance = min(0.96, 0.28 + (locksmith_bias * 0.95) + (0.10 if real_player_present else 0.0))
+                if rng.random() < move_chance:
+                    return {
+                        "action": "move_locksmith",
+                        "target_room_id": int(payload.get("locksmith_target_room_id") or 0),
+                        "delay_min": 4.0,
+                        "delay_max": 9.0,
+                    }
+
+        if payload.get("has_pawn_loot") and int(payload.get("pawn_target_room_id") or 0) > 0:
+            if int(payload.get("current_room_id") or 0) != int(payload.get("pawn_target_room_id") or 0):
+                move_chance = min(0.92, 0.18 + (pawn_bias * 0.90) + (0.08 if real_player_present else 0.0))
+                if rng.random() < move_chance:
+                    return {
+                        "action": "move_pawn",
+                        "target_room_id": int(payload.get("pawn_target_room_id") or 0),
+                        "delay_min": 4.0,
+                        "delay_max": 9.0,
+                    }
+
+        at_locksmith = int(payload.get("current_room_id") or 0) == int(payload.get("locksmith_target_room_id") or 0)
+        at_pawn = int(payload.get("current_room_id") or 0) == int(payload.get("pawn_target_room_id") or 0)
+        if payload.get("can_service") and (at_locksmith or at_pawn):
+            room_service_gate = min(
+                0.97,
+                max(
+                    0.30,
+                    float(payload.get("service_task_chance_safe") or 0.20)
+                    * (0.80 + locksmith_bias + pawn_bias),
+                ),
+            )
+            if rng.random() < room_service_gate:
+                service_rows = []
+                if payload.get("can_locksmith_customer"):
+                    service_rows.append(("locksmith_customer", 1.10 + locksmith_bias))
+                if payload.get("can_locksmith_rogue") or (at_locksmith and payload.get("can_seek_locksmith_work")):
+                    service_rows.append(("locksmith_rogue", 0.95 + locksmith_bias))
+                if payload.get("can_pawn"):
+                    service_rows.append(("pawn", 0.95 + pawn_bias))
+                pick = _weighted_choice(service_rows, rng)
+                if pick:
+                    return {"action": pick, "delay_min": 12.0, "delay_max": 22.0}
+
+        pet_chance = max(0.0, min(1.0, float(payload.get("pet_action_chance") or 0.0)))
+        if payload.get("can_get_pet") and not payload.get("has_active_pet") and rng.random() < pet_chance:
+            return {"action": "pet", "delay_min": 8.0, "delay_max": 16.0}
+
         spill_threshold = max(2, int(payload.get("spill_threshold") or 4))
         spill_chance = float(payload.get("spill_chance") or 0.78)
         if synthetic_count >= spill_threshold and payload.get("roam_candidates") and rng.random() < spill_chance:
@@ -78,6 +138,16 @@ def plan_actor_action(payload: dict) -> dict:
         linger_roll = float(payload.get("safe_room_linger_base") or 0.18) + (idle_bias * 0.22) + crowded_bonus + real_player_bonus
         if rng.random() < min(0.96, linger_roll) and rng.random() < float(payload.get("town_afk_emote_chance") or 0.24):
             return {"action": "afk_emote", "delay_min": 2.0, "delay_max": 5.0}
+
+        if payload.get("roam_candidates") and synthetic_count >= max(2, spill_threshold - 1):
+            crowd_roam = min(0.88, 0.26 + (synthetic_count * 0.08) + (0.12 if not real_player_present else 0.0))
+            if rng.random() < crowd_roam:
+                target = _weighted_choice(
+                    [({"room_id": row["room_id"]}, float(row.get("weight") or 1.0)) for row in (payload.get("roam_candidates") or [])],
+                    rng,
+                )
+                if target:
+                    return {"action": "roam", "target_room_id": int(target["room_id"]), "delay_min": 3.0, "delay_max": 7.0}
 
         if rng.random() < safe_room_suppression:
             return {"action": "wait", "delay_min": 2.0, "delay_max": 5.5}
@@ -109,6 +179,9 @@ def plan_actor_action(payload: dict) -> dict:
         or rng.random() < max(0.04, min(0.32, inn_bias))
     ):
         return {"action": "inn", "delay_min": 12.0, "delay_max": 26.0}
+
+    if payload.get("has_active_pet") and rng.random() < max(0.05, float(payload.get("pet_action_chance") or 0.0)):
+        return {"action": "pet", "delay_min": 8.0, "delay_max": 16.0}
 
     if payload.get("can_lawbreak") and rng.random() < crime_bias:
         return {"action": "lawbreak", "delay_min": 20.0, "delay_max": 45.0}

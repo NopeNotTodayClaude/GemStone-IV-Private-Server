@@ -1877,11 +1877,11 @@ class Database:
                        i.armor_group, i.armor_asg, i.defense_bonus, i.enchant_bonus,
                        i.spell_hindrance, i.action_penalty,
                        i.shield_ds, i.shield_size, i.shield_evade_penalty,
-                       i.container_capacity,
+                       i.container_capacity, i.container_type,
                        i.lockpick_modifier,
                        i.worn_location, i.description, i.examine_text, i.lore_text,
                        i.material, i.color,
-                       i.herb_heal_type, i.herb_heal_amount,
+                       i.herb_heal_type, i.herb_heal_amount, i.base_name,
                        i.heal_type, i.heal_rank, i.heal_amount, i.herb_roundtime
                 FROM character_inventory ci
                 JOIN items i ON ci.item_id = i.id

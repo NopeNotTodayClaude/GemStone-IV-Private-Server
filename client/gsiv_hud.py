@@ -2191,6 +2191,7 @@ class HUDApp:
         self._current_room_id: Optional[int] = None
         self._current_room_title: str = ""
         self._current_room_zone: str = ""
+        self._current_audio_zone_override: str = ""
         self._last_room_was_shop: bool = False
         self._live_exits: Dict[str, int] = {}      # exits seen from LOOK output
         self._pathfind_steps: List[str] = []       # queued directions
@@ -2902,14 +2903,36 @@ class HUDApp:
         self._refresh_sync_hand_cache()
 
         room_info = snap.get("room")
+        room_id = None
         if isinstance(room_info, dict):
             try:
                 room_id = int(room_info.get("id"))
             except (TypeError, ValueError):
                 room_id = None
+            title = str(room_info.get("title") or "").strip()
+            zone_name = str(room_info.get("zone_name") or "").strip()
+            if title:
+                self._current_room_title = title
+            if zone_name:
+                self._current_room_zone = zone_name
+            override = str(room_info.get("audio_zone_override") or "").strip()
+            self._current_audio_zone_override = override
         if room_id is not None:
             try:
                 self._update_room(room_id)
+            except Exception:
+                pass
+        if self._audio:
+            try:
+                desired_audio_zone = self._current_audio_zone_override
+                if not desired_audio_zone:
+                    room_ref = self.graph.get(self._current_room_id) if self._current_room_id is not None else None
+                    title = self._current_room_title or (room_ref.get("title", "") if room_ref else "")
+                    zone_name = self._current_room_zone or (room_ref.get("zone_name", "Unknown Zone") if room_ref else "Unknown Zone")
+                    map_zone = self._map._region_name_for_room(self._current_room_id) if hasattr(self._map, "_region_name_for_room") and self._current_room_id is not None else zone_name
+                    desired_audio_zone = self._resolve_audio_zone(title, zone_name, map_zone)
+                if desired_audio_zone:
+                    self._audio.on_zone_changed(desired_audio_zone)
             except Exception:
                 pass
 
@@ -6397,7 +6420,7 @@ class HUDApp:
         self._map.set_room(room_id)
         self.root.after_idle(lambda rid=room_id: self._map.set_room(rid))
         map_zone = self._map._region_name_for_room(room_id) if hasattr(self._map, "_region_name_for_room") else zone
-        audio_zone = self._resolve_audio_zone(title, zone, map_zone)
+        audio_zone = self._current_audio_zone_override or self._resolve_audio_zone(title, zone, map_zone)
 
         # Room panel has been removed — store for internal use only
         self._current_room_title = title

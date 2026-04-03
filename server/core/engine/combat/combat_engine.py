@@ -268,6 +268,63 @@ STANCE_MODS = {
     "defensive": (-20, 25),
 }
 
+EVADE_ARMOR_HINDRANCE = {
+    1: 1.00, 2: 1.00, 3: 1.00, 4: 1.00, 5: 1.00, 6: 1.00,
+    7: 0.98, 8: 0.97, 9: 0.97, 10: 0.96, 11: 0.95, 12: 0.94,
+    13: 0.94, 14: 0.93, 15: 0.92, 16: 0.91, 17: 0.90, 18: 0.88,
+    19: 0.85, 20: 0.83,
+}
+
+EVADE_STANCE_MOD = {
+    "offensive": 0.75,
+    "advance": 0.80,
+    "forward": 0.85,
+    "neutral": 0.90,
+    "guarded": 0.95,
+    "defensive": 1.00,
+}
+
+BLOCK_STANCE_MOD = {
+    "offensive": 0.50,
+    "advance": 0.60,
+    "forward": 0.70,
+    "neutral": 0.80,
+    "guarded": 0.90,
+    "defensive": 1.00,
+}
+
+EBP_STANCE_MOD = {
+    "offensive": 0,
+    "advance": 20,
+    "forward": 40,
+    "neutral": 60,
+    "guarded": 80,
+    "defensive": 100,
+}
+
+BLOCK_SIZE_MOD_MELEE = {
+    "small": 0.85,
+    "medium": 1.00,
+    "large": 1.15,
+    "tower": 1.30,
+}
+
+BLOCK_SIZE_MOD_RANGED = {
+    "small": 1.20,
+    "medium": 1.50,
+    "large": 1.80,
+    "tower": 2.10,
+}
+
+OFFHAND_PARRY_STANCE_MOD = {
+    "offensive": 0.10,
+    "advance": 0.15,
+    "forward": 0.20,
+    "neutral": 0.25,
+    "guarded": 0.30,
+    "defensive": 0.35,
+}
+
 # Body locations are now defined in scripts/data/body_types.lua and loaded
 # via body_types_loader. The loader is imported above.
 # BODY_LOCATIONS is kept as a biped fallback reference for player injury
@@ -515,6 +572,131 @@ def _get_player_armor(session):
         if item.get('slot') == 'torso' and item.get('item_type') == 'armor':
             return item
     return None
+
+
+def _armor_asg_with_overrides(session, buffs):
+    armor = _get_player_armor(session)
+    asg = int(armor.get("armor_asg", 1) or 1) if armor else 1
+    armor_override = int(buffs.get("armor_asg_override", 0) or 0)
+    if armor_override > asg:
+        asg = armor_override
+    return asg
+
+
+def _evade_hindrance_factor(asg: int, buffs: dict) -> float:
+    hindrance = float(EVADE_ARMOR_HINDRANCE.get(int(asg or 1), 1.00))
+    redux_pct = max(0, int(buffs.get("hindrance_redux", 0) or 0))
+    if redux_pct > 0 and hindrance < 1.0:
+        penalty = 1.0 - hindrance
+        hindrance = min(1.0, hindrance + (penalty * (redux_pct / 100.0)))
+    return hindrance
+
+
+def _shield_type(shield) -> str:
+    return str((shield or {}).get("shield_type", "medium") or "medium").lower()
+
+
+def _shield_evade_profile(shield) -> tuple[float, int]:
+    s_type = _shield_type(shield)
+    factor = {"small": 0.78, "medium": 0.70, "large": 0.62, "tower": 0.54}.get(s_type, 0.70)
+    penalty = {"small": 0, "medium": 0, "large": 5, "tower": 10}.get(s_type, 0)
+    return factor, penalty
+
+
+def _shield_block_size_mod(shield, *, ranged: bool = False) -> float:
+    table = BLOCK_SIZE_MOD_RANGED if ranged else BLOCK_SIZE_MOD_MELEE
+    return table.get(_shield_type(shield), 1.00)
+
+
+def _main_gauche_or_sai_bonus(weapon) -> int:
+    if not weapon:
+        return 5
+    label = " ".join(
+        str(weapon.get(key) or "").strip().lower()
+        for key in ("name", "short_name", "noun", "base_name")
+    )
+    if "main gauche" in label or "sai" in label:
+        return 15
+    return 5
+
+
+def _attack_speed_value(attack) -> int:
+    speed = int((attack or {}).get("weapon_speed", 0) or 0)
+    if speed > 0:
+        return speed
+    return max(3, int((attack or {}).get("roundtime", 5) or 5))
+
+
+def _parry_weapon_speed(weapon) -> int:
+    speed = int((weapon or {}).get("weapon_speed", 0) or 0)
+    if speed <= 0:
+        speed = 5
+    if weapon:
+        speed += 3 if _main_gauche_or_sai_bonus(weapon) > 5 else 0
+    return speed
+
+
+def _player_ebp_status_multiplier(server, session, kind: str) -> float:
+    status = getattr(server, "status", None)
+    effects = {
+        eid for eid in ("sleeping", "sitting", "kneeling", "resting", "prone", "stunned", "webbed", "rooted", "immobile")
+        if status and status.has(session, eid)
+    }
+    position = str(getattr(session, "position", "standing") or "standing").lower()
+    if position == "lying":
+        effects.add("prone")
+    elif position in {"sitting", "kneeling", "resting"}:
+        effects.add(position)
+
+    if "sleeping" in effects:
+        return 0.0
+    if kind in {"evade", "parry"} and any(eid in effects for eid in ("webbed", "rooted", "immobile")):
+        return 0.0
+    if kind == "block" and any(eid in effects for eid in ("webbed", "immobile")):
+        return 0.0
+
+    multiplier = 1.0
+    if "prone" in effects:
+        multiplier *= 0.50
+    elif any(eid in effects for eid in ("sitting", "kneeling", "resting")):
+        multiplier *= 0.75
+    if "stunned" in effects:
+        multiplier *= 0.50
+    return multiplier
+
+
+def _player_ebp_vitality_multiplier(session) -> float:
+    spirit_current = max(0, int(getattr(session, "spirit_current", 0) or 0))
+    spirit_max = max(1, int(getattr(session, "spirit_max", spirit_current or 1) or spirit_current or 1))
+    hp_current = max(0, int(getattr(session, "health_current", 0) or 0))
+    hp_max = max(1, int(getattr(session, "health_max", hp_current or 1) or hp_current or 1))
+
+    spirit_missing_quarters = int(((spirit_max - spirit_current) * 4) // spirit_max)
+    hp_missing_quarters = int(((hp_max - hp_current) * 4) // hp_max)
+
+    multiplier = 1.0
+    multiplier -= spirit_missing_quarters * 0.10
+    multiplier -= hp_missing_quarters * 0.05
+    return max(0.0, multiplier)
+
+
+def _player_ebp_wound_multiplier(session, kind: str) -> float:
+    injuries = getattr(session, "injuries", {}) or {}
+
+    def sev(key: str) -> int:
+        return int(injuries.get(key, 0) or 0)
+
+    multiplier = 1.0
+    if kind == "evade":
+        multiplier -= (sev("right_leg") + sev("left_leg")) * 0.05
+        multiplier -= (sev("abdomen") + sev("back")) * 0.03
+    elif kind == "parry":
+        multiplier -= (sev("right_arm") + sev("right_hand")) * 0.06
+        multiplier -= (sev("left_arm") + sev("left_hand")) * 0.03
+    elif kind == "block":
+        multiplier -= (sev("left_arm") + sev("left_hand")) * 0.06
+        multiplier -= (sev("right_arm") + sev("right_hand")) * 0.03
+    return max(0.0, multiplier)
 
 
 def _calc_effective_enchant(player_level: int, enchant_bonus: int) -> int:
@@ -1475,6 +1657,13 @@ class CombatEngine:
         verb_third = attack.get("verb_third", f"attacks {session.character_name}")
         attack_weapon = attack.get("weapon", None)  # e.g. "a rusty scimitar"
 
+        # Build the attack swing line before any outright avoidance checks.
+        creature_display = fmt_creature_name(creature.full_name_with_level.capitalize())
+        if attack_weapon:
+            swing_line = f"{creature_display} swings {attack_weapon} at you!"
+        else:
+            swing_line = f"{creature_display} {verb_first}!"
+
         # Set creature roundtime
         rt = attack.get("roundtime", 5)
         creature.set_roundtime(rt)
@@ -1487,12 +1676,48 @@ class CombatEngine:
         damage_type = profile["damage_type"]
         avd = profile["avd"]
 
+        avoidance = self._resolve_player_avoidance(session, creature, attack)
+        if avoidance:
+            await session.send_line(swing_line)
+            if avoidance == "block":
+                shield_name = (_get_player_shield(session) or {}).get("short_name") or "shield"
+                set_reaction_trigger(session, "recent_block")
+                await session.send_line(colorize(
+                    f"  You block the attack with your {shield_name}!",
+                    TextPresets.SYSTEM
+                ))
+            elif avoidance == "parry":
+                weapon, _ = _get_player_weapon(session)
+                weapon_name = (weapon or {}).get("short_name") or "weapon"
+                set_reaction_trigger(session, "recent_parry")
+                await session.send_line(colorize(
+                    f"  You parry cleanly with your {weapon_name}!",
+                    TextPresets.SYSTEM
+                ))
+            else:
+                set_reaction_trigger(session, "recent_evade")
+                await session.send_line(colorize(
+                    "  You evade the blow outright!",
+                    TextPresets.SYSTEM
+                ))
+            await self.server.world.broadcast_to_room(
+                session.current_room.id,
+                f"{creature.full_name.capitalize()} {verb_third.replace('{target}', session.character_name)} but {session.character_name} avoids the blow!",
+                exclude=session
+            )
+            creature.in_combat = True
+            creature.target = session
+            session.in_combat = True
+            session.target = creature
+            if getattr(session, "is_synthetic_player", False) and not was_in_combat and getattr(creature, "alive", False):
+                session.synthetic_flags["next_action_at"] = 0.0
+                if session.get_roundtime() <= 0:
+                    await self.player_attacks_creature(session, creature)
+            return
+
         # Roll
         d100 = random.randint(1, 100)
         endroll = d100 + creature_as - player_ds + avd
-
-        # Creature display name with level
-        creature_display = fmt_creature_name(creature.full_name_with_level.capitalize())
 
         # Check for player shield block (chance based on shield DS)
         # NOTE: Shield DS is already in player_ds above. This proc represents
@@ -1506,12 +1731,6 @@ class CombatEngine:
             block_chance = min(70, 30 + shield_ds * 2)
             if random.randint(1, 100) <= block_chance:
                 shield_blocked = True
-
-        # Build the attack swing line (GS4 format with creature weapon if any)
-        if attack_weapon:
-            swing_line = f"{creature_display} swings {attack_weapon} at you!"
-        else:
-            swing_line = f"{creature_display} {verb_first}!"
 
         # Roll line (GS4 format — full breakdown for creature attacks too)
         roll_line = (
@@ -1944,10 +2163,38 @@ class CombatEngine:
         cman_passive = get_passive_combat_mods(session, self.server)
         cman_temp = get_temp_combat_bonus_totals(session)
         _status_as_mod, status_ds_mod, status_evade_pen, status_parry_pen, status_block_pen = _status_combat_mods(self.server, session)
-        str_bonus = ((session.stat_strength + int(buffs.get("strength_bonus", 0) or 0) - int(buffs.get("strength_penalty", 0) or 0)) - 50) // 2
-        dex_bonus = ((session.stat_dexterity + int(cman_temp.get("dexterity_bonus", 0) or 0)) - 50) // 2
-        agi_bonus = ((session.stat_agility + int(cman_temp.get("agility_bonus", 0) or 0)) - 50) // 2
-        int_bonus = ((session.stat_intuition + int(cman_temp.get("intuition_bonus", 0) or 0)) - 50) // 2
+        str_bonus = (
+            (
+                session.stat_strength
+                + int(buffs.get("strength_bonus", 0) or 0)
+                + int(cman_temp.get("strength_bonus", 0) or 0)
+                - int(buffs.get("strength_penalty", 0) or 0)
+            ) - 50
+        ) // 2
+        dex_bonus = (
+            (
+                session.stat_dexterity
+                + int(buffs.get("dexterity_bonus", 0) or 0)
+                + int(cman_temp.get("dexterity_bonus", 0) or 0)
+                - int(buffs.get("dexterity_penalty", 0) or 0)
+            ) - 50
+        ) // 2
+        agi_bonus = (
+            (
+                session.stat_agility
+                + int(buffs.get("agility_bonus", 0) or 0)
+                + int(cman_temp.get("agility_bonus", 0) or 0)
+                - int(buffs.get("agility_penalty", 0) or 0)
+            ) - 50
+        ) // 2
+        int_bonus = (
+            (
+                session.stat_intuition
+                + int(buffs.get("intuition_bonus", 0) or 0)
+                + int(cman_temp.get("intuition_bonus", 0) or 0)
+                - int(buffs.get("intuition_penalty", 0) or 0)
+            ) - 50
+        ) // 2
 
         def_pct = {
             "offensive": 0.0, "advance": 0.2, "forward": 0.4,
@@ -1959,36 +2206,19 @@ class CombatEngine:
         evade_base = _sr(session, SKILL_DODGING) + agi_bonus + int(int_bonus / 4)
         evade_base += int(buffs.get("dodge_bonus", 0) or 0)
 
-        armor = _get_player_armor(session)
-        asg   = armor.get("armor_asg", 1) if armor else 1
-        armor_override = int(buffs.get("armor_asg_override", 0) or 0)
-        if armor_override > asg:
-            asg = armor_override
-
-        BASE_HINDRANCE = {
-            1: 1.00, 2: 1.00, 3: 1.00, 4: 1.00,
-            5: 0.98, 6: 0.97, 7: 0.96, 8: 0.94,
-            9: 0.92, 10: 0.88, 11: 0.84, 12: 0.80,
-            13: 0.75, 14: 0.70, 15: 0.65, 16: 0.60,
-            17: 0.55, 18: 0.50, 19: 0.45, 20: 0.40,
-        }
-        base_hind = BASE_HINDRANCE.get(asg, 1.0)
-        au_ranks  = _sr(session, SKILL_ARMOR_USE)
-        max_ranks = max(1, int((1.0 - base_hind) * 500))
-        au_reduc  = min(au_ranks / max_ranks, 1.0 - base_hind)
-        hindrance = min(1.0, base_hind + au_reduc)
+        asg = _armor_asg_with_overrides(session, buffs)
+        hindrance = _evade_hindrance_factor(asg, buffs)
 
         shield = _get_player_shield(session)
         if shield:
-            s_type    = shield.get("shield_type", "medium")
-            s_factor  = {"small": 0.78, "medium": 0.70, "large": 0.62, "tower": 0.54}.get(s_type, 0.70)
-            s_penalty = {"small": 0, "medium": 0, "large": 5, "tower": 10}.get(s_type, 0)
+            s_type = _shield_type(shield)
+            s_factor, s_penalty = _shield_evade_profile(shield)
         else:
-            s_type    = "medium"
-            s_factor  = 1.0
+            s_type = "medium"
+            s_factor = 1.0
             s_penalty = 0
 
-        evade_stance = 0.75 + (def_pct * 0.25)
+        evade_stance = EVADE_STANCE_MOD.get(stance, 0.90)
         evade_ds = int((int(int(evade_base * hindrance) * s_factor) - s_penalty) * evade_stance)
         evade_ds += int(cman_passive.get("ds_bonus", 0) or 0) // 3
         evade_ds += int(cman_temp.get("ds_bonus", 0) or 0) // 3
@@ -2033,6 +2263,11 @@ class CombatEngine:
             if brawl > 0:
                 p_base   = brawl + int(str_bonus / 4) + int(dex_bonus / 4)
                 parry_ds = int(p_base * ohw_mod.get(stance, 0.50)) + parry_bonus.get(stance, 30)
+        offhand = _get_offhand_weapon(session)
+        twc_ranks = _sr(session, SKILL_TWC)
+        if offhand and twc_ranks > 0:
+            offhand_base = twc_ranks + int(str_bonus / 4) + int(dex_bonus / 4)
+            parry_ds += int(offhand_base * OFFHAND_PARRY_STANCE_MOD.get(stance, 0.25)) + _main_gauche_or_sai_bonus(offhand)
         parry_ds = int(
             parry_ds * (
                 max(
@@ -2050,14 +2285,13 @@ class CombatEngine:
         # ── Block DS ──────────────────────────────────────────────────────
         block_ds = 0
         if shield:
-            sh_ranks     = _sr(session, SKILL_SHIELD_USE)
-            block_base   = sh_ranks + int(str_bonus / 4) + int(dex_bonus / 4)
-            block_stance = 0.5 + (def_pct * 0.5)
-            size_mod     = {"small": -0.15, "medium": 0.0, "large": 0.15, "tower": 0.30}.get(s_type, 0.0)
-            size_bonus   = {"small": 15, "medium": 20, "large": 25, "tower": 30}.get(s_type, 20)
-            sh_enc       = _calc_effective_enchant(session.level, shield.get("enchant_bonus", 0) or 0)
-            block_ds     = int(int(block_base * block_stance) * (1.0 + size_mod)) + size_bonus + sh_enc
-            block_ds     = max(0, block_ds)
+            sh_ranks = _sr(session, SKILL_SHIELD_USE)
+            block_base = sh_ranks + int(str_bonus / 4) + int(dex_bonus / 4)
+            sh_enc = _calc_effective_enchant(session.level, shield.get("enchant_bonus", 0) or 0)
+            scaled_base = int(block_base * _shield_block_size_mod(shield))
+            scaled_base = int(scaled_base * BLOCK_STANCE_MOD.get(stance, 0.80))
+            scaled_base = int(scaled_base / 1.5)
+            block_ds = max(0, scaled_base + 20 + sh_enc)
         block_ds = int(
             block_ds * (
                 max(
@@ -2111,6 +2345,151 @@ class CombatEngine:
         total = max(0, total)
 
         return total, evade_ds, parry_ds, block_ds
+
+    def _calc_player_avoidance_chances(self, session, creature, attack) -> dict:
+        buffs = _buff_totals(session, self.server)
+        cman_passive = get_passive_combat_mods(session, self.server)
+        cman_temp = get_temp_combat_bonus_totals(session)
+        _status_as_mod, _status_ds_mod, status_evade_pen, status_parry_pen, status_block_pen = _status_combat_mods(self.server, session)
+        stance = str(getattr(session, "stance", "neutral") or "neutral").lower()
+        attacker_level = max(1, int(getattr(creature, "level", 1) or 1))
+        str_bonus = (
+            (
+                getattr(session, "stat_strength", 50)
+                + int(buffs.get("strength_bonus", 0) or 0)
+                + int(cman_temp.get("strength_bonus", 0) or 0)
+                - int(buffs.get("strength_penalty", 0) or 0)
+            ) - 50
+        ) // 2
+        dex_bonus = (
+            (
+                getattr(session, "stat_dexterity", 50)
+                + int(buffs.get("dexterity_bonus", 0) or 0)
+                + int(cman_temp.get("dexterity_bonus", 0) or 0)
+                - int(buffs.get("dexterity_penalty", 0) or 0)
+            ) - 50
+        ) // 2
+        agi_bonus = (
+            (
+                getattr(session, "stat_agility", 50)
+                + int(buffs.get("agility_bonus", 0) or 0)
+                + int(cman_temp.get("agility_bonus", 0) or 0)
+                - int(buffs.get("agility_penalty", 0) or 0)
+            ) - 50
+        ) // 2
+        int_bonus = (
+            (
+                getattr(session, "stat_intuition", 50)
+                + int(buffs.get("intuition_bonus", 0) or 0)
+                + int(cman_temp.get("intuition_bonus", 0) or 0)
+                - int(buffs.get("intuition_penalty", 0) or 0)
+            ) - 50
+        ) // 2
+        ranged_attack = str((attack or {}).get("attack_type") or "").strip().lower() in {"ranged", "thrown", "bolt"}
+        vitality_mult = _player_ebp_vitality_multiplier(session)
+        shield = _get_player_shield(session)
+        weapon, _weapon_hand = _get_player_weapon(session)
+        stance_avoid_mod = EBP_STANCE_MOD.get(stance, 60)
+
+        chances = {"evade": 0, "block": 0, "parry": 0}
+
+        evade_base = _sr(session, SKILL_DODGING) + agi_bonus + int(int_bonus / 4)
+        evade_base += int(buffs.get("dodge_bonus", 0) or 0)
+        asg = _armor_asg_with_overrides(session, buffs)
+        evade_hindrance = _evade_hindrance_factor(asg, buffs)
+        shield_factor, shield_penalty = _shield_evade_profile(shield) if shield else (1.0, 0)
+        modified_evade = int(int(evade_base * evade_hindrance) * shield_factor) - shield_penalty
+        modified_evade = max(0, modified_evade)
+        evade_base_chance = int(modified_evade * (100 - ((3 * (100 - stance_avoid_mod)) / 4)) / 100.0)
+        evade_chance = int((evade_base_chance * 15) / attacker_level)
+        if ranged_attack:
+            evade_chance = int(evade_chance * 0.75)
+        evade_chance = int(evade_chance * _player_ebp_status_multiplier(self.server, session, "evade"))
+        evade_chance = int(evade_chance * vitality_mult)
+        evade_chance = int(evade_chance * _player_ebp_wound_multiplier(session, "evade"))
+        evade_chance = int(
+            evade_chance * max(
+                0.0,
+                1.0 + (
+                    int(cman_passive.get("evade_pct_bonus", 0) or 0)
+                    + int(cman_temp.get("evade_pct_bonus", 0) or 0)
+                    - int(status_evade_pen or 0)
+                ) / 100.0
+            )
+        )
+        chances["evade"] = max(0, min(60, evade_chance))
+
+        if shield:
+            shield_base = _sr(session, SKILL_SHIELD_USE) + int(str_bonus / 4) + int(dex_bonus / 4)
+            shield_base = int(shield_base * _shield_block_size_mod(shield, ranged=ranged_attack))
+            shield_base = int(
+                shield_base * (100 - ((3 * (100 - stance_avoid_mod)) / 4)) / 100.0
+            )
+            block_chance = int((shield_base * 20) / attacker_level)
+            block_chance = int(block_chance * _player_ebp_status_multiplier(self.server, session, "block"))
+            block_chance = int(block_chance * vitality_mult)
+            block_chance = int(block_chance * _player_ebp_wound_multiplier(session, "block"))
+            block_chance = int(block_chance * max(0.0, 1.0 - (int(status_block_pen or 0) / 100.0)))
+            block_chance += int(cman_passive.get("block_pct_bonus", 0) or 0)
+            block_chance += int(cman_temp.get("block_pct_bonus", 0) or 0)
+            chances["block"] = max(0, min(60, block_chance))
+
+        attacker_speed = _attack_speed_value(attack)
+        if not ranged_attack:
+            parry_bonus_pct = int(cman_passive.get("parry_pct_bonus", 0) or 0) + int(cman_temp.get("parry_pct_bonus", 0) or 0)
+            status_parry_mult = max(0.0, 1.0 - (int(status_parry_pen or 0) / 100.0))
+            parry_status_mult = _player_ebp_status_multiplier(self.server, session, "parry")
+            parry_wound_mult = _player_ebp_wound_multiplier(session, "parry")
+
+            def apply_parry_base(base_value: int, defender_speed: int):
+                chance = int(base_value * (100 - ((4 * (100 - stance_avoid_mod)) / 5)) / 100.0)
+                speed_factor = max(10, 100 - (10 * (attacker_speed - defender_speed)))
+                chance = int(chance * speed_factor / 100.0)
+                chance = int((chance * 10) / attacker_level)
+                chance = int(chance * parry_status_mult)
+                chance = int(chance * vitality_mult)
+                chance = int(chance * parry_wound_mult)
+                chance = int(chance * status_parry_mult)
+                return max(0, chance)
+
+            if weapon:
+                weapon_skill = _sr(session, _weapon_skill_id(weapon))
+                weapon_bonus = int((weapon.get("enchant_bonus", 0) or 0) / 2)
+                weapon_cat = str(weapon.get("weapon_category", "edged") or "edged").lower()
+                parry_base = weapon_skill + int(str_bonus / 4) + int(dex_bonus / 4) + weapon_bonus
+                if weapon_cat == "twohanded":
+                    parry_base += weapon_bonus
+                    if _get_offhand_weapon(session):
+                        parry_base = int(parry_base / 2)
+                    else:
+                        parry_base = int(parry_base * 1.5)
+                elif weapon_cat == "polearm":
+                    parry_base = int(parry_base * 1.35)
+                chances["parry"] += apply_parry_base(parry_base, _parry_weapon_speed(weapon))
+            else:
+                brawl = _sr(session, SKILL_BRAWLING)
+                if brawl > 0:
+                    parry_base = brawl + int(str_bonus / 4) + int(dex_bonus / 4)
+                    chances["parry"] += apply_parry_base(parry_base, 4)
+
+            offhand = _get_offhand_weapon(session)
+            twc_ranks = _sr(session, SKILL_TWC)
+            if offhand and twc_ranks > 0:
+                offhand_base = twc_ranks + int(str_bonus / 4) + int(dex_bonus / 4) + _main_gauche_or_sai_bonus(offhand)
+                chances["parry"] += apply_parry_base(offhand_base, _parry_weapon_speed(offhand))
+
+            chances["parry"] += parry_bonus_pct
+            chances["parry"] = max(0, min(60, chances["parry"]))
+
+        return chances
+
+    def _resolve_player_avoidance(self, session, creature, attack) -> str | None:
+        chances = self._calc_player_avoidance_chances(session, creature, attack)
+        for kind in ("evade", "block", "parry"):
+            chance = max(0, int(chances.get(kind, 0) or 0))
+            if chance > 0 and random.randint(1, 100) <= chance:
+                return kind
+        return None
 
     def _random_body_location(self, body_type: str = "biped") -> str:
         """Pick a weighted-random hit location for a creature of the given body_type.

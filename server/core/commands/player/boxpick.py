@@ -78,16 +78,62 @@ def _locksmith_name(session, server) -> str:
     return npc.display_name if npc else "the locksmith"
 
 
-def _find_box_in_hands(session, target: str):
-    """Find a container in either hand by partial name."""
-    target = target.lower()
+def _normalize_container_name(value: str) -> str:
+    text = str(value or "").strip().lower()
+    for article in ("an ", "a ", "the "):
+        if text.startswith(article):
+            return text[len(article):].strip()
+    return text
+
+
+def _locksmith_treasure_names(server) -> set[str]:
+    names = set()
+    try:
+        containers = getattr(getattr(server, "lua", None), "get_containers", lambda: None)() or {}
+    except Exception:
+        log.exception("Failed loading container data for locksmith validation")
+        return names
+    for row in list((containers.get("treasure") or [])):
+        if not isinstance(row, dict):
+            continue
+        for key in ("base_name", "short_name", "name", "noun"):
+            normalized = _normalize_container_name(row.get(key))
+            if normalized:
+                names.add(normalized)
+    return names
+
+
+def _is_locksmith_box(server, item, *, require_locked: bool = False) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if str(item.get("item_type") or "").lower() != "container":
+        return False
+    if require_locked and not bool(item.get("is_locked", True)):
+        return False
+    container_type = str(item.get("container_type") or "").strip().lower()
+    if container_type:
+        return container_type == "treasure"
+    treasure_names = _locksmith_treasure_names(server)
+    if not treasure_names:
+        return False
+    for key in ("base_name", "short_name", "name", "noun"):
+        normalized = _normalize_container_name(item.get(key))
+        if normalized and normalized in treasure_names:
+            return True
+    return False
+
+
+def _find_box_in_hands(session, server, target: str):
+    """Find an eligible locksmith treasure box in either hand by partial name."""
+    target = target.lower().strip()
     for slot in ("right_hand", "left_hand"):
         item = getattr(session, slot, None)
-        if item and item.get("item_type") == "container":
-            sn = (item.get("short_name") or "").lower()
-            noun = (item.get("noun") or "").lower()
-            if target in sn or target in noun:
-                return item, slot
+        if not _is_locksmith_box(server, item):
+            continue
+        sn = (item.get("short_name") or "").lower()
+        noun = (item.get("noun") or "").lower()
+        if not target or target in sn or target in noun:
+            return item, slot
     return None, None
 
 
@@ -464,14 +510,14 @@ async def cmd_ring(session, cmd, args, server):
         await session.send_line("Ring what?  Try RING BELL.")
         return
 
-    box = session.right_hand if getattr(session, "right_hand", None) and session.right_hand.get("item_type") == "container" else None
+    box = session.right_hand if _is_locksmith_box(server, getattr(session, "right_hand", None), require_locked=True) else None
     hand = "right_hand" if box else None
-    if not box and getattr(session, "left_hand", None) and session.left_hand.get("item_type") == "container":
+    if not box and _is_locksmith_box(server, getattr(session, "left_hand", None), require_locked=True):
         box = session.left_hand
         hand = "left_hand"
 
     if not box:
-        await session.send_line("Hold the locked box in one of your hands before ringing the bell.")
+        await session.send_line("Hold a locked treasure box in one of your hands before ringing the bell.")
         return
     if box.get("opened") and not box.get("is_locked", True):
         await session.send_line("That box is already open.")
@@ -540,6 +586,10 @@ async def cmd_pay(session, cmd, args, server):
         if not box:
             _clear_locksmith_quote(session)
             await session.send_line("You are no longer holding the quoted box.")
+            return
+        if not _is_locksmith_box(server, box, require_locked=True):
+            _clear_locksmith_quote(session)
+            await session.send_line("The locksmith only accepts real treasure boxes for this service.")
             return
         if not box.get("is_locked", True):
             _clear_locksmith_quote(session)
@@ -645,13 +695,16 @@ async def cmd_submit(session, cmd, args, server):
     else:
         item_target = " ".join(parts)
 
-    box, box_slot = _find_box_in_hands(session, item_target)
+    box, box_slot = _find_box_in_hands(session, server, item_target)
     if not box:
-        await session.send_line("You need to be holding the box in your hand to submit it.")
+        await session.send_line("You need to be holding a treasure box in your hand to submit it.")
         return
 
     if box.get("opened") and not box.get("is_locked", True):
         await session.send_line("That box is already open — there's nothing to pick.")
+        return
+    if not _is_locksmith_box(server, box, require_locked=True):
+        await session.send_line("The locksmith board is only for real treasure boxes, coffers, chests, and trunks.")
         return
 
     if fee < 0:
@@ -877,6 +930,9 @@ async def cmd_claim(session, cmd, args, server):
 
     # Restore item from snapshot
     item_data = json.loads(job["item_data"])
+    if not _is_locksmith_box(server, item_data):
+        await session.send_line("That job is not a valid locksmith box and cannot be claimed.")
+        return
     target_slot = "right_hand" if session.right_hand is None else "left_hand"
     restored = _restore_snapshot_to_inventory(server, session.character_id, item_data, slot=target_slot)
     if not restored:

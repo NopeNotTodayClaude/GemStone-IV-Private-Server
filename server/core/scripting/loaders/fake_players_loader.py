@@ -94,6 +94,8 @@ def load_fake_players(lua_engine) -> dict:
             "outfits": {},
             "gear": {},
             "intent_tokens": {},
+            "pet_behavior": {},
+            "pet_names": {"prefixes": [], "suffixes": []},
             "regions": {},
         }
 
@@ -169,6 +171,9 @@ def load_fake_players(lua_engine) -> dict:
             "expensive_action_max_seconds": max(1, _to_int(defaults_raw.get("expensive_action_max_seconds"), 26)),
             "path_cache_seconds": max(1, _to_int(defaults_raw.get("path_cache_seconds"), 45)),
             "distance_cache_seconds": max(1, _to_int(defaults_raw.get("distance_cache_seconds"), 90)),
+            "service_room_refresh_seconds": max(5, _to_int(defaults_raw.get("service_room_refresh_seconds"), 120)),
+            "session_scope_reconcile_seconds": max(5, _to_int(defaults_raw.get("session_scope_reconcile_seconds"), 30)),
+            "world_context_refresh_seconds": max(3, _to_int(defaults_raw.get("world_context_refresh_seconds"), 12)),
             "perf_log_interval_seconds": max(5, _to_int(defaults_raw.get("perf_log_interval_seconds"), 60)),
             "dialogue_builder_disabled_keys": _to_str_list(defaults_raw.get("dialogue_builder_disabled_keys") or []),
             "interaction_memory_cap": max(1, _to_int(defaults_raw.get("interaction_memory_cap"), 24)),
@@ -267,6 +272,11 @@ def load_fake_players(lua_engine) -> dict:
             "outfits": dict(data.get("outfits") or {}),
             "gear": dict(data.get("gear") or {}),
             "intent_tokens": dict(data.get("intent_tokens") or {}),
+            "pet_behavior": dict(data.get("pet_behavior") or {}),
+            "pet_names": {
+                "prefixes": _to_str_list((data.get("pet_names") or {}).get("prefixes")),
+                "suffixes": _to_str_list((data.get("pet_names") or {}).get("suffixes")),
+            },
             "regions": regions,
         }
         log.info(
@@ -287,5 +297,7 @@ def load_fake_players(lua_engine) -> dict:
             "archetypes": {},
             "names": {"first": [], "last": []},
             "dialogue": {},
+            "pet_behavior": {},
+            "pet_names": {"prefixes": [], "suffixes": []},
             "regions": {},
         }

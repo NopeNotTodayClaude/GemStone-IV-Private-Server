@@ -6,8 +6,11 @@ Trouble.config = {
     zone_id = 2,
     min_players_online = 1,
     max_active_incidents = 1,
-    incident_roll_interval_seconds = 360,
-    incident_cooldown_seconds = 240,
+    incident_roll_interval_seconds = 1800,
+    incident_cooldown_seconds = 0,
+    prelude_duration_seconds = 900,
+    music_lead_seconds = 8,
+    start_on_first_login_after_boot = true,
     periodic_announcement_seconds = 180,
     min_participation_damage = 18,
     min_participation_kills = 1,
@@ -17,6 +20,38 @@ Trouble.config = {
     average_level_ceiling = 60,
     resync_active_hostiles_seconds = 60,
     town_crier_name = "A town crier",
+    default_audio_zone_override = "Ta'Vaalor Trouble",
+    announcement_room_hint_count = 2,
+    prelude_warnings = {
+        {
+            seconds_before_start = 900,
+            lines = {
+                "A town crier warns, \"A fresh alarm is rising in %district%.  The ward is expected to break in %time_remaining%.\"",
+                "A town crier calls through Ta'Vaalor, \"Legion scouts report trouble building in %district%.  Expect the outbreak in %time_remaining%.\"",
+            },
+        },
+        {
+            seconds_before_start = 300,
+            lines = {
+                "A town crier shouts, \"Only %time_remaining% remain before trouble breaks in %district%!  Clear the streets and ready yourselves!\"",
+                "A town crier warns, \"The next clash in %district% is closing fast.  The ward is expected to turn in %time_remaining%.\"",
+            },
+        },
+        {
+            seconds_before_start = 60,
+            lines = {
+                "A town crier cries, \"One minute to the outbreak in %district%!  The Legion is taking positions now!\"",
+                "A town crier bellows, \"The ward in %district% is about to break!  Only %time_remaining% remain!\"",
+            },
+        },
+        {
+            seconds_before_start = 30,
+            lines = {
+                "A town crier roars, \"Thirty seconds!  %district% is about to erupt!\"",
+                "A town crier shouts, \"Half a minute until the streets of %district% turn violent.  Stand ready!\"",
+            },
+        },
+    },
 }
 
 Trouble.cities = {
@@ -92,7 +127,7 @@ Trouble.hostile_variants = {
         as_mult = 1.00,
         ds_mult = 1.05,
         td_mult = 1.00,
-        treasure = { coins = false, gems = false, magic = false, boxes = false },
+        treasure = { coins = true, gems = true, magic = false, boxes = true },
     },
     dockside_brute = {
         key = "dockside_brute",
@@ -100,12 +135,12 @@ Trouble.hostile_variants = {
         name = "dockside brute",
         article = "a",
         description = "Broad-shouldered and mean-eyed, the brute shoulders through the street with a cudgel and a willingness to use it.",
-        level_offset = 1,
-        hp_mult = 1.15,
-        as_mult = 1.08,
-        ds_mult = 0.96,
+        level_offset = 0,
+        hp_mult = 1.08,
+        as_mult = 1.03,
+        ds_mult = 0.98,
         td_mult = 1.00,
-        treasure = { coins = false, gems = false, magic = false, boxes = false },
+        treasure = { coins = true, gems = true, magic = false, boxes = true },
     },
     saboteur_enforcer = {
         key = "saboteur_enforcer",
@@ -113,12 +148,12 @@ Trouble.hostile_variants = {
         name = "saboteur enforcer",
         article = "a",
         description = "Soot-smudged hands and a belt full of tools mark the enforcer as someone sent to break things fast and disappear faster.",
-        level_offset = 2,
-        hp_mult = 1.10,
-        as_mult = 1.10,
+        level_offset = 1,
+        hp_mult = 1.05,
+        as_mult = 1.05,
         ds_mult = 1.00,
-        td_mult = 1.05,
-        treasure = { coins = false, gems = false, magic = false, boxes = false },
+        td_mult = 1.02,
+        treasure = { coins = true, gems = true, magic = false, boxes = true },
     },
     catacomb_skeleton = {
         key = "catacomb_skeleton",
@@ -131,7 +166,7 @@ Trouble.hostile_variants = {
         as_mult = 1.00,
         ds_mult = 1.00,
         td_mult = 1.00,
-        treasure = { coins = false, gems = false, magic = false, boxes = false },
+        treasure = { coins = true, gems = true, magic = false, boxes = true },
     },
     catacomb_ghoul = {
         key = "catacomb_ghoul",
@@ -144,7 +179,7 @@ Trouble.hostile_variants = {
         as_mult = 1.04,
         ds_mult = 0.98,
         td_mult = 1.00,
-        treasure = { coins = false, gems = false, magic = false, boxes = false },
+        treasure = { coins = true, gems = true, magic = false, boxes = true },
     },
     wight_captain = {
         key = "wight_captain",
@@ -157,7 +192,7 @@ Trouble.hostile_variants = {
         as_mult = 1.10,
         ds_mult = 1.08,
         td_mult = 1.15,
-        treasure = { coins = false, gems = false, magic = false, boxes = false },
+        treasure = { coins = true, gems = true, magic = true, boxes = true },
     },
 }
 
@@ -281,6 +316,7 @@ Trouble.incidents = {
     garden_catacomb_breach = {
         key = "garden_catacomb_breach",
         city_key = "tavaalor",
+        audio_zone_override = "Ta'Vaalor Trouble",
         weight = 3,
         difficulty = 4,
         min_duration_seconds = 900,

@@ -67,6 +67,7 @@ class TownTroubleManager:
         self._last_roll_at = 0.0
         self._last_resync_at = 0.0
         self._city_cooldowns: dict[str, float] = {}
+        self._boot_login_started = False
 
     def _write_async(self, sql: str, params) -> bool:
         writer = getattr(self.server, "persistence_writer", None)
@@ -81,10 +82,11 @@ class TownTroubleManager:
         self._districts = dict(self._defs.get("districts") or {})
         self._variants = dict(self._defs.get("hostile_variants") or {})
         self._incidents = dict(self._defs.get("incidents") or {})
+        self._validate_definitions()
         self._last_roll_at = time.time()
         self._load_active_from_db()
         for actor in list(self._active.values()):
-            if not actor.get("active_creature_ids"):
+            if actor.get("state") == "active" and not actor.get("active_creature_ids"):
                 await self._spawn_current_stage(actor)
         log.info(
             "TownTroubleManager ready (%d cities, %d districts, %d variants, %d incidents, %d active)",
@@ -111,12 +113,19 @@ class TownTroubleManager:
         room = getattr(session, "current_room", None)
         if not room:
             return
+        await self._maybe_force_boot_incident(session)
         incident = self._incident_for_room(int(getattr(room, "id", 0) or 0))
         if not incident:
             return
         label = incident.get("district_label") or "the district"
+        phase = str(incident.get("state") or "active").strip().lower()
+        line = (
+            f"  Trouble is building in {label}.  Watch the crier and be ready when the ward breaks."
+            if phase == "prelude"
+            else f"  Trouble is active in {label}.  Watch for the crier's call and keep steel ready."
+        )
         await session.send_line(colorize(
-            f"  Trouble is active in {label}.  Watch for the crier's call and keep steel ready.",
+            line,
             TextPresets.WARNING,
         ))
 
@@ -152,10 +161,18 @@ class TownTroubleManager:
         active_ids = [int(cid) for cid in (actor.get("active_creature_ids") or []) if int(cid or 0) > 0]
         actor["active_creature_ids"] = [cid for cid in active_ids if cid != int(getattr(creature, "id", 0) or 0)]
         self._save_incident_state(actor)
+        self._credit_room_witnesses(creature)
         if not getattr(attacker, "is_synthetic_player", False):
             character_id = int(getattr(attacker, "character_id", 0) or 0)
-            if character_id > 0:
-                self._upsert_participation(incident_id, character_id, damage=0, kills=1)
+            room_id = int(getattr(creature, "current_room_id", 0) or 0)
+            if character_id > 0 and room_id > 0:
+                in_room = any(
+                    int(getattr(session, "character_id", 0) or 0) == character_id
+                    for session in self.server.world.get_players_in_room(room_id)
+                    if not getattr(session, "is_synthetic_player", False)
+                )
+                if not in_room:
+                    self._upsert_participation(incident_id, character_id, damage=0, kills=1)
 
     async def _tick_active(self, now: float):
         resync_seconds = max(20, int(self._config.get("resync_active_hostiles_seconds") or 60))
@@ -164,7 +181,28 @@ class TownTroubleManager:
             self._resync_active_creatures()
 
         for actor in list(self._active.values()):
-            if actor.get("state") != "active":
+            phase = str(actor.get("state") or "").strip().lower()
+            if phase == "prelude":
+                changed = False
+                if self._emit_due_prelude_warnings(actor, now):
+                    changed = True
+                if self._should_enable_music_override(actor, now) and not actor.get("music_override_started"):
+                    actor["music_override_started"] = True
+                    changed = True
+                    await self._push_sync_for_city(int(actor.get("city_zone_id") or 0))
+                if now >= float(actor.get("starts_at_ts") or 0.0):
+                    actor["state"] = "active"
+                    actor["music_override_started"] = True
+                    actor["next_announce_at_ts"] = now + max(90, int(self._config.get("periodic_announcement_seconds") or 180))
+                    self._save_incident_state(actor)
+                    await self._broadcast_incident(actor, "crier_open")
+                    await self._spawn_current_stage(actor)
+                    await self._push_sync_for_city(int(actor.get("city_zone_id") or 0))
+                    continue
+                if changed:
+                    self._save_incident_state(actor)
+                continue
+            if phase != "active":
                 continue
             if now >= float(actor.get("expires_at_ts") or 0.0):
                 await self._resolve_incident(actor, success=False)
@@ -218,8 +256,11 @@ class TownTroubleManager:
             max(120, int(chosen.get("min_duration_seconds") or 600)),
             max(120, int(chosen.get("max_duration_seconds") or 900)),
         )
+        prelude_duration = self._prelude_duration_seconds()
         target_level = self._target_level()
-        next_announce = now + max(90, int(self._config.get("periodic_announcement_seconds") or 180))
+        starts_at_ts = now + prelude_duration
+        next_announce = starts_at_ts + max(90, int(self._config.get("periodic_announcement_seconds") or 180))
+        initial_phase = "prelude" if prelude_duration > 0 else "active"
         actor = {
             "id": self._insert_incident_row(
                 city_key=city_key,
@@ -230,7 +271,14 @@ class TownTroubleManager:
                 duration_seconds=duration,
                 stage_index=0,
                 next_announce_ts=next_announce,
-                state_json={},
+                expires_at_ts=starts_at_ts + duration,
+                state_json={
+                    "phase": initial_phase,
+                    "starts_at_ts": starts_at_ts,
+                    "music_override_started": False,
+                    "warning_offsets_sent": [],
+                    "active_creature_ids": [],
+                },
             ),
             "city_key": city_key,
             "city_zone_id": int(city.get("zone_id") or 0),
@@ -243,9 +291,12 @@ class TownTroubleManager:
             "target_level": target_level,
             "stage_index": 0,
             "active_creature_ids": [],
-            "expires_at_ts": now + duration,
+            "starts_at_ts": starts_at_ts,
+            "music_override_started": False,
+            "warning_offsets_sent": [],
+            "expires_at_ts": starts_at_ts + duration,
             "next_announce_at_ts": next_announce,
-            "state": "active",
+            "state": initial_phase,
             "scene_lines": self._collect_scene_lines(district_ids),
             "room_lines": list(chosen.get("room_lines") or []),
             "covered_room_ids": self._collect_district_rooms(district_ids),
@@ -254,8 +305,13 @@ class TownTroubleManager:
             return
         self._active[int(actor["id"])] = actor
         self._save_incident_state(actor)
-        await self._broadcast_incident(actor, "crier_open")
-        await self._spawn_current_stage(actor)
+        if initial_phase == "prelude":
+            if self._emit_due_prelude_warnings(actor, now):
+                self._save_incident_state(actor)
+        else:
+            await self._broadcast_incident(actor, "crier_open")
+            await self._spawn_current_stage(actor)
+            await self._push_sync_for_city(int(actor.get("city_zone_id") or 0))
 
     async def _advance_incident(self, actor: dict):
         incident_def = self._incident_def(actor)
@@ -309,9 +365,10 @@ class TownTroubleManager:
             for session in list(self.server.sessions.playing()):
                 if getattr(session, "character_id", None):
                     await self._grant_pending_rewards(session, incident_id=incident_id)
-        cooldown = max(60, int(self._config.get("incident_cooldown_seconds") or 240))
+        cooldown = max(0, int(self._config.get("incident_cooldown_seconds") or 0))
         self._city_cooldowns[str(actor.get("city_key") or "")] = time.time() + cooldown
         self._active.pop(incident_id, None)
+        await self._push_sync_for_city(int(actor.get("city_zone_id") or 0))
 
     def _spawn_variant(self, actor: dict, variant_id: str, room_id: int):
         if room_id <= 0:
@@ -431,11 +488,18 @@ class TownTroubleManager:
         lines = list(incident_def.get(key) or [])
         if not lines:
             return
-        line = self._format_line(actor, random.choice(lines))
+        line = self._format_line(actor, random.choice(lines), key=key)
         await self._broadcast_city(int(actor.get("city_zone_id") or 0), line, preset=TextPresets.WARNING)
 
-    def _format_line(self, actor: dict, text: str) -> str:
-        return str(text or "").replace("%district%", str(actor.get("district_label") or "the district"))
+    def _format_line(self, actor: dict, text: str, *, key: str = "", replacements: dict | None = None) -> str:
+        room_refs = self._announcement_room_refs(actor)
+        line = str(text or "").replace("%district%", str(actor.get("district_label") or "the district"))
+        line = line.replace("%room_refs%", room_refs)
+        for src, dst in (replacements or {}).items():
+            line = line.replace(str(src), str(dst))
+        if key in {"crier_open", "crier_progress"} and room_refs and "%room_refs%" not in str(text or ""):
+            line = f"{line.rstrip()}  {room_refs}"
+        return line
 
     async def _broadcast_city(self, zone_id: int, text: str, *, preset=None):
         if not text:
@@ -455,6 +519,106 @@ class TownTroubleManager:
             if room_id in set(actor.get("covered_room_ids") or []):
                 return actor
         return None
+
+    def get_audio_zone_override(self, room_id: int) -> str | None:
+        room_id = int(room_id or 0)
+        room = self.server.world.get_room(room_id) if room_id > 0 else None
+        zone_id = int(getattr(room, "zone_id", 0) or 0)
+        if zone_id <= 0:
+            return None
+        now = time.time()
+        for actor in self._active.values():
+            if int(actor.get("city_zone_id") or 0) != zone_id:
+                continue
+            phase = str(actor.get("state") or "").strip().lower()
+            if phase == "prelude" and not self._should_enable_music_override(actor, now):
+                continue
+            if phase not in {"prelude", "active"}:
+                continue
+            incident_def = self._incident_def(actor)
+            override = str(incident_def.get("audio_zone_override") or self._config.get("default_audio_zone_override") or "").strip()
+            if override:
+                return override
+        return None
+
+    def _active_stage_room_ids(self, actor: dict) -> list[int]:
+        incident_def = self._incident_def(actor)
+        stages = list(incident_def.get("stages") or [])
+        stage_index = int(actor.get("stage_index") or 0)
+        if stage_index < 0 or stage_index >= len(stages):
+            return []
+        stage = dict(stages[stage_index] or {})
+        return [int(rid) for rid in (stage.get("spawn_room_ids") or []) if int(rid or 0) > 0]
+
+    def get_active_response_targets(self, zone_id: int | None = None) -> list[dict]:
+        requested_zone = int(zone_id or 0)
+        targets = []
+        for actor in sorted(self._active.values(), key=lambda row: int(row.get("id") or 0)):
+            actor_zone = int(actor.get("city_zone_id") or 0)
+            if requested_zone > 0 and actor_zone != requested_zone:
+                continue
+            if str(actor.get("state") or "").strip().lower() != "active":
+                continue
+            room_ids = []
+            creatures = getattr(self.server, "creatures", None)
+            if creatures:
+                seen = set()
+                for creature_id in actor.get("active_creature_ids") or []:
+                    creature = creatures.get_creature(int(creature_id or 0))
+                    room_id = int(getattr(creature, "current_room_id", 0) or 0) if creature and getattr(creature, "alive", False) else 0
+                    if room_id > 0 and room_id not in seen:
+                        seen.add(room_id)
+                        room_ids.append(room_id)
+            if not room_ids:
+                room_ids = self._active_stage_room_ids(actor)
+            if not room_ids:
+                continue
+            targets.append(
+                {
+                    "incident_id": int(actor.get("id") or 0),
+                    "incident_key": str(actor.get("incident_key") or ""),
+                    "city_key": str(actor.get("city_key") or ""),
+                    "city_zone_id": actor_zone,
+                    "target_level": int(actor.get("target_level") or 1),
+                    "room_ids": room_ids,
+                    "district_ids": [str(v) for v in (actor.get("district_ids") or []) if str(v or "").strip()],
+                }
+            )
+        return targets
+
+    def _announcement_room_refs(self, actor: dict) -> str:
+        incident_def = self._incident_def(actor)
+        stages = list(incident_def.get("stages") or [])
+        stage_index = max(0, int(actor.get("stage_index") or 0))
+        if stage_index >= len(stages):
+            return ""
+        stage = dict(stages[stage_index] or {})
+        room_ids = [int(rid) for rid in (stage.get("spawn_room_ids") or []) if int(rid or 0) > 0]
+        if not room_ids:
+            return ""
+        hint_count = max(1, int(self._config.get("announcement_room_hint_count") or 2))
+        room_ids = room_ids[:hint_count]
+        if len(room_ids) == 1:
+            return f"Reports point toward room #{room_ids[0]}."
+        refs = " and ".join(f"#{rid}" for rid in room_ids)
+        return f"Reports point toward rooms {refs}."
+
+    def _credit_room_witnesses(self, creature):
+        room_id = int(getattr(creature, "current_room_id", 0) or 0)
+        if room_id <= 0:
+            return
+        ctx = dict(getattr(creature, "spawn_context", {}) or {})
+        incident_id = int(ctx.get("town_trouble_id") or 0)
+        if incident_id <= 0 or incident_id not in self._active:
+            return
+        threshold_damage = max(1, int(self._config.get("min_participation_damage") or 1))
+        for session in self.server.world.get_players_in_room(room_id):
+            if getattr(session, "is_synthetic_player", False):
+                continue
+            character_id = int(getattr(session, "character_id", 0) or 0)
+            if character_id <= 0:
+                continue
+            self._upsert_participation(incident_id, character_id, damage=threshold_damage, kills=0)
 
     def _stage_has_living_hostiles(self, actor: dict) -> bool:
         live = []
@@ -506,6 +670,7 @@ class TownTroubleManager:
             district_ids = [did for did in (incident_def.get("district_ids") or []) if did in self._districts]
             city_key = str(row.get("city_key") or "")
             city = dict(self._cities.get(city_key) or {})
+            state_data = _json_loads(row.get("state_json"), default={})
             actor = {
                 "id": int(row.get("id") or 0),
                 "city_key": city_key,
@@ -518,10 +683,21 @@ class TownTroubleManager:
                 "duration_seconds": max(120, int(row.get("duration_seconds") or incident_def.get("max_duration_seconds") or 600)),
                 "target_level": max(1, int(row.get("target_level") or 1)),
                 "stage_index": max(0, int(row.get("stage_index") or 0)),
-                "active_creature_ids": [],
+                "active_creature_ids": [
+                    int(cid)
+                    for cid in (state_data.get("active_creature_ids") or [])
+                    if int(cid or 0) > 0
+                ],
+                "starts_at_ts": float(state_data.get("starts_at_ts") or _dt_to_ts(row.get("started_at"))),
+                "music_override_started": bool(state_data.get("music_override_started")),
+                "warning_offsets_sent": [
+                    int(v)
+                    for v in (state_data.get("warning_offsets_sent") or [])
+                    if int(v or 0) >= 0
+                ],
                 "expires_at_ts": _dt_to_ts(row.get("expires_at")),
                 "next_announce_at_ts": _dt_to_ts(row.get("next_announce_at")),
-                "state": "active",
+                "state": str(state_data.get("phase") or "active").strip().lower() or "active",
                 "scene_lines": self._collect_scene_lines(district_ids),
                 "room_lines": list(incident_def.get("room_lines") or []),
                 "covered_room_ids": self._collect_district_rooms(district_ids),
@@ -540,6 +716,7 @@ class TownTroubleManager:
         duration_seconds: int,
         stage_index: int,
         next_announce_ts: float,
+        expires_at_ts: float,
         state_json: dict,
     ) -> int:
         db = getattr(self.server, "db", None)
@@ -554,7 +731,7 @@ class TownTroubleManager:
                     (city_key, incident_key, district_key, state, target_level, difficulty,
                      duration_seconds, stage_index, state_json, expires_at, next_announce_at)
                 VALUES
-                    (%s, %s, %s, 'active', %s, %s, %s, %s, %s, DATE_ADD(NOW(), INTERVAL %s SECOND), FROM_UNIXTIME(%s))
+                    (%s, %s, %s, 'active', %s, %s, %s, %s, %s, FROM_UNIXTIME(%s), FROM_UNIXTIME(%s))
                 """,
                 (
                     city_key,
@@ -565,7 +742,7 @@ class TownTroubleManager:
                     int(duration_seconds),
                     int(stage_index),
                     _json_dumps(state_json),
-                    int(duration_seconds),
+                    float(expires_at_ts),
                     float(next_announce_ts),
                 ),
             )
@@ -581,7 +758,7 @@ class TownTroubleManager:
         db = getattr(self.server, "db", None)
         if not db or not db._pool or int(actor.get("id") or 0) <= 0:
             return
-        payload = {"active_creature_ids": [int(cid) for cid in (actor.get("active_creature_ids") or []) if int(cid or 0) > 0]}
+        payload = self._build_state_payload(actor)
         sql = """
             UPDATE town_trouble_incidents
             SET stage_index = %s, state_json = %s, next_announce_at = FROM_UNIXTIME(%s), updated_at = NOW()
@@ -614,6 +791,145 @@ class TownTroubleManager:
         )
         if not self._write_async(sql, params):
             db.execute_update(sql, params)
+
+    def _build_state_payload(self, actor: dict) -> dict:
+        return {
+            "phase": str(actor.get("state") or "active"),
+            "starts_at_ts": float(actor.get("starts_at_ts") or 0.0),
+            "music_override_started": bool(actor.get("music_override_started")),
+            "warning_offsets_sent": [
+                int(v)
+                for v in (actor.get("warning_offsets_sent") or [])
+                if int(v or 0) >= 0
+            ],
+            "active_creature_ids": [
+                int(cid)
+                for cid in (actor.get("active_creature_ids") or [])
+                if int(cid or 0) > 0
+            ],
+        }
+
+    def _prelude_duration_seconds(self) -> int:
+        return max(0, int(self._config.get("prelude_duration_seconds") or 0))
+
+    def _music_lead_seconds(self) -> int:
+        return max(0, int(self._config.get("music_lead_seconds") or 0))
+
+    def _warning_definitions(self) -> list[dict]:
+        rows = []
+        for raw in self._config.get("prelude_warnings") or []:
+            if not isinstance(raw, dict):
+                continue
+            seconds_before_start = max(0, int(raw.get("seconds_before_start") or 0))
+            lines = [str(v).strip() for v in (raw.get("lines") or []) if str(v).strip()]
+            if seconds_before_start <= 0 or not lines:
+                continue
+            rows.append({
+                "seconds_before_start": seconds_before_start,
+                "lines": lines,
+            })
+        rows.sort(key=lambda row: row["seconds_before_start"], reverse=True)
+        return rows
+
+    def _format_countdown(self, seconds_remaining: int) -> str:
+        seconds_remaining = max(0, int(seconds_remaining or 0))
+        if seconds_remaining >= 60 and seconds_remaining % 60 == 0:
+            minutes = seconds_remaining // 60
+            return f"{minutes} minute" if minutes == 1 else f"{minutes} minutes"
+        return f"{seconds_remaining} second" if seconds_remaining == 1 else f"{seconds_remaining} seconds"
+
+    def _should_enable_music_override(self, actor: dict, now: float) -> bool:
+        phase = str(actor.get("state") or "").strip().lower()
+        if phase == "active":
+            return True
+        if phase != "prelude":
+            return False
+        starts_at_ts = float(actor.get("starts_at_ts") or 0.0)
+        if starts_at_ts <= 0:
+            return False
+        return now >= max(0.0, starts_at_ts - float(self._music_lead_seconds()))
+
+    def _emit_due_prelude_warnings(self, actor: dict, now: float) -> bool:
+        starts_at_ts = float(actor.get("starts_at_ts") or 0.0)
+        if starts_at_ts <= 0:
+            return False
+        sent = {int(v) for v in (actor.get("warning_offsets_sent") or []) if int(v or 0) >= 0}
+        changed = False
+        for warning in self._warning_definitions():
+            seconds_before_start = int(warning.get("seconds_before_start") or 0)
+            if seconds_before_start in sent:
+                continue
+            if now < starts_at_ts - float(seconds_before_start):
+                continue
+            sent.add(seconds_before_start)
+            actor["warning_offsets_sent"] = sorted(sent, reverse=True)
+            line = self._format_line(
+                actor,
+                random.choice(list(warning.get("lines") or [])),
+                key="prelude_warning",
+                replacements={"%time_remaining%": self._format_countdown(seconds_before_start)},
+            )
+            try:
+                import asyncio
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._broadcast_city(int(actor.get("city_zone_id") or 0), line, preset=TextPresets.WARNING))
+            except Exception:
+                pass
+            changed = True
+        return changed
+
+    async def _push_sync_for_city(self, zone_id: int):
+        zone_id = int(zone_id or 0)
+        if zone_id <= 0:
+            return
+        broadcaster = getattr(self.server, "sync_broadcaster", None)
+        if not broadcaster:
+            return
+        sessions = [
+            session
+            for session in self.server.sessions.playing()
+            if int(getattr(getattr(session, "current_room", None), "zone_id", 0) or 0) == zone_id
+        ]
+        await broadcaster.broadcast_sessions(sessions)
+
+    def _city_for_zone(self, zone_id: int):
+        zone_id = int(zone_id or 0)
+        for city_key, city in self._cities.items():
+            if int(city.get("zone_id") or 0) == zone_id:
+                return city_key, dict(city or {})
+        return None, None
+
+    async def _maybe_force_boot_incident(self, session):
+        if self._boot_login_started:
+            return
+        if self._active:
+            self._boot_login_started = True
+            return
+        if not bool(self._config.get("start_on_first_login_after_boot", False)):
+            return
+        room = getattr(session, "current_room", None)
+        zone_id = int(getattr(room, "zone_id", 0) or 0)
+        city_key, city = self._city_for_zone(zone_id)
+        if not city_key or not city:
+            return
+        self._boot_login_started = True
+        now = time.time()
+        self._last_roll_at = now
+        await self._start_incident(city_key, city, now)
+
+    def _validate_definitions(self):
+        if self._prelude_duration_seconds() > 0 and not self._warning_definitions():
+            log.warning("TownTroubleManager: prelude is enabled but no prelude warnings were defined in Lua.")
+        default_override = str(self._config.get("default_audio_zone_override") or "").strip()
+        if default_override:
+            return
+        for incident in self._incidents.values():
+            if str((incident or {}).get("audio_zone_override") or "").strip():
+                continue
+            log.warning(
+                "TownTroubleManager: incident '%s' has no audio_zone_override and no default city override.",
+                str((incident or {}).get("key") or "unknown"),
+            )
 
     def _upsert_participation(self, incident_id: int, character_id: int, *, damage: int, kills: int):
         threshold_damage = max(1, int(self._config.get("min_participation_damage") or 1))

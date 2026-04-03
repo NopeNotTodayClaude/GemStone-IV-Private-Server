@@ -126,7 +126,7 @@ def generate_box(db, creature_level, server=None):
     try:
         if db:
             query = """
-                SELECT id, name, short_name, noun, container_capacity, description
+                SELECT id, name, short_name, noun, article, container_capacity, description, container_type, base_name
                 FROM items
                 WHERE item_type = 'container'
                   AND is_template = 1
@@ -141,9 +141,12 @@ def generate_box(db, creature_level, server=None):
                     "name":               row[1],
                     "short_name":         row[2],
                     "noun":               row[3],
-                    "container_capacity": row[4],
-                    "description":        row[5],
+                    "article":            row[4] or "a",
+                    "container_capacity": row[5],
+                    "description":        row[6],
                     "item_type":          "container",
+                    "container_type":     row[7] or "treasure",
+                    "base_name":          row[8] or chosen_name,
                 }
     except Exception as e:
         log.warning(f"Failed to query box template: {e}")
@@ -155,9 +158,12 @@ def generate_box(db, creature_level, server=None):
             "name":               "a " + chosen_name,
             "short_name":         chosen_name,
             "noun":               chosen_name.split()[-1],
+            "article":            "a",
             "container_capacity": 5,
             "description":        "A sturdy " + chosen_name + ".",
             "item_type":          "container",
+            "container_type":     "treasure",
+            "base_name":          chosen_name,
         }
 
     box.update({
