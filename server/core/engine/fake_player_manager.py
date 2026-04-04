@@ -158,6 +158,7 @@ class FakePlayerManager:
         self._distance_cache: dict[tuple[int, int], tuple[float, int]] = {}
         self._perf = {"tick_ms": 0.0, "planner_submit": 0, "planner_done": 0, "path_cache_hit": 0, "path_cache_miss": 0}
         self._last_perf_log_at = 0.0
+        self._last_town_trouble_assignment_signature = ""
         self._service_rooms_refresh_at = 0.0
         self._session_scope_reconcile_at = 0.0
         self._active_scope_version = 0
@@ -1084,6 +1085,11 @@ class FakePlayerManager:
                 continue
             target = dict(raw or {})
             target["room_ids"] = room_ids
+            target["covered_room_ids"] = [
+                int(room_id)
+                for room_id in (target.get("covered_room_ids") or [])
+                if int(room_id or 0) > 0
+            ]
             targets.append(target)
         targets.sort(
             key=lambda row: (
@@ -1110,6 +1116,7 @@ class FakePlayerManager:
             room_ids = {int(room_id) for room_id in (target.get("room_ids") or []) if int(room_id or 0) > 0}
             if not room_ids:
                 continue
+            covered_room_ids = {int(room_id) for room_id in (target.get("covered_room_ids") or []) if int(room_id or 0) > 0}
             zone_id = int(target.get("city_zone_id") or 0)
             target_level = int(target.get("target_level") or 1)
             emergency_pull = bool(target.get("emergency_defender_pull"))
@@ -1135,6 +1142,7 @@ class FakePlayerManager:
                 candidate = self._town_trouble_defender_candidate(
                     actor,
                     room_ids=room_ids,
+                    covered_room_ids=covered_room_ids,
                     zone_id=zone_id,
                     target_level=target_level,
                     max_distance=max_distance,
@@ -1157,10 +1165,12 @@ class FakePlayerManager:
                     "city_zone_id": zone_id,
                     "target_room_id": int(row.get("target_room_id") or 0),
                     "room_ids": sorted(room_ids),
+                    "covered_room_ids": sorted(covered_room_ids),
                     "boss_wave": bool(target.get("boss_wave")),
                     "emergency_defender_pull": emergency_pull,
                 }
                 assigned_here += 1
+        self._log_town_trouble_assignments(targets, assignments)
         return assignments
 
     def _town_trouble_defender_candidate(
@@ -1168,6 +1178,7 @@ class FakePlayerManager:
         actor: SyntheticPlayer,
         *,
         room_ids: set[int],
+        covered_room_ids: set[int],
         zone_id: int,
         target_level: int,
         max_distance: int,
@@ -1195,7 +1206,13 @@ class FakePlayerManager:
         }
         archetype_match = archetype_key in allowed_archetypes if allowed_archetypes else False
         profession_match = profession_name in allowed_professions if allowed_professions else False
+        local_presence = actor_room_id in room_ids
+        district_presence = actor_room_id in covered_room_ids if covered_room_ids else False
+        combat_capable = self._town_trouble_combat_capable(actor, archetype_match=archetype_match, profession_match=profession_match)
         if not emergency_pull and not archetype_match and not profession_match:
+            if not local_presence or not combat_capable:
+                return None
+        if not emergency_pull and not local_presence and not district_presence and not (archetype_match or profession_match):
             return None
         level_slack = max(0, int(self._defaults.get("town_trouble_defender_level_slack") or 0))
         actor_level = max(1, int(getattr(actor, "level", 1) or 1))
@@ -1213,12 +1230,57 @@ class FakePlayerManager:
         if distance >= 10**9 or distance > max_distance:
             return None
         combat_bias = float(self._archetype_bias(actor, "hunt_bias", 0.0)) + float(self._personality(actor, "hunt", 0.18))
-        priority_class = 0 if emergency_pull else 0 if archetype_match and profession_match else 1 if archetype_match else 2
+        if emergency_pull or local_presence:
+            priority_class = 0
+        elif district_presence and combat_capable:
+            priority_class = 1
+        elif archetype_match and profession_match:
+            priority_class = 1
+        elif archetype_match:
+            priority_class = 2
+        elif profession_match:
+            priority_class = 3
+        else:
+            priority_class = 4
         return {
             "actor_id": int(getattr(actor, "synthetic_id", 0) or 0),
             "target_room_id": int(target_room_id),
             "sort_key": (priority_class, int(distance), -combat_bias, -actor_level, int(getattr(actor, "synthetic_id", 0) or 0)),
         }
+
+    def _town_trouble_combat_capable(self, actor: SyntheticPlayer, *, archetype_match: bool = False, profession_match: bool = False) -> bool:
+        if archetype_match or profession_match:
+            return True
+        combat_bias = float(self._archetype_bias(actor, "hunt_bias", 0.0)) + float(self._personality(actor, "hunt", 0.18))
+        actor_level = max(1, int(getattr(actor, "level", 1) or 1))
+        return combat_bias >= 0.50 or actor_level >= 18
+
+    def _log_town_trouble_assignments(self, targets: list[dict], assignments: dict[int, dict]):
+        parts = []
+        for target in targets:
+            parts.append(
+                (
+                    int(target.get("incident_id") or 0),
+                    tuple(sorted(int(room_id) for room_id in (target.get("room_ids") or []) if int(room_id or 0) > 0)),
+                    int(bool(target.get("boss_wave"))),
+                    int(bool(target.get("emergency_defender_pull"))),
+                )
+            )
+        signature = f"{tuple(parts)}|{tuple(sorted(int(actor_id) for actor_id in assignments.keys()))}"
+        if signature == self._last_town_trouble_assignment_signature:
+            return
+        self._last_town_trouble_assignment_signature = signature
+        if not targets:
+            return
+        log.info(
+            "FakePlayerManager town trouble assignments: incidents=%d assigned=%d details=%s",
+            len(targets),
+            len(assignments),
+            ", ".join(
+                f"{int(target.get('incident_id') or 0)}:{len([row for row in assignments.values() if int(row.get('incident_id') or 0) == int(target.get('incident_id') or 0)])}"
+                for target in targets
+            ),
+        )
 
     def _collect_finished_plans(self):
         finished = []
@@ -2288,6 +2350,8 @@ class FakePlayerManager:
         room = getattr(actor, "current_room", None)
         if not room:
             return []
+        room_id = int(getattr(room, "id", 0) or 0)
+        town_trouble_room = self._town_trouble_target_for_room(room_id)
         threats = []
         for creature in self.server.creatures.get_creatures_in_room(room.id):
             if not getattr(creature, "alive", False):
@@ -2297,16 +2361,48 @@ class FakePlayerManager:
                 threats.append(creature)
                 continue
             if getattr(room, "safe", False):
-                if ctx.get("town_trouble_hostile") or ctx.get("special_spawn") or getattr(creature, "in_combat", False) or getattr(creature, "target", None) is not None:
+                if (
+                    ctx.get("town_trouble_hostile")
+                    or ctx.get("special_spawn")
+                    or getattr(creature, "in_combat", False)
+                    or getattr(creature, "target", None) is not None
+                    or (town_trouble_room and bool(getattr(creature, "aggressive", False)))
+                ):
                     threats.append(creature)
             else:
                 threats.append(creature)
         return threats
 
+    def _town_trouble_target_for_room(self, room_id: int) -> dict | None:
+        room_id = int(room_id or 0)
+        if room_id <= 0:
+            return None
+        manager = getattr(self.server, "town_trouble", None)
+        if not manager or not hasattr(manager, "get_active_response_targets"):
+            return None
+        try:
+            targets = manager.get_active_response_targets()
+        except Exception:
+            log.exception("FakePlayerManager: failed resolving town trouble room target")
+            return None
+        for raw in targets or []:
+            target = dict(raw or {})
+            room_ids = {int(value) for value in (target.get("room_ids") or []) if int(value or 0) > 0}
+            covered_room_ids = {int(value) for value in (target.get("covered_room_ids") or []) if int(value or 0) > 0}
+            if room_id in room_ids or room_id in covered_room_ids:
+                target["room_ids"] = sorted(room_ids)
+                target["covered_room_ids"] = sorted(covered_room_ids)
+                return target
+        return None
+
     async def _engage_room_threat(self, actor: SyntheticPlayer, threats: list, now: float) -> bool:
         if not threats:
             return False
         target = min(threats, key=lambda c: abs(int(getattr(c, "level", actor.level) or actor.level) - actor.level))
+        ctx = dict(getattr(target, "spawn_context", {}) or {})
+        if ctx.get("town_trouble_hostile") or self._town_trouble_target_for_room(int(getattr(actor.current_room, "id", 0) or 0)):
+            actor.synthetic_flags["intent"] = "town_trouble_defense"
+            actor.synthetic_flags["town_trouble_incident_id"] = int(ctx.get("town_trouble_id") or actor.synthetic_flags.get("town_trouble_incident_id") or 0)
         actor.target = target
         actor.in_combat = True
         actor.position = "standing"

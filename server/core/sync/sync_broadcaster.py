@@ -341,9 +341,14 @@ def build_snapshot(session, server) -> dict:
     room = getattr(session, "current_room", None)
     audio_zone_override = None
     try:
-        town_trouble = getattr(server, "town_trouble", None)
-        if town_trouble and room:
-            audio_zone_override = town_trouble.get_audio_zone_override(getattr(room, "id", 0))
+        if room:
+            ferries = getattr(server, "ferries", None)
+            if ferries:
+                audio_zone_override = ferries.get_audio_zone_override(getattr(room, "id", 0))
+            if not audio_zone_override:
+                town_trouble = getattr(server, "town_trouble", None)
+                if town_trouble:
+                    audio_zone_override = town_trouble.get_audio_zone_override(getattr(room, "id", 0))
     except Exception:
         audio_zone_override = None
     hotbar = {}

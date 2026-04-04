@@ -13,6 +13,18 @@
         "fade_out_ms": 2200,
         "loop_crossfade_ms": 5200
       },
+      "Ferry Travel": {
+        "file": "Eastward Bound.mp3",
+        "fade_in_ms": 2600,
+        "fade_out_ms": 2400,
+        "loop_crossfade_ms": 5400
+      },
+      "Ferry Ambush": {
+        "file": "Black Coffin.mp3",
+        "fade_in_ms": 1800,
+        "fade_out_ms": 2200,
+        "loop_crossfade_ms": 5200
+      },
       "Victory Road": {
         "file": "Cemetary.mp3",
         "fade_in_ms": 3200,

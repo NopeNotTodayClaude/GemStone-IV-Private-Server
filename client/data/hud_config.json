@@ -1,5 +1,5 @@
 {
-  "geometry": "2104x1121+227+61",
+  "geometry": "2104x1119+345+30",
   "font_size": 14,
   "font_family": "Georgia",
   "panel_font_size": 13,
@@ -33,7 +33,7 @@
         "map"
       ],
       "sashes": [
-        995
+        994
       ]
     },
     "top": {
@@ -42,11 +42,11 @@
     },
     "_main_sashes": [
       279,
-      1657
+      1570
     ]
   },
   "input_mode": "command",
-  "comm_input_mode": "say",
+  "comm_input_mode": "chat",
   "auto_login": {
     "enabled": false,
     "username": "admin",

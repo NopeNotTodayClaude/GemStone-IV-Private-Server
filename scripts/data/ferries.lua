@@ -5,14 +5,72 @@ Ferries.lake_of_fear = {
     name = "Lake of Fear Ferry",
     ferry_room_id = 10118,
     onboard_room_ids = { 10118, 13977 },
+    underway_room_ids = { 36784, 36785 },
+    room_transitions = {
+        underway = {
+            [10118] = 36784,
+            [13977] = 36785,
+        },
+        docked = {
+            [36784] = 10118,
+            [36785] = 13977,
+        },
+    },
     boarding_exit = "go_plank",
     dock_duration_sec = 60,
     travel_duration_sec = 120,
     start_side = "south",
+    lore_broadcast_interval_sec = 22,
     ferry_look = "The broad wooden ferry rides low in the dark water, its striped awning stirring gently as the crew readies the crossing.",
     ferryman_look = "The ferryman watches the dock with the calm patience of someone who has made this crossing more times than anyone could count.",
     onboard_depart_msg = "The ferry eases away from the dock and begins gliding across the eerily still waters of the lake.",
     onboard_arrive_msg = "The ferry bumps softly against the dock and a plank is lowered for passengers.",
+    audio = {
+        default_zone = "Ferry Travel",
+        event_zone = "Ferry Ambush",
+    },
+    waiting_room_lines = {
+        "The ferryman keeps one eye on the black water and one on the knot of would-be passengers gathering by the pier.",
+        "A faint lake chill creeps along the pier while the ferry crew readies ropes, poles, and the next crossing.",
+    },
+    waiting_room_countdown_lines = {
+        {
+            seconds = 45,
+            line = "The ferryman calls, \"Another run will shove off in about %time_remaining%.  Keep your silver ready and your boots out of the way.\"",
+        },
+        {
+            seconds = 20,
+            line = "The deckhands start pulling in slack line and the ferryman warns, \"If you're crossing, board now.  We shove off in %time_remaining%.\"",
+        },
+        {
+            seconds = 8,
+            line = "A deckhand stamps the plank into place and barks, \"Last call.  We are off in %time_remaining%.\"",
+        },
+    },
+    onboard_status_lines = {
+        docked = {
+            "The ferry sits snug to the pier while ropes creak softly and the ferryman judges the load with a practiced eye.",
+            "Passengers shift along the deck as the ferryman waits for the next clean moment to shove off.",
+        },
+        traveling = {
+            "Dark water slaps the hull in slow, hollow strokes as the ferry makes its way across the lake.",
+            "The ferry rocks lazily on the black water while the crew lean into poles and mutter to one another over the wind.",
+        },
+        loot_window = {
+            "The ferry rides in uneasy silence while the crew glance between the dead and the far pier, waiting for the order to continue.",
+            "The ferryman keeps the boat steady and gives the survivors a brief, wary moment to gather themselves and strip the dead.",
+        },
+    },
+    travel_messages = {
+        "The ferry glides over the black water, leaving only a wavering wake behind it.",
+        "The ferryman plants his pole deep and the ferry answers with a long wooden groan.",
+        "Cold mist skims low over the lake while the ferry presses onward through the dark.",
+        "Loose rigging taps against the mast in a patient rhythm as the ferry cuts across the water.",
+    },
+    loot_window_messages = {
+        "The ferryman mutters, \"Make it quick.  Strip what you need and leave the rest for the depths.\"",
+        "A deckhand nervously scans the waterline and growls, \"You've got a moment.  After that we're moving.\"",
+    },
     sides = {
         north = {
             room_id = 10117,
@@ -35,6 +93,148 @@ Ferries.lake_of_fear = {
             arrival_room_msg = "A broad wooden ferry emerges from the dark water and noses up to the dock.",
         },
     },
+    ambush = {
+        enabled = true,
+        chance_pct = 25,
+        prelude_seconds = 8,
+        dead_party_fail_seconds = 60,
+        loot_window_seconds = 30,
+        inter_wave_delay_seconds = 6,
+        trigger_progress_min_pct = 45,
+        trigger_progress_max_pct = 65,
+        average_level_floor = 3,
+        average_level_ceiling = 50,
+        average_level_scale_pct = 85,
+        average_level_bias = -1,
+        captain_extra_boxes_min = 2,
+        captain_extra_boxes_max = 4,
+        hat_drop_chance_pct = 30,
+        prelude_messages = {
+            "A low, mournful note rolls across the lake as the ferryman stiffens and peers into the dark.",
+            "The ferryman suddenly goes quiet, his eyes narrowing toward a clutch of shapes moving over the water.",
+            "A deckhand hisses, \"Something's pacing us out there...\"",
+        },
+        approach_messages = {
+            "Ragged figures rise from the dark water and hook onto the ferry's rails with skeletal hands.",
+            "A chorus of dry rattling clacks over the gunwales as skeletal raiders swarm toward the deck.",
+            "The first wave of pirates comes on in a burst of hooked blades, splintered shields, and bare white bone.",
+        },
+        wave_completion_messages = {
+            "The first raiders crash apart across the deck, but more dead shapes are already clawing toward the rails.",
+            "For one sharp breath the deck clears, then a fresh press of skeletal boarders surges over the sides.",
+            "The rail shudders under another impact and the last boarding wave spills onto the ferry with murderous purpose.",
+        },
+        boss_arrival_messages = {
+            "A towering skeletal captain hauls itself over the rail, black coat snapping like a funeral banner in the wind.",
+            "The pirate captain strides onto the blood-slick deck, rusted cutlass raised as the lesser dead close around him.",
+        },
+        failure_messages = {
+            "The ferry falls sickeningly quiet as the last defenders drop, leaving the dead to stalk the deck unchecked.",
+        },
+        success_messages = {
+            "With the captain's fall, the remaining dead pitch backward into the lake and vanish beneath the black water.",
+            "The skeletal raiders lose whatever foul will drove them and tumble away into the wake as the captain collapses.",
+        },
+        variants = {
+            boarding_bones = {
+                key = "boarding_bones",
+                base_template_id = "lesser_skeleton",
+                name = "skeletal deckhand raider",
+                article = "a",
+                description = "Hung with rotting tackle and salt-blackened rope, the skeletal raider comes forward in a jerking rush of hooked blades and bare bone.",
+                level_offset = 0,
+                hp_mult = 1.00,
+                as_mult = 0.92,
+                ds_mult = 0.95,
+                td_mult = 0.98,
+                treasure = { coins = true, gems = true, magic = false, boxes = true },
+            },
+            boarding_cutthroat = {
+                key = "boarding_cutthroat",
+                base_template_id = "skeleton_warrior",
+                name = "skeletal pirate cutthroat",
+                article = "a",
+                description = "Bits of soaked sash and corroded buckles cling to the pirate's bones while it hacks forward with pitiless speed.",
+                level_offset = 0,
+                hp_mult = 1.02,
+                as_mult = 0.93,
+                ds_mult = 0.96,
+                td_mult = 0.99,
+                treasure = { coins = true, gems = true, magic = false, boxes = true },
+            },
+            boarding_reaver = {
+                key = "boarding_reaver",
+                base_template_id = "skeleton_warrior",
+                name = "skeletal pirate reaver",
+                article = "a",
+                description = "The reaver lurches over the planks in a storm of rusted steel, splintered shields, and long-dead fury.",
+                level_offset = 1,
+                hp_mult = 1.08,
+                as_mult = 0.95,
+                ds_mult = 0.98,
+                td_mult = 1.00,
+                treasure = { coins = true, gems = true, magic = false, boxes = true },
+            },
+            pirate_captain = {
+                key = "pirate_captain",
+                base_template_id = "skeleton_warrior",
+                name = "skeletal pirate captain",
+                article = "a",
+                description = "A tattered black coat hangs from the captain's frame, and every ragged motion carries the mean certainty of an old killer who died commanding a deck.",
+                level_offset = 1,
+                hp_mult = 4.60,
+                hp_bonus = 1000,
+                as_mult = 0.94,
+                ds_mult = 1.04,
+                ds_bonus = 6,
+                td_mult = 1.04,
+                td_bonus = 4,
+                treasure = { coins = true, gems = true, magic = true, boxes = true },
+            },
+        },
+        waves = {
+            {
+                key = "wave_1",
+                label = "the first boarders",
+                fixed_count = 2,
+                variant_id = "boarding_bones",
+            },
+            {
+                key = "wave_2",
+                label = "the second boarding rush",
+                fixed_count = 2,
+                variant_id = "boarding_cutthroat",
+            },
+            {
+                key = "wave_3",
+                label = "the third boarding rush",
+                fixed_count = 3,
+                variant_id = "boarding_reaver",
+            },
+            {
+                key = "boss_wave",
+                label = "the pirate captain",
+                boss = true,
+                variant_id = "pirate_captain",
+                adds = {
+                    { variant_id = "boarding_cutthroat", count = 1 },
+                    { variant_id = "boarding_reaver", count = 1 },
+                },
+                hat_drop = {
+                    enabled = true,
+                    item_name = "a weathered black pirate hat",
+                    chance_pct = 30,
+                    extra_data = {
+                        enchant_bonus = 25,
+                        defense_bonus = 25,
+                        parry_pct_bonus = 5,
+                        evade_pct_bonus = 5,
+                        is_exclusive = true,
+                    },
+                },
+            },
+        },
+    },
 }
 
 Ferries.locksmehr_river = {
@@ -42,14 +242,53 @@ Ferries.locksmehr_river = {
     name = "Locksmehr River Ferry",
     ferry_room_id = 1191,
     onboard_room_ids = { 1191 },
+    underway_room_ids = { 36786 },
+    room_transitions = {
+        underway = {
+            [1191] = 36786,
+        },
+        docked = {
+            [36786] = 1191,
+        },
+    },
     boarding_exit = "go_plank",
     dock_duration_sec = 60,
     travel_duration_sec = 60,
     start_side = "north",
+    lore_broadcast_interval_sec = 20,
     ferry_look = "The shallow-draft ferryboat rides the thick guide rope stretched across the Locksmehr, its narrow walkway wet with spray from the rushing current.",
     ferryman_look = "The blind ferryman works by feel and habit, one hand never far from the guide rope that keeps the ferry on its line.",
     onboard_depart_msg = "The blind ferryman leans into his pole and the ferry shudders away from the dock, following the guide rope across the current.",
     onboard_arrive_msg = "The ferry bumps against the dock and the blind ferryman lowers the plank for disembarking passengers.",
+    audio = {
+        default_zone = "Ferry Travel",
+    },
+    waiting_room_lines = {
+        "The guide rope hums faintly over the river while the blind ferryman waits for the next crossing to fill.",
+    },
+    waiting_room_countdown_lines = {
+        {
+            seconds = 20,
+            line = "The blind ferryman rasps, \"Board now if you're crossing.  The river run leaves in %time_remaining%.\"",
+        },
+        {
+            seconds = 8,
+            line = "The ferryman plants his pole and says, \"Last call.  We shove off in %time_remaining%.\"",
+        },
+    },
+    onboard_status_lines = {
+        docked = {
+            "The ferryboat rocks against the pier while the blind ferryman judges the line and listens to the current.",
+        },
+        traveling = {
+            "The guide rope sings against wet wood as the ferry creeps through the river current.",
+            "Cold spray drifts over the narrow deck while the blind ferryman works the boat across by feel alone.",
+        },
+    },
+    travel_messages = {
+        "The ferry grinds along the guide rope with a wet, steady creak.",
+        "The current presses against the hull and the blind ferryman answers with a practiced shove of his pole.",
+    },
     sides = {
         north = {
             room_id = 1190,

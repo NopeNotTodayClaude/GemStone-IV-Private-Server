@@ -221,7 +221,13 @@ def _pawn_snapshot(item: dict) -> dict:
     }
 
 
+def _is_exclusive_item(item: dict) -> bool:
+    return bool((item or {}).get("is_exclusive"))
+
+
 def _item_can_be_sold(item: dict) -> bool:
+    if _is_exclusive_item(item):
+        return False
     return str((item or {}).get("item_type") or "").strip().lower() != "seal"
 
 
@@ -1615,6 +1621,15 @@ async def cmd_mark(session, cmd, args, server):
         return
 
     iname = item.get("name") or item.get("short_name") or "that item"
+
+    if _is_exclusive_item(item):
+        await session.send_line(
+            colorize(
+                f"  {colorize(iname, TextPresets.ITEM_NAME)} is EX and cannot be marked, unmarked, sold, or traded.",
+                TextPresets.WARNING,
+            )
+        )
+        return
 
     if remove_mode:
         if not item.get("is_marked"):

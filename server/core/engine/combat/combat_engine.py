@@ -574,6 +574,44 @@ def _get_player_armor(session):
     return None
 
 
+def _equipped_item_combat_bonus_totals(session) -> dict:
+    """Aggregate combat modifiers from actively equipped gear.
+
+    Per-instance item bonuses arrive from character_inventory.extra_data and are
+    already merged into runtime item dicts by Database.get_character_inventory().
+    """
+    totals = {
+        "evade_pct_bonus": 0,
+        "parry_pct_bonus": 0,
+        "block_pct_bonus": 0,
+        "ds_bonus": 0,
+    }
+    seen = set()
+    equipped = []
+
+    for hand_name in ("right_hand", "left_hand"):
+        item = getattr(session, hand_name, None)
+        if item:
+            equipped.append(item)
+
+    for item in getattr(session, "inventory", []) or []:
+        slot = str(item.get("slot") or "").strip().lower()
+        if not slot or slot in {"in_container", "on_ground"}:
+            continue
+        equipped.append(item)
+
+    for item in equipped:
+        inv_id = item.get("inv_id")
+        key = ("inv", int(inv_id)) if inv_id is not None else ("obj", id(item))
+        if key in seen:
+            continue
+        seen.add(key)
+        for bonus_key in totals.keys():
+            totals[bonus_key] += int(item.get(bonus_key, 0) or 0)
+
+    return totals
+
+
 def _armor_asg_with_overrides(session, buffs):
     armor = _get_player_armor(session)
     asg = int(armor.get("armor_asg", 1) or 1) if armor else 1
@@ -2162,6 +2200,7 @@ class CombatEngine:
         buffs = _buff_totals(session, self.server)
         cman_passive = get_passive_combat_mods(session, self.server)
         cman_temp = get_temp_combat_bonus_totals(session)
+        item_bonuses = _equipped_item_combat_bonus_totals(session)
         _status_as_mod, status_ds_mod, status_evade_pen, status_parry_pen, status_block_pen = _status_combat_mods(self.server, session)
         str_bonus = (
             (
@@ -2230,6 +2269,7 @@ class CombatEngine:
                     + (
                         int(cman_passive.get("evade_pct_bonus", 0) or 0)
                         + int(cman_temp.get("evade_pct_bonus", 0) or 0)
+                        + int(item_bonuses.get("evade_pct_bonus", 0) or 0)
                         - int(status_evade_pen or 0)
                     ) / 100.0
                 )
@@ -2276,6 +2316,7 @@ class CombatEngine:
                     + (
                         int(cman_passive.get("parry_pct_bonus", 0) or 0)
                         + int(cman_temp.get("parry_pct_bonus", 0) or 0)
+                        + int(item_bonuses.get("parry_pct_bonus", 0) or 0)
                         - int(status_parry_pen or 0)
                     ) / 100.0
                 )
@@ -2300,6 +2341,7 @@ class CombatEngine:
                     + (
                         int(cman_passive.get("block_pct_bonus", 0) or 0)
                         + int(cman_temp.get("block_pct_bonus", 0) or 0)
+                        + int(item_bonuses.get("block_pct_bonus", 0) or 0)
                         - int(status_block_pen or 0)
                     ) / 100.0
                 )
@@ -2338,6 +2380,7 @@ class CombatEngine:
         total += int(status_ds_mod or 0)
         total += int(cman_passive.get("ds_bonus", 0) or 0)
         total += int(cman_temp.get("ds_bonus", 0) or 0)
+        total += int(item_bonuses.get("ds_bonus", 0) or 0)
         total = int(total * getattr(session, "death_stat_mult", 1.0))
 
         # Encumbrance DS penalty (applies after death_stat_mult)
@@ -2350,6 +2393,7 @@ class CombatEngine:
         buffs = _buff_totals(session, self.server)
         cman_passive = get_passive_combat_mods(session, self.server)
         cman_temp = get_temp_combat_bonus_totals(session)
+        item_bonuses = _equipped_item_combat_bonus_totals(session)
         _status_as_mod, _status_ds_mod, status_evade_pen, status_parry_pen, status_block_pen = _status_combat_mods(self.server, session)
         stance = str(getattr(session, "stance", "neutral") or "neutral").lower()
         attacker_level = max(1, int(getattr(creature, "level", 1) or 1))
@@ -2413,6 +2457,7 @@ class CombatEngine:
                 1.0 + (
                     int(cman_passive.get("evade_pct_bonus", 0) or 0)
                     + int(cman_temp.get("evade_pct_bonus", 0) or 0)
+                    + int(item_bonuses.get("evade_pct_bonus", 0) or 0)
                     - int(status_evade_pen or 0)
                 ) / 100.0
             )
@@ -2432,11 +2477,16 @@ class CombatEngine:
             block_chance = int(block_chance * max(0.0, 1.0 - (int(status_block_pen or 0) / 100.0)))
             block_chance += int(cman_passive.get("block_pct_bonus", 0) or 0)
             block_chance += int(cman_temp.get("block_pct_bonus", 0) or 0)
+            block_chance += int(item_bonuses.get("block_pct_bonus", 0) or 0)
             chances["block"] = max(0, min(60, block_chance))
 
         attacker_speed = _attack_speed_value(attack)
         if not ranged_attack:
-            parry_bonus_pct = int(cman_passive.get("parry_pct_bonus", 0) or 0) + int(cman_temp.get("parry_pct_bonus", 0) or 0)
+            parry_bonus_pct = (
+                int(cman_passive.get("parry_pct_bonus", 0) or 0)
+                + int(cman_temp.get("parry_pct_bonus", 0) or 0)
+                + int(item_bonuses.get("parry_pct_bonus", 0) or 0)
+            )
             status_parry_mult = max(0.0, 1.0 - (int(status_parry_pen or 0) / 100.0))
             parry_status_mult = _player_ebp_status_multiplier(self.server, session, "parry")
             parry_wound_mult = _player_ebp_wound_multiplier(session, "parry")

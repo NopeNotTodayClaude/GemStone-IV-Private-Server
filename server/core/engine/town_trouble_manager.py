@@ -380,6 +380,14 @@ class TownTroubleManager:
         if incident_id <= 0:
             return
         actor["state"] = "resolved" if success else "failed"
+        removed = self._despawn_incident_hostiles(actor)
+        if removed > 0:
+            log.info(
+                "TownTroubleManager: removed %d leftover hostile(s) for incident %d (%s)",
+                removed,
+                incident_id,
+                str(actor.get("incident_key") or ""),
+            )
         self._save_resolved_state(actor, success=success)
         await self._broadcast_incident(actor, "crier_success" if success else "crier_fail")
         if success:
@@ -391,6 +399,36 @@ class TownTroubleManager:
         self._city_cooldowns[str(actor.get("city_key") or "")] = time.time() + cooldown
         self._active.pop(incident_id, None)
         await self._push_sync_for_city(int(actor.get("city_zone_id") or 0))
+
+    def _despawn_incident_hostiles(self, actor: dict) -> int:
+        creatures = getattr(self.server, "creatures", None)
+        if not creatures:
+            return 0
+        incident_id = int(actor.get("id") or 0)
+        if incident_id <= 0:
+            return 0
+        tracked_ids = {
+            int(cid)
+            for cid in (actor.get("active_creature_ids") or [])
+            if int(cid or 0) > 0
+        }
+        matched = []
+        for creature in list(getattr(creatures, "_creatures", {}).values()):
+            ctx = dict(getattr(creature, "spawn_context", {}) or {})
+            tagged_incident_id = int(ctx.get("town_trouble_id") or 0)
+            if tagged_incident_id == incident_id or int(getattr(creature, "id", 0) or 0) in tracked_ids:
+                matched.append(creature)
+        removed = 0
+        seen_ids = set()
+        for creature in matched:
+            creature_id = int(getattr(creature, "id", 0) or 0)
+            if creature_id <= 0 or creature_id in seen_ids:
+                continue
+            seen_ids.add(creature_id)
+            creatures.remove_creature(creature)
+            removed += 1
+        actor["active_creature_ids"] = []
+        return removed
 
     def _spawn_variant(self, actor: dict, variant_id: str, room_id: int):
         if room_id <= 0:
@@ -632,6 +670,7 @@ class TownTroubleManager:
                     "city_zone_id": actor_zone,
                     "target_level": int(actor.get("target_level") or 1),
                     "room_ids": room_ids,
+                    "covered_room_ids": [int(rid) for rid in (actor.get("covered_room_ids") or []) if int(rid or 0) > 0],
                     "district_ids": [str(v) for v in (actor.get("district_ids") or []) if str(v or "").strip()],
                     "phase": phase,
                     "boss_wave": bool(stage.get("boss_wave")),

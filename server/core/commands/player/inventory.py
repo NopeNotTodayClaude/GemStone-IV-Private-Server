@@ -103,6 +103,7 @@ CONTAINER_SLOTS = {
 
 TREASURE_CONTAINER_NOUNS = {'box', 'coffer', 'chest', 'strongbox', 'trunk', 'crate'}
 LOCKED_ITEM_MARKER = " {L}"
+EXCLUSIVE_ITEM_MARKER = " {EX}"
 SKINNING_SHEATH_SLOT = "skinning_sheath"
 
 
@@ -120,10 +121,9 @@ def _ensure_hands(session):
 def _item_display(item):
     """Formatted display name (colored)."""
     name = item.get('short_name') or item.get('name') or 'something'
-    display = fmt_item_name(name)
-    noun = (item.get('noun') or '').lower()
-    if item.get('is_locked') and (noun in TREASURE_CONTAINER_NOUNS or item.get('item_type') == 'container'):
-        display += colorize(LOCKED_ITEM_MARKER, TextPresets.SYSTEM)
+    display = fmt_item_name(_item_display_name(item, name))
+    for marker in _item_display_markers(item):
+        display += colorize(marker, TextPresets.SYSTEM)
     return display
 
 
@@ -131,7 +131,92 @@ def _item_full_name(item):
     """Capitalized display name for player output. No article prefix."""
     from server.core.world.material_data import pretty_item_name
     name = item.get('short_name') or item.get('name') or 'something'
-    return pretty_item_name(name)
+    return _item_display_name(item, pretty_item_name(name)) + "".join(_item_display_markers(item))
+
+
+def _is_exclusive_item(item) -> bool:
+    return bool((item or {}).get('is_exclusive'))
+
+
+def _item_stack_quantity(item) -> int:
+    try:
+        return max(1, int((item or {}).get('quantity', 1) or 1))
+    except Exception:
+        return 1
+
+
+def _item_display_name(item, base_name: str) -> str:
+    quantity = _item_stack_quantity(item)
+    if quantity > 1:
+        return f"{base_name} ({quantity})"
+    return base_name
+
+
+def _item_display_markers(item) -> list[str]:
+    markers = []
+    noun = str((item or {}).get('noun') or '').lower()
+    if _is_exclusive_item(item):
+        markers.append(EXCLUSIVE_ITEM_MARKER)
+    if item.get('is_locked') and (noun in TREASURE_CONTAINER_NOUNS or item.get('item_type') == 'container'):
+        markers.append(LOCKED_ITEM_MARKER)
+    return markers
+
+
+def _exclusive_drop_confirmed(raw_args: str | None) -> bool:
+    text = str(raw_args or "").strip()
+    return text.lower().endswith(" confirm")
+
+
+def _exclusive_drop_target(raw_args: str | None) -> str:
+    text = str(raw_args or "").strip()
+    if text.lower().endswith(" confirm"):
+        text = text[:-8].strip()
+    return text
+
+
+def _exclusive_destroy_hint(item) -> str:
+    target = (item or {}).get('short_name') or (item or {}).get('name') or 'item'
+    return f"drop {target} confirm"
+
+
+def _remove_item_record(session, item, server):
+    if item in getattr(session, 'inventory', []):
+        session.inventory.remove(item)
+    if server.db and item.get('inv_id'):
+        server.db.remove_item_from_inventory(item['inv_id'])
+    elif server.db and session.character_id and item.get('item_id'):
+        try:
+            conn = server.db._get_conn()
+            cur = conn.cursor()
+            cur.execute(
+                "DELETE FROM character_inventory "
+                "WHERE character_id = %s AND item_id = %s AND container_id IS NULL",
+                (session.character_id, item['item_id'])
+            )
+            conn.close()
+        except Exception as _e:
+            log.error("_remove_item_record orphan sweep failed: %s", _e)
+
+
+async def _handle_exclusive_drop(session, item, server, *, hand: str | None = None) -> bool:
+    if not _is_exclusive_item(item):
+        return False
+    if hand:
+        _clear_hand(session, hand, server)
+    _remove_item_record(session, item, server)
+    await session.send_line(
+        colorize(
+            "You let " + _item_display(item) + " fall away, and it dissolves into nothingness.",
+            TextPresets.WARNING,
+        )
+    )
+    if getattr(server, "world", None) and getattr(session, "current_room", None):
+        await server.world.broadcast_to_room(
+            session.current_room.id,
+            f"{session.character_name} discards {(item.get('short_name') or 'something')}, which vanishes before it can hit the ground.",
+            exclude=session,
+        )
+    return True
 
 
 import re as _re
@@ -1109,25 +1194,70 @@ async def cmd_drop(session, cmd, args, server):
         await session.send_line("You can't do that right now.")
         return
 
+    confirmed_destroy = _exclusive_drop_confirmed(args)
+    target_args = _exclusive_drop_target(args)
+
     if not args:
         if session.right_hand:
             item = session.right_hand
+            if _is_exclusive_item(item):
+                await session.send_line(
+                    colorize(
+                        "That item is EX and cannot be left on the ground. "
+                        f"Type {colorize(_exclusive_destroy_hint(item), TextPresets.ITEM_NAME)} to destroy it.",
+                        TextPresets.WARNING,
+                    )
+                )
+                return
             _clear_hand(session, 'right', server)
         elif session.left_hand:
             item = session.left_hand
+            if _is_exclusive_item(item):
+                await session.send_line(
+                    colorize(
+                        "That item is EX and cannot be left on the ground. "
+                        f"Type {colorize(_exclusive_destroy_hint(item), TextPresets.ITEM_NAME)} to destroy it.",
+                        TextPresets.WARNING,
+                    )
+                )
+                return
             _clear_hand(session, 'left', server)
         else:
             await session.send_line("You aren't holding anything.")
             return
     else:
-        item, hand = _find_in_hands(session, args.strip())
+        item, hand = _find_in_hands(session, target_args)
         if item:
+            if _is_exclusive_item(item) and not confirmed_destroy:
+                await session.send_line(
+                    colorize(
+                        "That item is EX and cannot be left on the ground. "
+                        f"Type {colorize(_exclusive_destroy_hint(item), TextPresets.ITEM_NAME)} to destroy it.",
+                        TextPresets.WARNING,
+                    )
+                )
+                return
+            if _is_exclusive_item(item) and confirmed_destroy:
+                await _handle_exclusive_drop(session, item, server, hand=hand)
+                return
             _clear_hand(session, hand, server)
         else:
             # Not in hands â€” check loose/unplaced items (no slot, no container_id)
-            item = _find_loose_item(session, args.strip())
+            item = _find_loose_item(session, target_args)
             if not item:
                 await session.send_line("You don't seem to be holding that.")
+                return
+            if _is_exclusive_item(item) and not confirmed_destroy:
+                await session.send_line(
+                    colorize(
+                        "That item is EX and cannot be left on the ground. "
+                        f"Type {colorize(_exclusive_destroy_hint(item), TextPresets.ITEM_NAME)} to destroy it.",
+                        TextPresets.WARNING,
+                    )
+                )
+                return
+            if _is_exclusive_item(item) and confirmed_destroy:
+                await _handle_exclusive_drop(session, item, server)
                 return
             # Remove from in-memory inventory
             if item in session.inventory:
@@ -1317,6 +1447,11 @@ async def cmd_give(session, cmd, args, server):
     item, hand = _find_in_hands(session, item_name)
     if not item:
         await session.send_line("You aren't holding that.")
+        return
+    if _is_exclusive_item(item):
+        await session.send_line(
+            colorize("That item is EX and cannot be traded or given away.", TextPresets.WARNING)
+        )
         return
 
     target = server.sessions.find_by_name(target_name)

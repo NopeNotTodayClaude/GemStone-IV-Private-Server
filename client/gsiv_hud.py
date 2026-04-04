@@ -124,10 +124,13 @@ ACCENT_YEL  = "#e3b341"
 ACCENT_PRP  = "#bc8cff"
 ACCENT_CYN  = "#39c5cf"
 
-# AUTO Heal pacing buffers. Keep these modest so herb use respects roundtime
-# without adding nearly an extra second of dead time between treatments.
-AUTO_HEAL_ROUNDTIME_BUFFER_MS = 150
-AUTO_HEAL_POST_ACTION_DELAY_MS = 400
+# AUTO Heal pacing buffers. Keep the post-herb pause very short; the server
+# still governs actual action legality, and the client should not add seconds
+# of dead air between treatments.
+AUTO_HEAL_HERB_USE_DELAY_MS = 200
+AUTO_HEAL_POST_ACTION_DELAY_MS = 100
+AUTO_HEAL_CONTAINER_OPEN_DELAY_MS = 125
+AUTO_HEAL_CONTAINER_STOW_DELAY_MS = 125
 
 BAR_BG      = "#21262d"
 BAR_HP      = "#da3633"
@@ -1031,7 +1034,7 @@ INV_WEAR_RE = re.compile(r"^You are wearing (.+)\.$", re.I)
 INV_CONT_RE = re.compile(r"^\s*In (.*?):\s*$", re.I)
 # Item line inside container: "    light leather armor"  (indented, no colon)
 INV_ITEM_RE = re.compile(r"^  {2,}(\S.+)$")
-ITEM_MARKER_SUFFIX_RE = re.compile(r"\s+\{L\}\s*$", re.I)
+ITEM_MARKER_SUFFIX_RE = re.compile(r"(?:\s+\(\d+\)|\s+\{(?:L|EX)\})+\s*$", re.I)
 # "Total items: N"
 INV_TOTAL_RE    = re.compile(r"^Total items:", re.I)
 INV_UNPLACED_RE = re.compile(r"^Unplaced items", re.I)
@@ -4742,11 +4745,10 @@ class HUDApp:
             return
 
         target = str(plan.get("loc_display") or "").strip()
-        roundtime_ms = max(1250, int(profile.get("roundtime", 10) or 10) * 1000 + AUTO_HEAL_ROUNDTIME_BUFFER_MS)
         self._wound_status(f"Treating your {target} with {herb_name}.")
         self._auto_cmd_queue = [
             ("send", f"use {herb_name} on {target}"),
-            ("delay", roundtime_ms),
+            ("delay", AUTO_HEAL_HERB_USE_DELAY_MS),
             ("send", "inv full"),
             ("delay", AUTO_HEAL_POST_ACTION_DELAY_MS),
             ("call", "post_use_refresh"),
@@ -4768,9 +4770,9 @@ class HUDApp:
             primary = str(self._auto_ctx.get("herb_container") or "")
             if primary:
                 steps.append(("send", f"open {primary}"))
-                steps.append(("delay", 300))
+                steps.append(("delay", AUTO_HEAL_CONTAINER_OPEN_DELAY_MS))
                 steps.append(("send", f"put {herb_name} in {primary}"))
-                steps.append(("delay", 550))
+                steps.append(("delay", AUTO_HEAL_CONTAINER_STOW_DELAY_MS))
             steps.append(("send", "inv full"))
             steps.append(("delay", AUTO_HEAL_POST_ACTION_DELAY_MS))
             steps.append(("call", "finish_post_use_refresh"))
@@ -4797,9 +4799,9 @@ class HUDApp:
         if held and str(held.get("state") or "") in ("right_hand", "left_hand") and backup and backup != primary:
             self._auto_cmd_queue = [
                 ("send", f"open {backup}"),
-                ("delay", 300),
+                ("delay", AUTO_HEAL_CONTAINER_OPEN_DELAY_MS),
                 ("send", f"put {herb_name} in {backup}"),
-                ("delay", 550),
+                ("delay", AUTO_HEAL_CONTAINER_STOW_DELAY_MS),
                 ("send", "inv full"),
                 ("delay", AUTO_HEAL_POST_ACTION_DELAY_MS),
                 ("call", "next_treatment"),

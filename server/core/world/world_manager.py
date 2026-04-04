@@ -86,6 +86,11 @@ class WorldManager:
                         ferry_skip_rooms.add(int(rid))
                     except Exception:
                         continue
+                for rid in ferr.get("underway_room_ids") or []:
+                    try:
+                        ferry_skip_rooms.add(int(rid))
+                    except Exception:
+                        continue
                 for side in (ferr.get("sides") or {}).values():
                     try:
                         ferry_skip_rooms.add(int((side or {}).get("room_id") or 0))
