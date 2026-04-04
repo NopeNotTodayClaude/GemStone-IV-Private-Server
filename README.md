@@ -33,7 +33,6 @@ Python 3
 PIP Install pillow (For map click navigation)
 
 Setup
-NOTE: TUTORIAL IS CURRENTLY MESSED UP, RECOMMENDED TO TYPE "SKIP TUTORIAL"
 ----------------------------------------------------------------------------------------------------
 Download entire project as a zip > extract where ever you like. Default server was built off of N:\GemStoneIVServer   
 
