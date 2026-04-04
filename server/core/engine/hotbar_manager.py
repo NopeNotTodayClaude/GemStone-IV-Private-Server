@@ -43,6 +43,7 @@ class HotbarManager:
 
     def build_sync_state(self, session) -> dict:
         catalog = self._available_catalog(session)
+        prepared_magic_number = self._prepared_magic_number(session)
         action_index = {
             (category["key"], action["key"]): action
             for category in catalog
@@ -77,6 +78,11 @@ class HotbarManager:
                 "short_label": str((action or {}).get("short_label") or (action or {}).get("label") or ""),
                 "command_preview": str((action or {}).get("command_preview") or ""),
                 "targeting": str((action or {}).get("targeting") or "").strip().lower(),
+                "prepared": bool(
+                    category_key == "magic"
+                    and prepared_magic_number > 0
+                    and action_key == str(prepared_magic_number)
+                ),
                 "submenu_label": str((action or {}).get("submenu_label") or ""),
                 "submenu_actions": list((action or {}).get("submenu_actions") or []),
                 "pulse": bool(ready_state.get("ready")),
@@ -86,6 +92,7 @@ class HotbarManager:
 
         return {
             "slots": slots,
+            "prepared_magic_number": prepared_magic_number,
             "catalog": {"categories": catalog},
         }
 
@@ -94,6 +101,127 @@ class HotbarManager:
             if str(entry.get("key") or "").strip() == category_key:
                 return str(entry.get("label") or category_key.replace("_", " ").title())
         return category_key.replace("_", " ").title()
+
+    def _targeting_summary(self, targeting: str) -> str:
+        targeting = str(targeting or "").strip().lower()
+        if targeting == "current_target":
+            return "Requires a current target."
+        if targeting == "current_target_optional":
+            return "Uses your current target when available."
+        if targeting == "room_player_or_self":
+            return "Second click targets a visible player, or yourself when alone."
+        if targeting == "room_player_only":
+            return "Second click chooses a visible player in the room."
+        if targeting == "self_only":
+            return "Casts on yourself."
+        if targeting == "none":
+            return "Does not require a target."
+        return ""
+
+    def _build_tooltip_text(self, title: str, description: str = "", *, stats: list[str] | None = None, command_preview: str = "", targeting: str = "") -> str:
+        lines = [str(title or "").strip()]
+        if description:
+            lines.append(str(description).strip())
+        for stat in (stats or []):
+            stat_text = str(stat or "").strip()
+            if stat_text:
+                lines.append(stat_text)
+        targeting_text = self._targeting_summary(targeting)
+        if targeting_text:
+            lines.append(targeting_text)
+        if command_preview:
+            lines.append(f"Use: {str(command_preview).strip()}")
+        return "\n".join([line for line in lines if line])
+
+    def _magic_tooltip_text(self, row: dict[str, Any], spell_number: int, name: str) -> str:
+        description = str(row.get("description") or "").strip() or "No description available yet."
+        mana_cost = int(row.get("mana_cost", 0) or 0)
+        cast_rt = int(row.get("cast_roundtime", 0) or 0)
+        spell_type = str(row.get("spell_type") or "spell").strip().title()
+        activation = str(row.get("activation_verbs") or "cast").strip().upper()
+        stats = [f"Mana: {mana_cost}", f"Type: {spell_type}"]
+        if cast_rt > 0:
+            stats.append(f"Cast RT: {cast_rt}s")
+        if activation:
+            stats.append(f"Verb: {activation}")
+        submenu_actions, _default_subaction_key = self._magic_submenu_actions(row, spell_number, name)
+        targeting = str(row.get("targeting_mode") or "").strip().lower()
+        command_preview = f"PREPARE {spell_number}, then CAST"
+        if submenu_actions:
+            stats.append("Second Click: Choose Harm or Heal")
+            spell_cfg = self._spell_hotbar_entry(spell_number)
+            custom_preview = str((spell_cfg or {}).get("command_preview") or "").strip()
+            if custom_preview:
+                command_preview = custom_preview
+            targeting = "none"
+        return self._build_tooltip_text(
+            f"{spell_number} {name}",
+            description,
+            stats=stats,
+            command_preview=command_preview,
+            targeting=targeting,
+        )
+
+    def _spell_hotbar_cfg(self) -> dict:
+        lua = getattr(self.server, "lua", None)
+        if not lua:
+            return {}
+        return lua.get_spell_hotbar() or {}
+
+    def _spell_hotbar_entry(self, spell_number: int) -> dict[str, Any]:
+        cfg = self._spell_hotbar_cfg()
+        by_spell = cfg.get("by_spell") or {}
+        if isinstance(by_spell, dict):
+            entry = by_spell.get(spell_number) or by_spell.get(str(spell_number)) or {}
+            return entry if isinstance(entry, dict) else {}
+        if isinstance(by_spell, list):
+            for raw in by_spell:
+                if not isinstance(raw, dict):
+                    continue
+                raw_number = raw.get("spell_number")
+                try:
+                    if int(raw_number or 0) == int(spell_number):
+                        return raw
+                except Exception:
+                    continue
+        return {}
+
+    def _magic_submenu_actions(self, row: dict[str, Any], spell_number: int, name: str) -> tuple[list[dict[str, Any]], str]:
+        spell_cfg = self._spell_hotbar_entry(spell_number)
+        if not isinstance(spell_cfg, dict):
+            return [], ""
+        raw_actions = spell_cfg.get("actions") or []
+        out = []
+        default_key = ""
+        for raw in raw_actions:
+            if not isinstance(raw, dict):
+                continue
+            key = str(raw.get("key") or "").strip().lower()
+            label = str(raw.get("label") or "").strip()
+            if not key or not label:
+                continue
+            targeting = str(raw.get("targeting") or "none").strip().lower()
+            command_preview = str(raw.get("command_preview") or "").strip()
+            description = str(raw.get("description") or "").strip()
+            tooltip = self._build_tooltip_text(
+                f"{spell_number} {name} — {label}",
+                description,
+                command_preview=command_preview,
+                targeting=targeting,
+            )
+            out.append({
+                "key": key,
+                "label": label,
+                "short_label": label,
+                "verb": str(raw.get("verb") or "cast").strip().lower() or "cast",
+                "targeting": targeting,
+                "command_preview": command_preview,
+                "description": description,
+                "tooltip": tooltip,
+            })
+            if not default_key:
+                default_key = key
+        return out, default_key
 
     def _available_catalog(self, session) -> list[dict]:
         cfg = self._cfg()
@@ -152,6 +280,12 @@ class HotbarManager:
                 "description": str(tech.get("description") or "").strip(),
                 "targeting": "current_target_optional" if str(tech.get("type") or "").strip().lower() == "aoe" else "current_target",
                 "ready_rule": self._weapon_ready_rule(tech),
+                "tooltip": self._build_tooltip_text(
+                    str(tech.get("name") or canonical.title()).strip(),
+                    str(tech.get("description") or "").strip(),
+                    command_preview=self._weapon_command_preview(tech, canonical),
+                    targeting="current_target_optional" if str(tech.get("type") or "").strip().lower() == "aoe" else "current_target",
+                ),
             })
         out.sort(key=lambda row: row["label"])
         return out
@@ -194,6 +328,13 @@ class HotbarManager:
                 "submenu_actions": [],
                 "default_subaction_key": "",
                 "subcommand_prefix": subcommand_prefix,
+                "tooltip": self._build_tooltip_text(
+                    str(row.get("name") or key.replace("_", " ").title()).strip(),
+                    str(row.get("description") or "").strip(),
+                    stats=[f"Rank: {int(row.get('rank', 0) or 0)}"],
+                    command_preview=preview,
+                    targeting=targeting,
+                ),
             }
             parent_key = str(row.get("hotbar_parent") or "").strip().lower()
             if parent_key:
@@ -227,6 +368,13 @@ class HotbarManager:
                     "enabled": bool(child_row.get("unlocked")),
                     "lock_label": lock_label,
                     "unlock_rank": unlock_rank,
+                    "tooltip": self._build_tooltip_text(
+                        str(child_row.get("name") or "").strip(),
+                        str(child_row.get("description") or parent.get("description") or "").strip(),
+                        stats=([lock_label] if lock_label else []) + ([f"Guild Rank: {unlock_rank}"] if unlock_rank > 0 else []),
+                        command_preview=preview,
+                        targeting=child_targeting,
+                    ),
                 })
             default_key = str(parent_defaults.get(parent_key) or "").strip().lower()
             if default_key and not any(str(row.get("key") or "").strip().lower() == default_key for row in children):
@@ -275,16 +423,39 @@ class HotbarManager:
             if spell_number <= 0:
                 continue
             name = str(row.get("name") or row.get("mnemonic") or spell_number).strip()
+            submenu_actions, default_subaction_key = self._magic_submenu_actions(row, spell_number, name)
+            spell_cfg = self._spell_hotbar_entry(spell_number)
+            command_preview = f"PREPARE {spell_number} / CAST"
+            if submenu_actions:
+                custom_preview = str((spell_cfg or {}).get("command_preview") or "").strip()
+                if custom_preview:
+                    command_preview = custom_preview
             out.append({
                 "key": str(spell_number),
                 "label": f"{spell_number} {name}",
                 "short_label": name,
-                "command_preview": f"INCANT {spell_number}",
-                "description": str(row.get("spell_type") or "spell").strip().title(),
-                "targeting": "current_target_optional",
+                "command_preview": command_preview,
+                "description": str(row.get("description") or "").strip(),
+                "targeting": str(row.get("targeting_mode") or "current_target_optional").strip().lower(),
+                "tooltip": self._magic_tooltip_text(row, spell_number, name),
+                "submenu_label": str((spell_cfg or {}).get("submenu_label") or "").strip(),
+                "submenu_actions": submenu_actions,
+                "default_subaction_key": default_subaction_key,
             })
         out.sort(key=lambda row: row["label"])
         return out
+
+    def _prepared_magic_number(self, session) -> int:
+        prepared = getattr(session, "prepared_spell", None)
+        if isinstance(prepared, dict):
+            try:
+                return int(prepared.get("number") or 0)
+            except Exception:
+                return 0
+        try:
+            return int(getattr(session, "_prepared_lua_spell_number", 0) or 0)
+        except Exception:
+            return 0
 
     def _normalize_category(self, raw: Any) -> str:
         key = str(raw or "").strip().lower().replace("-", "_").replace(" ", "_")
@@ -395,7 +566,8 @@ class HotbarManager:
                         "key": action_key,
                         "label": f"{action_key} {name}",
                         "short_label": name,
-                        "command_preview": f"INCANT {action_key}",
+                        "command_preview": f"PREPARE {action_key} / CAST",
+                        "targeting": str(row.get("targeting_mode") or "current_target_optional").strip().lower(),
                     }
         return None
 
@@ -467,7 +639,7 @@ class HotbarManager:
     def _command_for_action(self, session, category_key: str, action: dict[str, Any], *, target_name: str = "", subaction_key: str = "") -> str:
         action_key = str(action.get("key") or "").strip()
         targeting = str(action.get("targeting") or "").strip().lower()
-        resolved_target = self._resolve_target_name(session, target_name)
+        resolved_target = self._resolve_target_name(session, target_name, targeting=targeting)
         if category_key == "weapon_techniques":
             if targeting.startswith("current_target"):
                 if not resolved_target:
@@ -475,7 +647,46 @@ class HotbarManager:
                 return f"weapon {action_key} {resolved_target}"
             return f"weapon {action_key}"
         if category_key == "magic":
-            return f"incant {action_key}"
+            prepared_number = self._prepared_magic_number(session)
+            if prepared_number == int(action_key or 0):
+                child_map = {
+                    str(row.get("key") or "").strip().lower(): row
+                    for row in (action.get("submenu_actions") or [])
+                    if isinstance(row, dict) and str(row.get("key") or "").strip()
+                }
+                chosen = None
+                chosen_targeting = targeting
+                chosen_verb = "cast"
+                if child_map:
+                    chosen_key = str(subaction_key or action.get("default_subaction_key") or "").strip().lower()
+                    chosen = child_map.get(chosen_key) or next(iter(child_map.values()), None)
+                    if not chosen:
+                        return ""
+                    chosen_targeting = str(chosen.get("targeting") or targeting).strip().lower()
+                    chosen_verb = str(chosen.get("verb") or "cast").strip().lower() or "cast"
+                    resolved_target = self._resolve_target_name(session, target_name, targeting=chosen_targeting)
+                if chosen_targeting == "room_player_only" and not resolved_target:
+                    return ""
+                if chosen_targeting in {"room_player_or_self", "self_only"} and resolved_target == "__SELF__":
+                    return f"{chosen_verb} self"
+                if chosen_targeting.startswith("current_target"):
+                    if resolved_target:
+                        return f"{chosen_verb} {resolved_target}"
+                    if chosen_targeting == "current_target":
+                        return ""
+                    return chosen_verb
+                if chosen_targeting == "room_player_or_self":
+                    if resolved_target:
+                        return f"{chosen_verb} {resolved_target}"
+                    return chosen_verb
+                if chosen_targeting == "room_player_only" and not resolved_target:
+                    return ""
+                if chosen_targeting == "self_only" and resolved_target == "__SELF__":
+                    return f"{chosen_verb} self"
+                if resolved_target:
+                    return f"{chosen_verb} {resolved_target}"
+                return chosen_verb
+            return f"prepare {action_key}"
         if category_key == "combat_maneuvers":
             submenu_actions = [row for row in (action.get("submenu_actions") or []) if isinstance(row, dict)]
             if submenu_actions:
@@ -509,7 +720,16 @@ class HotbarManager:
             return f"cman {action_key}"
         return ""
 
-    def _resolve_target_name(self, session, preferred_name: str = "") -> str:
+    def _resolve_target_name(self, session, preferred_name: str = "", *, targeting: str = "") -> str:
+        targeting = str(targeting or "").strip().lower()
+        if targeting in {"room_player_or_self", "room_player_only", "self_only"}:
+            player_target = self._resolve_player_target(session, preferred_name=preferred_name, allow_self=targeting != "room_player_only")
+            if player_target is session:
+                return "__SELF__"
+            if not player_target:
+                return ""
+            return str(getattr(player_target, "character_name", "") or "").strip()
+
         creature = self._resolve_target_entity(session, preferred_name=preferred_name, allow_first_room_target=True)
         if not creature:
             return ""
@@ -525,6 +745,40 @@ class HotbarManager:
             or getattr(creature, "full_name", None)
             or ""
         ).strip()
+
+    def _resolve_player_target(self, session, preferred_name: str = "", *, allow_self: bool) -> Any:
+        room = getattr(session, "current_room", None)
+        if not room:
+            return None
+        preferred = str(preferred_name or "").strip().lower()
+        self_aliases = {
+            "self",
+            "me",
+            str(getattr(session, "character_name", "") or "").strip().lower(),
+        }
+        if allow_self and preferred and preferred in self_aliases:
+            return session
+
+        world = getattr(self.server, "world", None)
+        if not world:
+            return session if allow_self and not preferred else None
+
+        visible_players = []
+        for other in (world.get_players_in_room(room.id) or []):
+            if other is session and not allow_self:
+                continue
+            visible_players.append(other)
+
+        if preferred:
+            for other in visible_players:
+                name = str(getattr(other, "character_name", "") or "").strip().lower()
+                if name.startswith(preferred):
+                    return other
+            return None
+
+        if allow_self:
+            return session
+        return None
 
     def _resolve_target_entity(self, session, preferred_name: str = "", *, allow_first_room_target: bool) -> Any:
         creatures = getattr(self.server, "creatures", None)
@@ -543,6 +797,11 @@ class HotbarManager:
                     target = None
                 elif hasattr(target, "current_room") and getattr(getattr(target, "current_room", None), "id", room.id) != room.id:
                     target = None
+            if target is None:
+                try:
+                    session.target = None
+                except Exception:
+                    pass
             creature = target
 
         if not creature and allow_first_room_target and creatures and room_id:

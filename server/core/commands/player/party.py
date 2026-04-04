@@ -190,10 +190,26 @@ async def party_follow_move(mover_session, from_room, to_room, direction, server
         return
 
     from server.core.commands.player.movement import _move_player
+    status_mgr = getattr(server, "status", None)
+    creature_mgr = getattr(server, "creatures", None)
+
+    def _clear_old_room_combat_state(follower):
+        if status_mgr and status_mgr.has(follower, "in_combat"):
+            status_mgr.exit_combat(follower)
+        else:
+            follower.in_combat = False
+            follower.target = None
+        if not creature_mgr or not from_room:
+            return
+        for creature in (creature_mgr.get_creatures_in_room(from_room.id) or []):
+            if getattr(creature, "target", None) is follower:
+                creature.in_combat = False
+                creature.target = None
 
     moved_sessions = [mover_session]
     for follower in followers:
         try:
+            _clear_old_room_combat_state(follower)
             # Notify the follower what's happening
             await follower.send_line(
                 colorize(

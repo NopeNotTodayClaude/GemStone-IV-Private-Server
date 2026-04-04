@@ -328,6 +328,9 @@ async def cmd_tell(session, cmd, args, server):
     if not args:
         await session.send_line('Tell whom what?')
         return
+    summon_mgr = getattr(server, "spell_summons", None)
+    if summon_mgr and await summon_mgr.handle_tell(session, args):
+        return
     parts       = args.split(None, 1)
     target_name = parts[0]
     message     = parts[1] if len(parts) > 1 else ''

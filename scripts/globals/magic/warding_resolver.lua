@@ -100,7 +100,7 @@ function Warding.resolve(caster, target, spell_number, spell_ranks,
         "CS: +%d - TD: +%d + CvA: %s%d + d100: +%d == %s%d\n%s",
         cs_val, td_val, cva_sign, cva_val, d100,
         (total >= 0 and "+" or ""), total,
-        hit and "Warding failed!" or "Warding succeeded!"
+        hit and "Your spell takes hold." or "Your spell fails to penetrate the target's defenses."
     )
 
     return {

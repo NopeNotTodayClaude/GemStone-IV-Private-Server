@@ -1322,8 +1322,27 @@ async def cmd_use(session, cmd, args, server):
         mana_restore = int(use_item.get("mana_restore", 0) or 0)
         if mana_restore > 0:
             session.mana_current = min(session.mana_max, session.mana_current + mana_restore)
+        manna_max_bonus = int(use_item.get("manna_max_bonus", 0) or 0)
+        if manna_max_bonus > 0 and server.db and getattr(session, "character_id", None):
+            try:
+                server.db.execute_update(
+                    "DELETE FROM character_active_buffs WHERE character_id = %s AND spell_number = %s",
+                    (session.character_id, 203),
+                )
+                server.db.execute_update(
+                    """
+                    INSERT INTO character_active_buffs
+                        (character_id, spell_number, circle_id, caster_id, effects_json, expires_at)
+                    VALUES (%s, %s, %s, %s, %s, DATE_ADD(NOW(), INTERVAL 300 SECOND))
+                    """,
+                    (session.character_id, 203, 2, session.character_id, f'{{"max_mana_bonus":{manna_max_bonus}}}'),
+                )
+            except Exception:
+                pass
         await session.send_line(colorize(
-            f'  You feel slightly refreshed.' + (f'  Mana returns to you ({mana_restore}).' if mana_restore > 0 else ''),
+            f'  You feel slightly refreshed.'
+            + (f'  Mana returns to you ({mana_restore}).' if mana_restore > 0 else '')
+            + (f'  Your spiritual reserves expand by {manna_max_bonus} for a time.' if manna_max_bonus > 0 else ''),
             TextPresets.SYSTEM
         ))
         setattr(session, hand, None)

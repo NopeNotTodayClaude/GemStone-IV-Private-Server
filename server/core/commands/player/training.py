@@ -264,7 +264,183 @@ SKILL_CATEGORIES = {
     "Lore":     [33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 44, 45, 46, 47],
 }
 
+SPELL_RESEARCH_SKILL_ID = 22
+SPELL_CIRCLE_SKILL_BASE = 10000
+
 _LUA_SKILLS_LOADED = False
+
+
+def spell_circle_subject_id(circle_id: int) -> int:
+    return SPELL_CIRCLE_SKILL_BASE + int(circle_id)
+
+
+def is_spell_circle_subject(skill_id: int) -> bool:
+    try:
+        value = int(skill_id)
+    except Exception:
+        return False
+    return value >= SPELL_CIRCLE_SKILL_BASE and value < SPELL_CIRCLE_SKILL_BASE + 1000
+
+
+def spell_circle_id_for_subject(skill_id: int):
+    if not is_spell_circle_subject(skill_id):
+        return None
+    return int(skill_id) - SPELL_CIRCLE_SKILL_BASE
+
+
+def _spell_circle_data(server=None):
+    lua = getattr(server, "lua", None) if server else None
+    if not lua:
+        return {"circles": {}, "profession_circles": {}}
+    try:
+        data = lua.get_spell_circles() or {}
+        circles = {
+            int(circle_id): dict(raw or {})
+            for circle_id, raw in dict(data.get("circles") or {}).items()
+        }
+        profession_circles = {
+            int(prof_id): [int(circle_id) for circle_id in (raw_list or [])]
+            for prof_id, raw_list in dict(data.get("profession_circles") or {}).items()
+        }
+        return {
+            "circles": circles,
+            "profession_circles": profession_circles,
+        }
+    except Exception as e:
+        log.warning("training: spell circle data load skipped: %s", e)
+        return {"circles": {}, "profession_circles": {}}
+
+
+def get_trainable_spell_circles(prof_id: int, server=None):
+    data = _spell_circle_data(server)
+    circles = data.get("circles") or {}
+    allowed = data.get("profession_circles") or {}
+    result = []
+    for circle_id in allowed.get(int(prof_id), []):
+        row = dict(circles.get(int(circle_id)) or {})
+        if not row or not bool(row.get("is_trainable", False)):
+            continue
+        row["id"] = int(circle_id)
+        result.append(row)
+    return result
+
+
+def get_total_spell_ranks(session, server=None, prof_id=None) -> int:
+    prof = int(prof_id or getattr(session, "profession_id", 0) or 0)
+    allowed_ids = {int(row["id"]) for row in get_trainable_spell_circles(prof, server)}
+    ranks_by_circle = dict(getattr(session, "spell_ranks", {}) or {})
+    total = 0
+    for circle_id, ranks in ranks_by_circle.items():
+        try:
+            cid = int(circle_id)
+            rank_count = max(0, int(ranks or 0))
+        except Exception:
+            continue
+        if allowed_ids and cid not in allowed_ids:
+            continue
+        total += rank_count
+    return total
+
+
+def get_spell_rank_cap(prof_id: int, level: int) -> int:
+    return get_max_ranks(SPELL_RESEARCH_SKILL_ID, prof_id, level)
+
+
+def get_spell_circle_max_ranks(circle_id: int, session, server=None) -> int:
+    prof_id = int(getattr(session, "profession_id", 0) or 0)
+    level = int(getattr(session, "level", 1) or 1)
+    total_cap = get_spell_rank_cap(prof_id, level)
+    current_circle = int((dict(getattr(session, "spell_ranks", {}) or {})).get(int(circle_id), 0) or 0)
+    other_ranks = max(0, get_total_spell_ranks(session, server, prof_id) - current_circle)
+    return max(0, total_cap - other_ranks)
+
+
+def get_spell_circle_next_rank_cost(session, server=None):
+    prof_id = int(getattr(session, "profession_id", 0) or 0)
+    level = int(getattr(session, "level", 1) or 1)
+    total_ranks = get_total_spell_ranks(session, server, prof_id)
+    return get_next_rank_cost(SPELL_RESEARCH_SKILL_ID, prof_id, total_ranks, level)
+
+
+def _spell_circle_aliases(circle_row: dict):
+    aliases = set()
+    name = str(circle_row.get("name") or "").strip()
+    abbrev = str(circle_row.get("abbrev") or "").strip()
+    if name:
+        aliases.add(_norm(name))
+        aliases.add(_norm(name.replace(" Base", "")))
+    if abbrev:
+        aliases.add(_norm(abbrev))
+    return aliases
+
+
+def build_training_catalog(session, server=None):
+    prof_id = int(getattr(session, "profession_id", 1) or 1)
+    level = int(getattr(session, "level", 1) or 1)
+    raw_skills = dict(getattr(session, "skills", {}) or {})
+    skills_out = {}
+
+    display_categories = {}
+    for category, skill_ids in (SKILL_CATEGORIES or {}).items():
+        ids = [int(skill_id) for skill_id in (skill_ids or []) if int(skill_id) != SPELL_RESEARCH_SKILL_ID]
+        display_categories[str(category)] = ids
+
+    for skill_id, name in SKILL_NAMES.items():
+        if int(skill_id) == SPELL_RESEARCH_SKILL_ID:
+            continue
+        raw = raw_skills.get(skill_id, {})
+        ranks = int(raw.get("ranks", 0)) if isinstance(raw, dict) else 0
+        bonus = int(raw.get("bonus", 0)) if isinstance(raw, dict) else 0
+        ptp, mtp = get_skill_cost(skill_id, prof_id)
+        max_ranks = get_max_ranks(skill_id, prof_id, level)
+        limit = get_train_limit(skill_id, prof_id)
+        skills_out[int(skill_id)] = {
+            "name": str(name),
+            "ranks": ranks,
+            "bonus": bonus,
+            "ptp": ptp,
+            "mtp": mtp,
+            "base_ptp": ptp,
+            "base_mtp": mtp,
+            "trainable": not (ptp == 0 and mtp == 0),
+            "max_ranks": max_ranks,
+            "limit": limit,
+            "show_bonus": True,
+            "is_spell_circle": False,
+        }
+
+    circle_ids = []
+    circle_cost_ptp, circle_cost_mtp = get_skill_cost(SPELL_RESEARCH_SKILL_ID, prof_id)
+    circle_limit = get_train_limit(SPELL_RESEARCH_SKILL_ID, prof_id)
+    next_circle_ptp, next_circle_mtp = get_spell_circle_next_rank_cost(session, server)
+    ranks_by_circle = dict(getattr(session, "spell_ranks", {}) or {})
+    for circle_row in get_trainable_spell_circles(prof_id, server):
+        circle_id = int(circle_row["id"])
+        subject_id = spell_circle_subject_id(circle_id)
+        current_ranks = int(ranks_by_circle.get(circle_id, 0) or 0)
+        max_ranks = get_spell_circle_max_ranks(circle_id, session, server)
+        trainable = not (circle_cost_ptp == 0 and circle_cost_mtp == 0)
+        at_cap = current_ranks >= max_ranks
+        skills_out[subject_id] = {
+            "name": str(circle_row.get("name") or f"Circle {circle_id}"),
+            "ranks": current_ranks,
+            "bonus": 0,
+            "ptp": 0 if at_cap else next_circle_ptp,
+            "mtp": 0 if at_cap else next_circle_mtp,
+            "base_ptp": circle_cost_ptp,
+            "base_mtp": circle_cost_mtp,
+            "trainable": trainable,
+            "max_ranks": max_ranks,
+            "limit": circle_limit,
+            "show_bonus": False,
+            "is_spell_circle": True,
+            "circle_id": circle_id,
+            "abbrev": str(circle_row.get("abbrev") or ""),
+        }
+        circle_ids.append(subject_id)
+
+    display_categories["Magic"] = list(display_categories.get("Magic") or []) + circle_ids
+    return skills_out, display_categories
 
 
 def _try_load_lua_skills(server=None):
@@ -323,11 +499,15 @@ def calc_skill_bonus(ranks: int) -> int:
 
 def get_skill_cost(skill_id: int, prof_id: int):
     """Return (ptp_cost, mtp_cost) base cost per rank for this skill/profession."""
+    if is_spell_circle_subject(skill_id):
+        return get_skill_cost(SPELL_RESEARCH_SKILL_ID, prof_id)
     return SKILL_COSTS.get(skill_id, {}).get(prof_id, (0, 0))
 
 
 def get_train_limit(skill_id: int, prof_id: int) -> int:
     """Return max ranks per level for this skill/profession. 0 = cannot train."""
+    if is_spell_circle_subject(skill_id):
+        return get_train_limit(SPELL_RESEARCH_SKILL_ID, prof_id)
     return SKILL_TRAIN_LIMITS.get(skill_id, {}).get(prof_id, 1)
 
 
@@ -398,7 +578,7 @@ def get_effective_cost(skill_id: int, prof_id: int, current_ranks: int, level: i
 get_max_per_level = get_train_limit
 
 
-def resolve_skill(arg: str):
+def resolve_skill(arg: str, session=None, server=None):
     """
     Resolve a player's skill argument to a skill_id.
     Returns (skill_id, skill_name) or (None, None).
@@ -421,6 +601,22 @@ def resolve_skill(arg: str):
     if len(matches) > 1:
         matches.sort(key=lambda x: len(x[1]))
         return matches[0]
+
+    if session is not None:
+        spell_circle_matches = []
+        for circle_row in get_trainable_spell_circles(getattr(session, "profession_id", 0), server):
+            aliases = _spell_circle_aliases(circle_row)
+            if key in aliases:
+                sid = spell_circle_subject_id(circle_row["id"])
+                return sid, str(circle_row.get("name") or f"Circle {circle_row['id']}")
+            if any(key in alias for alias in aliases):
+                sid = spell_circle_subject_id(circle_row["id"])
+                spell_circle_matches.append((sid, str(circle_row.get("name") or f"Circle {circle_row['id']}")))
+        if len(spell_circle_matches) == 1:
+            return spell_circle_matches[0]
+        if len(spell_circle_matches) > 1:
+            spell_circle_matches.sort(key=lambda x: len(x[1]))
+            return spell_circle_matches[0]
 
     return None, None
 
@@ -460,7 +656,7 @@ async def cmd_train(session, cmd, args, server):
     arg = args.strip()
 
     if arg.lower() in ('list', 'all', 'costs'):
-        await _show_skill_list(session)
+        await _show_skill_list(session, server)
         return
 
     # Parse "TRAIN <skill> [<n>]"
@@ -471,7 +667,7 @@ async def cmd_train(session, cmd, args, server):
         rank_count = max(1, min(int(parts[1]), 9999))
         skill_arg  = parts[0]
 
-    skill_id, skill_name = resolve_skill(skill_arg)
+    skill_id, skill_name = resolve_skill(skill_arg, session=session, server=server)
     if skill_id is None:
         await session.send_line(
             f"I don't recognize the skill '{skill_arg}'.  Try TRAIN LIST."
@@ -493,12 +689,16 @@ async def cmd_train(session, cmd, args, server):
     # max_ranks = train_limit_per_level × character_level
     # A level 5 warrior can hold up to 10 TWC ranks total.
     # You can purchase all remaining ranks at once.
-    limit     = get_train_limit(skill_id, prof_id)
-    max_ranks = get_max_ranks(skill_id, prof_id, level)
-
-    skills    = session.skills or {}
-    current   = skills.get(skill_id, {})
-    old_ranks = int(current.get('ranks', 0)) if isinstance(current, dict) else 0
+    limit = get_train_limit(skill_id, prof_id)
+    if is_spell_circle_subject(skill_id):
+        circle_id = spell_circle_id_for_subject(skill_id)
+        old_ranks = int((dict(getattr(session, "spell_ranks", {}) or {})).get(circle_id, 0) or 0)
+        max_ranks = get_spell_circle_max_ranks(circle_id, session, server)
+    else:
+        max_ranks = get_max_ranks(skill_id, prof_id, level)
+        skills = session.skills or {}
+        current = skills.get(skill_id, {})
+        old_ranks = int(current.get('ranks', 0)) if isinstance(current, dict) else 0
 
     if old_ranks >= max_ranks:
         await session.send_line(colorize(
@@ -520,9 +720,15 @@ async def cmd_train(session, cmd, args, server):
         rank_count = available
 
     # ── Calculate total cost using slot-position doubling ────────────────────
-    total_ptp, total_mtp = cost_for_rank_range(
-        ptp_base, mtp_base, limit, level, old_ranks, old_ranks + rank_count
-    )
+    if is_spell_circle_subject(skill_id):
+        total_spell_ranks = get_total_spell_ranks(session, server, prof_id)
+        total_ptp, total_mtp = cost_for_rank_range(
+            ptp_base, mtp_base, limit, level, total_spell_ranks, total_spell_ranks + rank_count
+        )
+    else:
+        total_ptp, total_mtp = cost_for_rank_range(
+            ptp_base, mtp_base, limit, level, old_ranks, old_ranks + rank_count
+        )
 
     # ── Check TPs ────────────────────────────────────────────────────────────
     if session.physical_tp < total_ptp:
@@ -544,20 +750,62 @@ async def cmd_train(session, cmd, args, server):
     new_ranks = old_ranks + rank_count
     new_bonus = calc_skill_bonus(new_ranks)
 
-    session.skills[skill_id] = {
-        'ranks': new_ranks,
-        'bonus': new_bonus,
-    }
     session.physical_tp -= total_ptp
     session.mental_tp   -= total_mtp
 
     if server.db and session.character_id:
-        server.db.save_character_skill(
-            session.character_id, skill_id, new_ranks, new_bonus
-        )
+        if is_spell_circle_subject(skill_id):
+            circle_id = spell_circle_id_for_subject(skill_id)
+            if not session.spell_ranks:
+                session.spell_ranks = {}
+            session.spell_ranks[int(circle_id)] = new_ranks
+            server.db.save_character_spell_ranks(session.character_id, session.spell_ranks)
+            session.spellbook = server.db.load_character_spellbook(session.character_id)
+            total_spell_ranks = get_total_spell_ranks(session, server, prof_id)
+            if not session.skills:
+                session.skills = {}
+            session.skills[SPELL_RESEARCH_SKILL_ID] = {
+                'ranks': total_spell_ranks,
+                'bonus': calc_skill_bonus(total_spell_ranks),
+            }
+            server.db.save_character_skill(
+                session.character_id,
+                SPELL_RESEARCH_SKILL_ID,
+                total_spell_ranks,
+                calc_skill_bonus(total_spell_ranks),
+            )
+        else:
+            if not session.skills:
+                session.skills = {}
+            session.skills[skill_id] = {
+                'ranks': new_ranks,
+                'bonus': new_bonus,
+            }
+            server.db.save_character_skill(
+                session.character_id, skill_id, new_ranks, new_bonus
+            )
         server.db.save_character_tps(
             session.character_id, session.physical_tp, session.mental_tp
         )
+    elif not is_spell_circle_subject(skill_id):
+        if not session.skills:
+            session.skills = {}
+        session.skills[skill_id] = {
+            'ranks': new_ranks,
+            'bonus': new_bonus,
+        }
+    else:
+        circle_id = spell_circle_id_for_subject(skill_id)
+        if not session.spell_ranks:
+            session.spell_ranks = {}
+        session.spell_ranks[int(circle_id)] = new_ranks
+        total_spell_ranks = get_total_spell_ranks(session, server, prof_id)
+        if not session.skills:
+            session.skills = {}
+        session.skills[SPELL_RESEARCH_SKILL_ID] = {
+            'ranks': total_spell_ranks,
+            'bonus': calc_skill_bonus(total_spell_ranks),
+        }
 
     rank_word  = "rank" if rank_count == 1 else "ranks"
     remaining  = max_ranks - new_ranks
@@ -570,7 +818,11 @@ async def cmd_train(session, cmd, args, server):
         TextPresets.EXPERIENCE
     ))
     await session.send_line(colorize(
-        f"  {skill_name}: {old_ranks} -> {new_ranks} ranks  (Bonus: +{new_bonus})",
+        (
+            f"  {skill_name}: {old_ranks} -> {new_ranks} ranks"
+            if is_spell_circle_subject(skill_id)
+            else f"  {skill_name}: {old_ranks} -> {new_ranks} ranks  (Bonus: +{new_bonus})"
+        ),
         TextPresets.EXPERIENCE
     ))
     await session.send_line(colorize(
@@ -580,14 +832,15 @@ async def cmd_train(session, cmd, args, server):
     await session.send_line(colorize(limit_note, TextPresets.SYSTEM))
 
     # ── Weapon Technique auto-grant ───────────────────────────────────────────
-    await check_technique_grants(session, skill_id, new_ranks, server)
+    if not is_spell_circle_subject(skill_id):
+        await check_technique_grants(session, skill_id, new_ranks, server)
 
 
-async def _show_skill_list(session):
+async def _show_skill_list(session, server=None):
     """Display all trainable skills with costs for this profession."""
     prof_id = getattr(session, 'profession_id', 1)
     level   = getattr(session, 'level', 1)
-    skills  = session.skills or {}
+    skills_out, display_categories = build_training_catalog(session, server)
 
     await session.send_line('')
     await session.send_line(colorize(
@@ -605,33 +858,31 @@ async def _show_skill_list(session):
     ))
     await session.send_line('  ' + '-' * 66)
 
-    for category, skill_ids in SKILL_CATEGORIES.items():
+    for category, skill_ids in display_categories.items():
         await session.send_line(colorize(f"  -- {category} --", TextPresets.WARNING))
         for sid in skill_ids:
-            name         = SKILL_NAMES[sid]
-            ptp_b, mtp_b = get_skill_cost(sid, prof_id)
-            limit        = get_train_limit(sid, prof_id)
-            max_r        = get_max_ranks(sid, prof_id, level)
+            skill_row = skills_out.get(int(sid))
+            if not skill_row:
+                continue
+            name = str(skill_row.get("name") or SKILL_NAMES.get(sid) or f"Skill {sid}")
+            ptp_b = int(skill_row.get("ptp", 0) or 0)
+            mtp_b = int(skill_row.get("mtp", 0) or 0)
+            max_r = int(skill_row.get("max_ranks", 0) or 0)
+            show_bonus = bool(skill_row.get("show_bonus", True))
 
-            if ptp_b == 0 and mtp_b == 0:
+            if ptp_b == 0 and mtp_b == 0 and not bool(skill_row.get("trainable", False)):
                 cost_str = colorize(f"{'--':>8}  {'--':>8}", TextPresets.COMBAT_MISS)
                 cap_str  = "  --"
             else:
-                current  = skills.get(sid, {})
-                cur_ranks = int(current.get('ranks', 0)) if isinstance(current, dict) else 0
-                np, nm   = get_next_rank_cost(sid, prof_id, cur_ranks, level)
-                cost_str = f"{np:>8}  {nm:>8}"
+                cost_str = f"{ptp_b:>8}  {mtp_b:>8}"
                 cap_str  = f"{max_r:>4}"
 
-            current   = skills.get(sid, {})
-            if isinstance(current, dict):
-                ranks = int(current.get('ranks', 0))
-                bonus = int(current.get('bonus', 0))
-            else:
-                ranks, bonus = 0, 0
+            ranks = int(skill_row.get("ranks", 0) or 0)
+            bonus = int(skill_row.get("bonus", 0) or 0)
+            bonus_str = f"{bonus:>5}" if show_bonus else f"{'--':>5}"
 
             await session.send_line(
-                f"  {name:<30} {ranks:>4}  {bonus:>5}  {cost_str}  {cap_str}"
+                f"  {name:<30} {ranks:>4}  {bonus_str}  {cost_str}  {cap_str}"
             )
 
     await session.send_line('')

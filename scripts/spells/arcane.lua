@@ -5,6 +5,7 @@
 
 local DB          = require("globals/utils/db")
 local ActiveBuffs = require("globals/magic/active_buffs")
+local SpellFx     = require("globals/magic/spell_formulas")
 
 local Arc = {}
 
@@ -52,9 +53,19 @@ handlers[1700] = function(ctx)
     if not ctx.result.hit or not ctx.target then
         return "Arcane power gathers, but fails to find purchase."
     end
-    local base = math.max(6, math.floor(((ctx.result.total or 101) - 100) * 1.2))
-    local dmg = base + math.floor((ctx.circle_ranks or 1) / 4)
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
+    local dmg = SpellFx.warding_damage(ctx, {
+        base = 8,
+        min = 8,
+        margin_mult = 1.20,
+        stat = "avg_aura_wis",
+        skill = "spell_research",
+        mana_control = "mental",
+        level_scale = 0.35,
+        circle_scale = 0.45,
+        stat_scale = 0.30,
+        skill_scale = 0.10,
+    })
+    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, ctx.target.id })
     return string.format("A focused blast of raw arcana slams into %s for %d damage!", ctx.target.name or "your target", dmg)
 end
@@ -93,8 +104,16 @@ handlers[1707] = function(ctx)
     if not ctx.result.hit or not ctx.target then
         return "Scalding steam billows out, but fails to catch your target."
     end
-    local dmg = math.max(7, math.floor(((ctx.result.total or 101) - 100) * 1.1))
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
+    local dmg = SpellFx.warding_damage(ctx, {
+        base = 7,
+        min = 7,
+        margin_mult = 1.10,
+        stat = "avg_aura_wis",
+        skill = "spell_research",
+        mana_control = "mental",
+        lore = "water",
+    })
+    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, ctx.target.id })
     return string.format("A hiss of superheated steam scalds %s for %d damage!", ctx.target.name or "your target", dmg)
 end
@@ -109,8 +128,20 @@ handlers[1709] = function(ctx)
     if not ctx.result.hit or not ctx.target then
         return "A lash of cold fizzles into harmless frost."
     end
-    local dmg = math.max(10, math.floor(((ctx.result.total or 101) - 100) * 1.2))
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
+    local dmg = SpellFx.bolt_damage(ctx, {
+        base = 10,
+        min = 10,
+        margin_mult = 1.20,
+        stat = "avg_aura_wis",
+        mana_control = "mental",
+        lore = "water",
+        level_scale = 0.30,
+        circle_scale = 0.40,
+        stat_scale = 0.25,
+        aiming_scale = 0.10,
+        lore_scale = 0.05,
+    })
+    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, ctx.target.id })
     ActiveBuffs.apply(ctx.target.id, 1709, CIRCLE_ID, ctx.caster.id, 6, { slowed=true, ds=-5 })
     return string.format("An arc of bitter cold freezes through %s for %d damage!", ctx.target.name or "your target", dmg)
@@ -120,8 +151,21 @@ handlers[1710] = function(ctx)
     if not ctx.result.hit or not ctx.target then
         return "The arcane acid dissipates before it can bite."
     end
-    local dmg = math.max(12, math.floor(((ctx.result.total or 101) - 100) * 1.35))
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
+    local dmg = SpellFx.bolt_damage(ctx, {
+        base = 12,
+        min = 12,
+        margin_mult = 1.35,
+        stat = "avg_aura_wis",
+        mana_control = "mental",
+        lore = "water",
+        level_scale = 0.30,
+        circle_scale = 0.42,
+        stat_scale = 0.25,
+        aiming_scale = 0.10,
+        lore_scale = 0.06,
+        flat_bonus = 1,
+    })
+    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, ctx.target.id })
     ActiveBuffs.apply(ctx.target.id, 1710, CIRCLE_ID, ctx.caster.id, 10, { ds=-10, acid_corroded=true })
     return string.format("A wash of major acid tears into %s for %d damage!", ctx.target.name or "your target", dmg)

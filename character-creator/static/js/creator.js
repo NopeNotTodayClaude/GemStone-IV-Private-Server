@@ -481,6 +481,7 @@ function renderCulture(main) {
 // ─── Step 6: Stats ────────────────────────────────────────────────────────────
 function renderStats(main) {
   const prof   = getSelectedProf();
+  State.ch.stats = normalizeStatsArray(State.ch.stats, prof);
   const race   = getSelectedRace();
   const primes = prof ? prof.primes : [0,1];
   const descs  = State.data.stat_descriptions || {};
@@ -517,7 +518,7 @@ function renderStats(main) {
           <button class="s-btn minus" data-idx="${i}" data-dir="-1"
             ${base <= minVal ? "disabled":""}>−</button>
           <input class="s-input" id="sinput-${i}" type="number"
-            value="${base}" min="${minVal}" max="100" data-idx="${i}">
+            value="${base}" min="${minVal}" max="100" step="5" data-idx="${i}">
           <button class="s-btn plus" data-idx="${i}" data-dir="1"
             ${remain <= 0 ? "disabled":""}>+</button>
         </div>
@@ -600,7 +601,7 @@ window.Creator_suggestStats = function() {
   const prof = getSelectedProf();
   if (!prof) return;
   const sugg = prof.suggested_stats || Array(10).fill(20);
-  State.ch.stats = [...sugg];
+  State.ch.stats = normalizeStatsArray(sugg, prof);
   renderStats(document.getElementById("creator-main"));
 };
 
@@ -620,18 +621,15 @@ function adjustStat(idx, delta) {
 
 function setStatDirect(idx, val) {
   const prof   = getSelectedProf();
-  const primes = prof ? prof.primes : [0,1];
-  const minVal = primes.includes(idx) ? 30 : 20;
   const old    = State.ch.stats[idx];
-  const diff   = val - old;
-  if (diff > getRemainingPoints() + (val - old > 0 ? 0 : 0)) {
-    // Re-check
+  val = snapStatValue(val, idx, prof);
+  if (val > old) {
     const remain = getRemainingPoints();
-    if (diff > remain) {
-      val = old + remain;
+    const maxGain = Math.max(0, Math.floor(remain / 5) * 5);
+    if ((val - old) > maxGain) {
+      val = old + maxGain;
     }
   }
-  val = Math.max(minVal, Math.min(100, val));
   State.ch.stats[idx] = val;
   refreshStatRow(idx);
   refreshStatPool();
@@ -1834,6 +1832,52 @@ const tt = (() => {
 // ─── Math helpers ─────────────────────────────────────────────────────────────
 function TOTAL_STAT_POINTS() {
   return (State.data.total_stat_points || 660);
+}
+
+function statMinForIndex(idx, prof) {
+  const primes = prof ? (prof.primes || [0,1]) : [0,1];
+  return primes.includes(idx) ? 30 : 20;
+}
+
+function snapStatValue(value, idx, prof) {
+  const minVal = statMinForIndex(idx, prof);
+  const numeric = Number.isFinite(Number(value)) ? Number(value) : minVal;
+  const clamped = Math.max(minVal, Math.min(100, numeric));
+  return Math.round(clamped / 5) * 5;
+}
+
+function normalizeStatsArray(rawStats, prof) {
+  const total = TOTAL_STAT_POINTS();
+  const stats = Array.from({ length: 10 }, (_, idx) =>
+    snapStatValue(Array.isArray(rawStats) ? rawStats[idx] : null, idx, prof)
+  );
+  const targets = Array.from({ length: 10 }, (_, idx) => {
+    const raw = Array.isArray(rawStats) ? rawStats[idx] : null;
+    return Number.isFinite(Number(raw)) ? Number(raw) : stats[idx];
+  });
+
+  let diff = total - stats.reduce((sum, value) => sum + value, 0);
+  let guard = 0;
+  while (diff !== 0 && guard < 200) {
+    const dir = diff > 0 ? 1 : -1;
+    const candidates = stats
+      .map((value, idx) => ({ idx, value, target: targets[idx], min: statMinForIndex(idx, prof) }))
+      .filter(({ value, min }) => (dir > 0 ? value < 100 : value > min));
+    if (!candidates.length) break;
+
+    candidates.sort((a, b) => {
+      const aBias = dir > 0 ? (a.target - a.value) : (a.value - a.target);
+      const bBias = dir > 0 ? (b.target - b.value) : (b.value - b.target);
+      if (aBias !== bBias) return bBias - aBias;
+      return dir > 0 ? a.value - b.value : b.value - a.value;
+    });
+
+    stats[candidates[0].idx] += dir * 5;
+    diff -= dir * 5;
+    guard += 1;
+  }
+
+  return stats;
 }
 
 function getRemainingPoints() {

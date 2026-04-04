@@ -10,6 +10,7 @@
 local DB          = require("globals/utils/db")
 local ActiveBuffs = require("globals/magic/active_buffs")
 local ItemMagic   = require("globals/magic/item_magic")
+local SpellFx     = require("globals/magic/spell_formulas")
 
 local MjE = {}
 
@@ -90,6 +91,33 @@ end
 
 local handlers = {}
 
+local function ward_dmg(ctx, base, mult, opts)
+    opts = opts or {}
+    opts.base = base
+    opts.margin_mult = mult
+    opts.stat = opts.stat or "aura"
+    opts.skill = opts.skill or "spell_research"
+    opts.mana_control = opts.mana_control or "elemental"
+    return SpellFx.warding_damage(ctx, opts)
+end
+
+local function bolt_dmg(ctx, base, mult, opts)
+    opts = opts or {}
+    opts.base = base
+    opts.margin_mult = mult
+    opts.stat = opts.stat or "aura"
+    opts.mana_control = opts.mana_control or "elemental"
+    return SpellFx.bolt_damage(ctx, opts)
+end
+
+local function seed_10(value)
+    local ranks = math.max(0, tonumber(value) or 0)
+    if ranks < 10 then
+        return 0
+    end
+    return math.floor((ranks - 10) / 10) + 1
+end
+
 handlers[501] = function(ctx) -- Sleep
     if not ctx.result.hit then return end
     local air = (ctx.lore_ranks and ctx.lore_ranks.air) or 0
@@ -103,14 +131,14 @@ handlers[502] = function(ctx) -- Chromatic Circle
     if not ctx.result.hit then return end
     local elements = {"fire","ice","lightning","acid","impact"}
     local elem = elements[math.random(1,#elements)]
-    local dmg = math.max(5, math.floor((ctx.result.total or 101) - 100))
+    local dmg = ward_dmg(ctx, 8, 1.05, { stat="avg_aura_int" })
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
     return string.format("A %s chromatic strike hits %s for %d damage!", elem, tname(ctx), dmg)
 end
 
 handlers[503] = function(ctx) -- Thurfel's Ward
-    local ds_bonus = 10 + math.floor(math.max(0, (ctx.circle_ranks or 0) - 3) / 4)
+    local ds_bonus = 20 + math.floor(math.max(0, (ctx.circle_ranks or 0) - 3) / 4)
     ActiveBuffs.apply(tid(ctx), 503, CIRCLE_ID, ctx.caster.id, BUFF_SECS, { ds=ds_bonus })
     return string.format("Thurfel's ward surrounds %s (+%d DS).", tname(ctx), ds_bonus)
 end
@@ -125,7 +153,7 @@ end
 handlers[505] = function(ctx) -- Hand of Tonis
     if not ctx.result.hit then return end
     local air = (ctx.lore_ranks and ctx.lore_ranks.air) or 0
-    local dmg = math.max(5, math.floor((ctx.result.total or 101) - 100) + math.floor(air / 12))
+    local dmg = ward_dmg(ctx, 10, 1.10, { lore="air", lore_scale=0.08, flat_bonus=math.floor(air / 18) })
     DB.execute("UPDATE characters SET health_current=MAX(0,health_current-?), position='prone' WHERE id=?",
         { dmg, tid(ctx) })
     if air >= 30 then
@@ -140,8 +168,10 @@ handlers[506] = function(ctx) -- Celerity
 end
 
 handlers[507] = function(ctx) -- Elemental Deflection
-    local ds_bonus = 10 + math.floor(math.max(0, (ctx.circle_ranks or 0) - 7) / 2)
-    ActiveBuffs.apply(tid(ctx), 507, CIRCLE_ID, ctx.caster.id, BUFF_SECS, { ds=ds_bonus })
+    local earth = (ctx.lore_ranks and ctx.lore_ranks.earth) or 0
+    local reflect = earth >= 15 and (5 + math.floor((earth - 15) / 10)) or 0
+    local ds_bonus = 20 + math.floor(math.max(0, (ctx.circle_ranks or 0) - 7) / 2)
+    ActiveBuffs.apply(tid(ctx), 507, CIRCLE_ID, ctx.caster.id, BUFF_SECS, { ds=ds_bonus, bolt_reflect_chance=reflect })
     return string.format("Elemental deflection surrounds %s (+%d DS).", tname(ctx), ds_bonus)
 end
 
@@ -151,30 +181,40 @@ handlers[508] = function(ctx) -- Elemental Bias
 end
 
 handlers[509] = function(ctx) -- Strength
-    local earth = (ctx.lore_ranks and ctx.lore_ranks.earth) or 0
-    local str_bonus = 10 + math.floor(earth / 6)
-    local as_bonus = 5 + math.floor(earth / 15)
-    ActiveBuffs.apply(tid(ctx), 509, CIRCLE_ID, ctx.caster.id, BUFF_SECS, { strength_bonus=str_bonus, as_bonus=as_bonus })
+    local str_bonus = 15
+    local as_bonus = 15
+    ActiveBuffs.apply(tid(ctx), 509, CIRCLE_ID, ctx.caster.id, BUFF_SECS,
+        { strength_bonus=str_bonus, as_bonus=as_bonus, encumbrance_redux=15 })
     return string.format("The strength of %s swells with elemental power.", tname(ctx))
 end
 
 handlers[510] = function(ctx) -- Hurl Boulder
     if not ctx.result.hit then return end
-    local dmg = math.max(10, math.floor((ctx.result.total or 101) - 100) * 2)
+    local dmg = bolt_dmg(ctx, 14, 1.55, { lore="earth", lore_scale=0.07, flat_bonus=4 })
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
     DB.execute("UPDATE characters SET health_current=?, position='prone' WHERE id=?", { new_hp, tid(ctx) })
     return string.format("A massive boulder smashes into %s for %d damage!", tname(ctx), dmg)
 end
 
 handlers[511] = function(ctx) -- Floating Disk
-    ActiveBuffs.apply(tid(ctx), 511, CIRCLE_ID, ctx.caster.id, BUFF_SECS, { floating_disk=true, carry_bonus=50 })
-    return "A shimmering disk of force materializes to carry your burdens."
+    local air = (ctx.lore_ranks and ctx.lore_ranks.air) or 0
+    local item_capacity = 8 + seed_10(air)
+    ActiveBuffs.apply(ctx.caster.id, 511, CIRCLE_ID, ctx.caster.id, nil, {
+        floating_disk = true,
+        summon_key = "floating_disk",
+        item_capacity = item_capacity,
+        max_weight = 500,
+    })
+    return string.format(
+        "A shimmering floating disk materializes beside you, ready to carry up to 500 pounds and %d item unit(s).",
+        item_capacity
+    )
 end
 
 handlers[512] = function(ctx) -- Cold Snap
     if not ctx.result.hit then return end
     local water = (ctx.lore_ranks and ctx.lore_ranks.water) or 0
-    local dmg = math.max(5, math.floor((ctx.result.total or 101) - 100) + math.floor(water / 12))
+    local dmg = ward_dmg(ctx, 9, 1.00, { lore="water", lore_scale=0.07 })
     local sdur = 3 + math.floor(dmg / 10) + math.floor(water / 30)
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
@@ -183,7 +223,7 @@ handlers[512] = function(ctx) -- Cold Snap
 end
 
 handlers[513] = function(ctx) -- Elemental Focus
-    local bolt_as = math.floor(math.max(0, (ctx.circle_ranks or 0) - 13) / 2)
+    local bolt_as = 20
     ActiveBuffs.apply(tid(ctx), 513, CIRCLE_ID, ctx.caster.id, BUFF_SECS, { bolt_as_bonus=bolt_as })
     return string.format("Your elemental focus sharpens (+%d Bolt AS).", bolt_as)
 end
@@ -191,14 +231,19 @@ end
 handlers[514] = function(ctx) -- Stone Fist
     if not ctx.result.hit then return end
     local earth = (ctx.lore_ranks and ctx.lore_ranks.earth) or 0
-    local dmg = math.max(8, math.floor((ctx.result.total or 101) - 100) + math.floor(earth / 10))
+    local dmg = bolt_dmg(ctx, 12, 1.15, { lore="earth", lore_scale=0.08, flat_bonus=math.floor(earth / 20) })
+    local sdur = 15 + math.floor(math.max(0, 100 - (ctx.result.total or 100)) / 4)
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
-    return string.format("A stone fist SLAMS into %s for %d damage!", tname(ctx), dmg)
+    DB.execute("UPDATE characters SET health_current=?, position='prone' WHERE id=?", { new_hp, tid(ctx) })
+    ActiveBuffs.apply(tid(ctx), 514, CIRCLE_ID, ctx.caster.id, sdur, { rooted=true, immobilized=true, prone=true, rt_penalty=2 })
+    return string.format("A stone fist SLAMS into %s for %d damage, pinning them in place!", tname(ctx), dmg)
 end
 
 handlers[515] = function(ctx) -- Rapid Fire
-    ActiveBuffs.apply(tid(ctx), 515, CIRCLE_ID, ctx.caster.id, 60, { rapid_fire=true, bolt_rt_reduction=1 })
+    local air = (ctx.lore_ranks and ctx.lore_ranks.air) or 0
+    local duration = 20 + math.floor(air / 10)
+    ActiveBuffs.apply(tid(ctx), 515, CIRCLE_ID, ctx.caster.id, duration,
+        { rapid_fire=true, rt_reduction=2 })
     return "Your spellcasting accelerates into rapid-fire mode."
 end
 
@@ -223,8 +268,13 @@ handlers[517] = function(ctx)
     end
 
     local charges = tonumber(item.charges) or 0
-    local amount = 1 + math.floor((tonumber(ctx.circle_ranks) or 1) / 15)
-    local new_charges = math.min(10, charges + amount)
+    local miu = (ctx.skill_ranks and ctx.skill_ranks.magic_item_use) or 0
+    local emc = (ctx.mana_control and ctx.mana_control.elemental) or 0
+    local amount = 1
+        + math.floor((tonumber(ctx.circle_ranks) or 1) / 20)
+        + math.floor(miu / 75)
+        + math.floor(emc / 100)
+    local new_charges = math.min(40, charges + amount)
     item.extra.charges = new_charges
     ItemMagic.save_extra(item.inv_id, item.extra)
 
@@ -242,7 +292,7 @@ handlers[518] = function(ctx) -- Cone of Elements
         local targets = DB.query(
             "SELECT id, health_current FROM characters WHERE current_room_id=? AND id!=?",
             { room_id, ctx.caster.id })
-        local dmg = math.max(5, math.floor((ctx.result.total or 101) - 100))
+        local dmg = bolt_dmg(ctx, 10, 0.95, { lore="fire", lore_scale=0.05 })
         for i, t in ipairs(targets) do
             if i <= 3 then -- cone hits up to 3
                 DB.execute("UPDATE characters SET health_current=? WHERE id=?",
@@ -257,7 +307,7 @@ end
 handlers[519] = function(ctx) -- Immolation
     if not ctx.result.hit then return end
     local fire = (ctx.lore_ranks and ctx.lore_ranks.fire) or 0
-    local dmg = math.max(10, math.floor((ctx.result.total or 101) - 100) + math.floor(fire / 8))
+    local dmg = bolt_dmg(ctx, 14, 1.20, { lore="fire", lore_scale=0.08, flat_bonus=math.floor(fire / 16) })
     local burn_dur = 5 + math.floor((ctx.circle_ranks or 1) / 5) + math.floor(fire / 25)
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
@@ -274,7 +324,7 @@ end
 
 handlers[525] = function(ctx) -- Meteor Swarm
     if not ctx.result.hit then return end
-    local dmg = math.max(15, math.floor((ctx.result.total or 101) - 100) * 3)
+    local dmg = bolt_dmg(ctx, 20, 1.85, { lore="fire", lore_scale=0.06, flat_bonus=8 })
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
     return string.format("A swarm of meteors crashes down upon %s for %d damage!", tname(ctx), dmg)

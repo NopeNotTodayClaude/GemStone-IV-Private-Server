@@ -13,6 +13,7 @@
 
 local DB          = require("globals/utils/db")
 local ActiveBuffs = require("globals/magic/active_buffs")
+local SpellFx     = require("globals/magic/spell_formulas")
 
 local Bar = {}
 
@@ -102,6 +103,16 @@ end
 
 local handlers = {}
 
+local function sonic_bolt(ctx, base, mult, opts)
+    opts = opts or {}
+    opts.base = base
+    opts.margin_mult = mult
+    opts.stat = opts.stat or "aura"
+    opts.skill = opts.skill or "spell_research"
+    opts.mana_control = opts.mana_control or "mental"
+    return SpellFx.bolt_damage(ctx, opts)
+end
+
 handlers[1001] = function(ctx) -- Holding Song
     if not ctx.result.hit then return end
     local hdur = 5 + math.floor(math.max(0, (ctx.result.total or 101) - 100) / 10)
@@ -111,7 +122,7 @@ end
 
 handlers[1002] = function(ctx) -- Vibration Chant bolt
     if not ctx.result.hit then return end
-    local dmg = math.max(3, math.floor((ctx.result.total or 101) - 100))
+    local dmg = sonic_bolt(ctx, 8, 0.95, { lore="manipulation", lore_scale=0.05, stat="avg_aura_int" })
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
     return string.format("Shattering vibrations rip through %s for %d damage!", tname(ctx), dmg)
@@ -273,7 +284,7 @@ end
 
 handlers[1030] = function(ctx) -- Song of Sonic Disruption bolt
     if not ctx.result.hit then return end
-    local dmg = math.max(15, math.floor((ctx.result.total or 101) - 100) * 2)
+    local dmg = sonic_bolt(ctx, 18, 1.55, { lore="manipulation", lore_scale=0.06, stat="avg_aura_int", flat_bonus=4 })
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
     return string.format("A devastating sonic disruption TEARS through %s for %d damage!", tname(ctx), dmg)
@@ -288,7 +299,14 @@ handlers[1040] = function(ctx) -- Troubadour's Rally
     local room_id = ctx.caster.current_room_id
     if room_id then
         local allies = DB.query("SELECT id FROM characters WHERE current_room_id=?", { room_id })
-        local hp_grant = 10 + (ctx.circle_ranks or 1)
+        local hp_grant = SpellFx.support_heal_amount(ctx, {
+            base = 10,
+            stat = "avg_aura_int",
+            mana_control = "mental",
+            circle_scale = 0.35,
+            stat_scale = 0.18,
+            skill_scale = 0.05,
+        })
         for _, a in ipairs(allies) do
             DB.execute("UPDATE characters SET health_current=LEAST(health_max,health_current+?) WHERE id=?",
                 { hp_grant, a.id })

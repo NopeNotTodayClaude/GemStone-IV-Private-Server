@@ -56,6 +56,48 @@ def load_spells(lua_engine) -> Optional[dict]:
     summary = {}
     errors  = []
 
+    def _normalize_spell_ranks():
+        lua_engine.execute(
+            """
+            local DB = require('globals/utils/db')
+            DB.execute([[
+                UPDATE spells
+                SET rank = CASE
+                    WHEN spell_number BETWEEN 100 AND 1699 THEN (spell_number % 100) - 1
+                    WHEN spell_number BETWEEN 1700 AND 1799 THEN spell_number - 1700
+                    ELSE COALESCE(rank, 0)
+                END
+                WHERE spell_number BETWEEN 100 AND 1799
+            ]])
+            """
+        )
+
+    def _normalize_spell_targeting():
+        lua_engine.execute(
+            """
+            local DB = require('globals/utils/db')
+            local cfg = require('data/spell_targeting') or {}
+            local defaults = cfg.defaults or {}
+            local overrides = cfg.by_spell or {}
+
+            DB.execute("UPDATE spells SET targeting_mode=''")
+
+            for spell_type, targeting in pairs(defaults) do
+                DB.execute(
+                    "UPDATE spells SET targeting_mode=? WHERE spell_type=?",
+                    { tostring(targeting or ''), tostring(spell_type or '') }
+                )
+            end
+
+            for spell_number, targeting in pairs(overrides) do
+                DB.execute(
+                    "UPDATE spells SET targeting_mode=? WHERE spell_number=?",
+                    { tostring(targeting or ''), tonumber(spell_number) or 0 }
+                )
+            end
+            """
+        )
+
     for module_path, circle_name, circle_id in SPELL_CIRCLE_MODULES:
         try:
             mod = lua_engine.require(module_path)
@@ -94,6 +136,9 @@ def load_spells(lua_engine) -> Optional[dict]:
                 "spells_loader: failed to seed %s (circle_id=%d): %s",
                 circle_name, circle_id, e, exc_info=True
             )
+
+    _normalize_spell_ranks()
+    _normalize_spell_targeting()
 
     if errors:
         # Non-fatal: log everything but keep the server alive.

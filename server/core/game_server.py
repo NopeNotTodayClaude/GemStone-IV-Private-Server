@@ -47,6 +47,7 @@ from server.core.engine.travel_office_manager import TravelOfficeManager
 from server.core.engine.justice_manager import JusticeManager
 from server.core.engine.fake_player_manager import FakePlayerManager
 from server.core.engine.town_trouble_manager import TownTroubleManager
+from server.core.engine.spell_summon_manager import SpellSummonManager
 from server.core.services.persistence_writer import PersistenceWriterService
 from server.core.commands.player.training import _try_load_lua_skills
 from server.core.commands.player.inventory import restore_inventory_state
@@ -111,6 +112,7 @@ class GameServer:
         self.justice = JusticeManager(self)
         self.fake_players = FakePlayerManager(self)
         self.town_trouble = TownTroubleManager(self)
+        self.spell_summons = SpellSummonManager(self)
         self.perception_cfg  = {}                           # Loaded from globals/perception.lua after Lua init
 
         self._tcp_server  = None
@@ -253,6 +255,9 @@ class GameServer:
 
         await self.pets.initialize()
         log.info("Pet system ready")
+
+        await self.spell_summons.initialize()
+        log.info("Spell summon system ready")
 
         # Commands
         self.commands.register_default_commands()
@@ -585,6 +590,11 @@ class GameServer:
                 await self.pets.on_login(session)
             except Exception as _pet_err:
                 log.error("Pet login hook failed for %s: %s", session.character_name, _pet_err, exc_info=True)
+        if getattr(self, "spell_summons", None):
+            try:
+                await self.spell_summons.on_player_login(session)
+            except Exception as _summon_err:
+                log.error("Spell summon login hook failed for %s: %s", session.character_name, _summon_err, exc_info=True)
         if getattr(self, "fake_players", None):
             try:
                 self.fake_players.on_player_login(session)
@@ -663,6 +673,12 @@ class GameServer:
             load_combat_maneuvers_for_session(session, self.db)
             load_unlocks_for_session(session, self.db)
             self.hotbar.load_for_session(session)
+
+        if getattr(self, "spell_summons", None):
+            try:
+                await self.spell_summons.on_player_login(session)
+            except Exception as _summon_err:
+                log.error("Spell summon login hook failed after web create for %s: %s", session.character_name, _summon_err, exc_info=True)
 
         # Generate real-time sync token
         if self.db and session.character_id:

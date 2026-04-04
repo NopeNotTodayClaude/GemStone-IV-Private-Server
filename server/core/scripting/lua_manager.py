@@ -92,6 +92,10 @@ class LuaManager:
         from server.core.scripting.loaders.starter_gear_loader import load_starter_gear
         return self._load_once("starter_gear", lambda: load_starter_gear(self._engine))
 
+    def get_starter_spells(self) -> Optional[dict]:
+        from server.core.scripting.loaders.starter_spells_loader import load_starter_spells
+        return self._load_once("starter_spells", lambda: load_starter_spells(self._engine))
+
     def get_appearance(self) -> Optional[dict]:
         """
         Returns hair/eye/skin options, stat metadata, stat descriptions,
@@ -202,6 +206,18 @@ class LuaManager:
     def get_hotbar_actions(self) -> Optional[dict]:
         from server.core.scripting.loaders.hotbar_actions_loader import load_hotbar_actions
         return self._load_once("hotbar_actions", lambda: load_hotbar_actions(self._engine))
+
+    def get_spell_hotbar(self) -> Optional[dict]:
+        from server.core.scripting.loaders.spell_hotbar_loader import load_spell_hotbar
+        return self._load_once("spell_hotbar", lambda: load_spell_hotbar(self._engine))
+
+    def get_spell_circles(self) -> Optional[dict]:
+        from server.core.scripting.loaders.spell_circles_loader import load_spell_circles
+        return self._load_once("spell_circles", lambda: load_spell_circles(self._engine))
+
+    def get_spell_summons(self) -> Optional[dict]:
+        from server.core.scripting.loaders.spell_summons_loader import load_spell_summons
+        return self._load_once("spell_summons", lambda: load_spell_summons(self._engine))
 
     def get_rogue_guild_training(self) -> Optional[dict]:
         from server.core.scripting.loaders.rogue_guild_training_loader import load_rogue_guild_training

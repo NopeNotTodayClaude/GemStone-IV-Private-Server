@@ -13,6 +13,7 @@
 
 local DB          = require("globals/utils/db")
 local ActiveBuffs = require("globals/magic/active_buffs")
+local SpellFx     = require("globals/magic/spell_formulas")
 
 local MnM = {}
 
@@ -87,6 +88,25 @@ local function dur(ctx, ov) return ov or (60 * math.max(1, ctx.circle_ranks or 1
 
 local handlers = {}
 
+local function mental_dmg(ctx, base, mult, opts)
+    opts = opts or {}
+    opts.base = base
+    opts.margin_mult = mult
+    opts.stat = opts.stat or "intuition"
+    opts.skill = opts.skill or "spell_research"
+    opts.mana_control = opts.mana_control or "mental"
+    return SpellFx.warding_damage(ctx, opts)
+end
+
+local function mental_bolt(ctx, base, mult, opts)
+    opts = opts or {}
+    opts.base = base
+    opts.margin_mult = mult
+    opts.stat = opts.stat or "intuition"
+    opts.mana_control = opts.mana_control or "mental"
+    return SpellFx.bolt_damage(ctx, opts)
+end
+
 handlers[1201] = function(ctx) -- Soothing Word
     local id = tid(ctx)
     DB.execute("UPDATE characters SET position='standing' WHERE id=? AND position='stunned'", { id })
@@ -127,7 +147,7 @@ end
 
 handlers[1206] = function(ctx) -- Telekinesis
     if not ctx.result.hit then return end
-    local dmg = math.max(5, math.floor((ctx.result.total or 101) - 100))
+    local dmg = mental_dmg(ctx, 9, 1.05, { lore="manipulation", lore_scale=0.06 })
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
     DB.execute("UPDATE characters SET health_current=?, position='prone' WHERE id=?", { new_hp, tid(ctx) })
     return string.format("Telekinetic force HURLS %s aside for %d damage!", tname(ctx), dmg)
@@ -160,7 +180,7 @@ end
 
 handlers[1210] = function(ctx) -- Thought Lash bolt
     if not ctx.result.hit then return end
-    local dmg = math.max(3, math.floor((ctx.result.total or 101) - 100))
+    local dmg = mental_bolt(ctx, 8, 1.00, { lore="telepathy", lore_scale=0.05, stat="avg_wis_int" })
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
     -- Small stun chance on high result

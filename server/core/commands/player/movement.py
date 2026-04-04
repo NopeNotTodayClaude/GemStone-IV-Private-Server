@@ -146,6 +146,10 @@ async def cmd_look(session, cmd, args, server):
         for entity in server.pets.get_visible_entities_in_room(room.id, viewer=session):
             lines.append(server.pets.format_room_line(entity))
 
+    if hasattr(server, 'spell_summons'):
+        for entity in server.spell_summons.get_visible_entities_in_room(room.id, viewer=session):
+            lines.append(server.spell_summons.format_room_line(entity))
+
     if hasattr(server, 'ferries'):
         lines.extend(server.ferries.get_room_lines(room.id, session))
 
@@ -262,6 +266,13 @@ async def _look_at(session, target, server):
         entity = server.pets.find_visible_entity(room.id, target, viewer=session)
         if entity:
             for line in server.pets.look_lines_for_entity(entity):
+                await session.send_line(line)
+            return
+
+    if hasattr(server, 'spell_summons'):
+        entity = server.spell_summons.find_visible_entity(room.id, target, viewer=session)
+        if entity:
+            for line in server.spell_summons.look_lines_for_entity(entity):
                 await session.send_line(line)
             return
 

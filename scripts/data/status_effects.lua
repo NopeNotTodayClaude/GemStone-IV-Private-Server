@@ -888,6 +888,20 @@ Effects["hidden"] = {
     description      = "Hidden from sight; revealed by movement or combat.",
 }
 
+Effects["revival_shroud"] = {
+    name             = "Revival Shroud",
+    category         = "STATE",
+    prompt_char      = "V",
+    stackable        = false,
+    max_stacks       = 1,
+    tick_interval    = 0,
+    duration_default = 10,
+    combat_mods      = { as = 0, ds = 0, evade_pct = 0, parry_pct = 0, block_pct = 0 },
+    blocks           = { "actions", "cast" },
+    can_clear        = {},
+    description      = "Freshly revived and wrapped in protective starlight; may move but cannot fight or cast, and hostile damage is ignored.",
+}
+
 Effects["sneaking"] = {
     name             = "Sneaking",
     category         = "STATE",

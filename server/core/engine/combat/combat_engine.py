@@ -1702,6 +1702,29 @@ class CombatEngine:
         else:
             swing_line = f"{creature_display} {verb_first}!"
 
+        status = getattr(self.server, "status", None)
+        if status and status.has(session, "revival_shroud"):
+            rt = attack.get("roundtime", 5)
+            creature.set_roundtime(rt)
+            await session.send_line(swing_line)
+            await session.send_line(colorize(
+                "  A veil of starlight turns the blow aside while you stagger back from death.",
+                TextPresets.SYSTEM,
+            ))
+            await self.server.world.broadcast_to_room(
+                session.current_room.id,
+                f"{creature.full_name.capitalize()} {verb_third.replace('{target}', session.character_name)} but a veil of starlight shields {session.character_name} from harm!",
+                exclude=session,
+            )
+            creature.in_combat = False
+            creature.target = None
+            if status.has(session, "in_combat"):
+                status.exit_combat(session)
+            else:
+                session.in_combat = False
+                session.target = None
+            return
+
         # Set creature roundtime
         rt = attack.get("roundtime", 5)
         creature.set_roundtime(rt)

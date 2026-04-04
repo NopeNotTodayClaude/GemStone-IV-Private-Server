@@ -9,6 +9,7 @@
 local DB          = require("globals/utils/db")
 local ActiveBuffs = require("globals/magic/active_buffs")
 local ItemMagic   = require("globals/magic/item_magic")
+local SpellFx     = require("globals/magic/spell_formulas")
 
 local Wiz = {}
 
@@ -84,10 +85,24 @@ end
 local function dur(ctx, ov) return ov or (60 * math.max(1, ctx.circle_ranks or 1)) end
 
 -- Generic bolt handler reused by all damage bolts
-local function bolt_dmg(ctx, min_dmg, mult)
+local function bolt_dmg(ctx, min_dmg, mult, opts)
     if not ctx.result.hit then return end
-    local dmg = math.max(min_dmg, math.floor((ctx.result.total or 101) - 100) * (mult or 1))
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
+    opts = opts or {}
+    local dmg = SpellFx.bolt_damage(ctx, {
+        base = min_dmg,
+        min = min_dmg,
+        margin_mult = mult or 1,
+        lore = opts.lore,
+        stat = "aura",
+        mana_control = "elemental",
+        level_scale = 0.30,
+        circle_scale = 0.40,
+        stat_scale = 0.25,
+        aiming_scale = 0.14,
+        lore_scale = opts.lore_scale or 0.05,
+        flat_bonus = opts.flat_bonus or 0,
+    })
+    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
     return dmg
 end
@@ -95,7 +110,7 @@ end
 local handlers = {}
 
 handlers[901] = function(ctx)
-    local dmg = bolt_dmg(ctx, 1, 1)
+    local dmg = bolt_dmg(ctx, 1, 1, { lore = "air" })
     if dmg then return string.format("A minor shock crackles through %s for %d damage!", tname(ctx), dmg) end
 end
 handlers[902] = function(ctx)
@@ -108,7 +123,7 @@ handlers[902] = function(ctx)
 end
 handlers[903] = function(ctx)
     local water = (ctx.lore_ranks and ctx.lore_ranks.water) or 0
-    local dmg = bolt_dmg(ctx, 2, 1)
+    local dmg = bolt_dmg(ctx, 2, 1, { lore = "water" })
     if dmg then
         if water >= 15 then
             ActiveBuffs.apply(tid(ctx), 903, CIRCLE_ID, ctx.caster.id, 3 + math.floor(water / 40), { slowed=true })
@@ -117,7 +132,7 @@ handlers[903] = function(ctx)
     end
 end
 handlers[904] = function(ctx)
-    local dmg = bolt_dmg(ctx, 2, 1)
+    local dmg = bolt_dmg(ctx, 2, 1, { lore = "water", flat_bonus = 1 })
     if dmg then
         -- Acid also corrodes armor (small DS reduction)
         ActiveBuffs.apply(tid(ctx), 9910, nil, ctx.caster.id, 30, { ds_penalty=5, acid_corroded=true })
@@ -131,7 +146,7 @@ handlers[905] = function(ctx)
 end
 handlers[906] = function(ctx)
     local fire = (ctx.lore_ranks and ctx.lore_ranks.fire) or 0
-    local dmg = bolt_dmg(ctx, 3, 1)
+    local dmg = bolt_dmg(ctx, 3, 1, { lore = "fire" })
     if dmg then
         if fire >= 10 then
             ActiveBuffs.apply(tid(ctx), 906, CIRCLE_ID, ctx.caster.id, 3 + math.floor(fire / 35), { burning=true, burn_dmg=1 + math.floor(fire / 50) })
@@ -140,7 +155,7 @@ handlers[906] = function(ctx)
     end
 end
 handlers[907] = function(ctx)
-    local dmg = bolt_dmg(ctx, 5, 1)
+    local dmg = bolt_dmg(ctx, 5, 1.10, { lore = "water" })
     if dmg then
         ActiveBuffs.apply(tid(ctx), 9911, nil, ctx.caster.id, 5, { slowed=true })
         return string.format("Major cold BLASTS %s for %d damage and slows them!", tname(ctx), dmg)
@@ -148,7 +163,7 @@ handlers[907] = function(ctx)
 end
 handlers[908] = function(ctx)
     local fire = (ctx.lore_ranks and ctx.lore_ranks.fire) or 0
-    local dmg = bolt_dmg(ctx, 5, 1)
+    local dmg = bolt_dmg(ctx, 5, 1.15, { lore = "fire" })
     if dmg then
         ActiveBuffs.apply(tid(ctx), 9912, nil, ctx.caster.id, 5 + math.floor(fire / 35), { burning=true, burn_dmg=3 + math.floor(fire / 30) })
         return string.format("A fireball engulfs %s for %d damage and sets them ablaze!", tname(ctx), dmg)
@@ -164,7 +179,7 @@ handlers[909] = function(ctx) -- Tremors
     return "The earth SHAKES violently, knocking everyone to the ground!"
 end
 handlers[910] = function(ctx)
-    local dmg = bolt_dmg(ctx, 8, 1)
+    local dmg = bolt_dmg(ctx, 8, 1.20, { lore = "air" })
     if dmg then return string.format("A major shock CRACKLES through %s for %d damage!", tname(ctx), dmg) end
 end
 handlers[911] = function(ctx) -- Mass Blur — group DS
@@ -228,7 +243,7 @@ handlers[916] = function(ctx) -- Invisibility
 end
 handlers[917] = function(ctx) -- Earthen Fury
     local earth = (ctx.lore_ranks and ctx.lore_ranks.earth) or 0
-    local dmg = bolt_dmg(ctx, 10, 1)
+    local dmg = bolt_dmg(ctx, 10, 1.20, { lore = "earth" })
     if dmg then
         local extra = math.floor(earth / 10)
         if extra > 0 then

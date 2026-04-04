@@ -50,6 +50,78 @@ def _get_tier_value(tiers, level):
     return list(tiers.values())[-1]
 
 
+def _box_template_candidates(chosen_name):
+    text = str(chosen_name or "").strip()
+    if not text:
+        return []
+    candidates = []
+    for value in (text, f"a {text}", f"an {text}", f"the {text}"):
+        if value not in candidates:
+            candidates.append(value)
+    return candidates
+
+
+def _load_box_template(db, chosen_name):
+    if not db:
+        return None
+    candidates = _box_template_candidates(chosen_name)
+    if not candidates:
+        return None
+    try:
+        query = """
+            SELECT id, name, short_name, noun, article, container_capacity, description, container_type, base_name
+            FROM items
+            WHERE item_type = 'container'
+              AND is_template = 1
+              AND (
+                    LOWER(COALESCE(base_name, '')) = LOWER(%s)
+                 OR LOWER(COALESCE(short_name, '')) = LOWER(%s)
+                 OR LOWER(COALESCE(name, '')) = LOWER(%s)
+                 OR LOWER(COALESCE(name, '')) = LOWER(%s)
+                 OR LOWER(COALESCE(name, '')) = LOWER(%s)
+                 OR LOWER(COALESCE(name, '')) = LOWER(%s)
+              )
+            ORDER BY
+                CASE
+                    WHEN LOWER(COALESCE(base_name, '')) = LOWER(%s) THEN 0
+                    WHEN LOWER(COALESCE(short_name, '')) = LOWER(%s) THEN 1
+                    WHEN LOWER(COALESCE(name, '')) = LOWER(%s) THEN 2
+                    ELSE 3
+                END,
+                id ASC
+            LIMIT 1
+        """
+        params = (
+            chosen_name,
+            chosen_name,
+            candidates[0],
+            candidates[1] if len(candidates) > 1 else candidates[0],
+            candidates[2] if len(candidates) > 2 else candidates[0],
+            candidates[3] if len(candidates) > 3 else candidates[0],
+            chosen_name,
+            chosen_name,
+            candidates[0],
+        )
+        result = db.execute_query(query, params)
+        if result and len(result) > 0:
+            row = result[0]
+            return {
+                "item_id":            row[0],
+                "name":               row[1],
+                "short_name":         row[2],
+                "noun":               row[3],
+                "article":            row[4] or "a",
+                "container_capacity": row[5],
+                "description":        row[6],
+                "item_type":          "container",
+                "container_type":     row[7] or "treasure",
+                "base_name":          row[8] or chosen_name,
+            }
+    except Exception as e:
+        log.warning(f"Failed to query box template: {e}")
+    return None
+
+
 def generate_coins(creature_level):
     """Generate coin drop amount based on creature level."""
     base = creature_level * 15
@@ -121,35 +193,7 @@ def generate_box(db, creature_level, server=None):
             "trap_payload": {},
         }
 
-    box = None
-
-    try:
-        if db:
-            query = """
-                SELECT id, name, short_name, noun, article, container_capacity, description, container_type, base_name
-                FROM items
-                WHERE item_type = 'container'
-                  AND is_template = 1
-                  AND base_name = %s
-                LIMIT 1
-            """
-            result = db.execute_query(query, (chosen_name,))
-            if result and len(result) > 0:
-                row = result[0]
-                box = {
-                    "item_id":            row[0],
-                    "name":               row[1],
-                    "short_name":         row[2],
-                    "noun":               row[3],
-                    "article":            row[4] or "a",
-                    "container_capacity": row[5],
-                    "description":        row[6],
-                    "item_type":          "container",
-                    "container_type":     row[7] or "treasure",
-                    "base_name":          row[8] or chosen_name,
-                }
-    except Exception as e:
-        log.warning(f"Failed to query box template: {e}")
+    box = _load_box_template(db, chosen_name)
 
     # Fallback if DB unavailable or no result
     if not box:

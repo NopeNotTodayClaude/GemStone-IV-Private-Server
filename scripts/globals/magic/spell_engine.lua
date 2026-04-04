@@ -11,6 +11,7 @@ local Warding      = require("globals/magic/warding_resolver")
 local Bolt         = require("globals/magic/bolt_resolver")
 local SMR          = require("globals/magic/smr_resolver")
 local ActiveBuffs  = require("globals/magic/active_buffs")
+local Math         = require("globals/utils/gs4_math")
 
 local SpellEngine = {}
 
@@ -137,6 +138,12 @@ end
 
 local function resolve_activation_type(char, spell, spell_number, verb)
     local stype = spell.spell_type or "utility"
+    if spell_number == 1101 then
+        if verb == "channel" then
+            return "healing"
+        end
+        return "warding"
+    end
     if spell_number == 1700 then
         if verb == "evoke" or verb == "channel" then
             return "bolt"
@@ -177,6 +184,25 @@ local function activate(char, target, spell_number, spell_ranks, verb, skip_mana
         return false, "That spell is unknown."
     end
 
+    local cast_verb = verb or "cast"
+    local target_mode = spell.targeting_mode or ""
+    local can_default_self = (target_mode == "self_only" or target_mode == "room_player_or_self")
+    if spell_number == 1101 and cast_verb ~= "channel" then
+        can_default_self = false
+    end
+    if not target and can_default_self then
+        target = char
+    end
+
+    local stype = resolve_activation_type(char, spell, spell_number, cast_verb)
+    if spell_number == 1101 and stype == "warding" and not target then
+        return false, "Harm requires a hostile target. Use CAST <hostile> to harm, or CHANNEL to heal."
+    end
+    if (stype == "bolt" or stype == "warding" or stype == "maneuver") and not target then
+        local spell_name = spell.name or ("Spell " .. tostring(spell_number))
+        return false, string.format("You need a target to cast %s.", spell_name)
+    end
+
     if char.pet_cheat_cast then
         skip_mana = true
     end
@@ -198,9 +224,15 @@ local function activate(char, target, spell_number, spell_ranks, verb, skip_mana
 
     local armor_use_ranks    = load_skill_rank(char.id, 2)
     local spell_aiming_ranks = load_skill_rank(char.id, 17)
+    local harness_power_ranks = load_skill_rank(char.id, 18)
     local emc_ranks          = load_skill_rank(char.id, 19)
     local smc_ranks          = load_skill_rank(char.id, 20)
     local mmc_ranks          = load_skill_rank(char.id, 21)
+    local spell_research_ranks = load_skill_rank(char.id, 22)
+    local physical_fitness_ranks = load_skill_rank(char.id, 13)
+    local first_aid_ranks = load_skill_rank(char.id, 30)
+    local arcane_symbols_ranks = load_skill_rank(char.id, 15)
+    local miu_ranks = load_skill_rank(char.id, 16)
     local mc_bonus           = math.max(emc_ranks, smc_ranks, mmc_ranks)
     local lore_ranks = {
         blessings      = load_skill_rank(char.id, 33),
@@ -223,6 +255,23 @@ local function activate(char, target, spell_number, spell_ranks, verb, skip_mana
         spirit    = smc_ranks,
         mental    = mmc_ranks,
     }
+    local skill_ranks = {
+        armor_use = armor_use_ranks,
+        spell_aiming = spell_aiming_ranks,
+        harness_power = harness_power_ranks,
+        elemental_mana_control = emc_ranks,
+        spirit_mana_control = smc_ranks,
+        mental_mana_control = mmc_ranks,
+        spell_research = spell_research_ranks,
+        physical_fitness = physical_fitness_ranks,
+        first_aid = first_aid_ranks,
+        arcane_symbols = arcane_symbols_ranks,
+        magic_item_use = miu_ranks,
+    }
+    local skill_bonuses = {}
+    for name, ranks in pairs(skill_ranks) do
+        skill_bonuses[name] = Math.skill_bonus_from_ranks(ranks)
+    end
 
     local caster_asg   = char.torso_armor_asg or 1
     local target_asg   = target and target.torso_armor_asg or 1
@@ -231,7 +280,6 @@ local function activate(char, target, spell_number, spell_ranks, verb, skip_mana
     local circle_ranks = (spell_ranks and circle and spell_ranks[circle.id]) or 0
 
     local result
-    local stype = resolve_activation_type(char, spell, spell_number, verb or "cast")
 
     if stype == "bolt" then
         local element = (spell.description or ""):match("element:(%w+)") or "impact"
@@ -266,11 +314,13 @@ local function activate(char, target, spell_number, spell_ranks, verb, skip_mana
         caster       = char,
         target       = target,
         result       = result,
-        verb         = verb,
+        verb         = cast_verb,
         spell        = spell,
         circle_ranks = circle_ranks,
         lore_ranks   = lore_ranks,
         mana_control = mana_control,
+        skill_ranks  = skill_ranks,
+        skill_bonuses = skill_bonuses,
     }, result)
 
     if char.pet_cheat_cast and type(result) == "table" then

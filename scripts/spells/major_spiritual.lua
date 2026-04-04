@@ -8,8 +8,8 @@
 
 local DB          = require("globals/utils/db")
 local ActiveBuffs = require("globals/magic/active_buffs")
-local Mana        = require("globals/magic/mana_system")
 local ItemMagic   = require("globals/magic/item_magic")
+local SpellFx     = require("globals/magic/spell_formulas")
 
 local MjS = {}
 
@@ -52,13 +52,13 @@ local SPELLS = {
     [217] = { name="Mass Interference",    mnemonic="MASSINTERFERENCE", spell_type="warding", mana_cost=17,
               description="Room-wide warding attack that interferes with all hostile spellcasters." },
     [218] = { name="Spirit Servant",       mnemonic="SPIRITSERVANT",    spell_type="summon",  mana_cost=18,
-              description="Summons a spirit servant to carry items, scout ahead, or perform simple tasks." },
+              description="Summons a spirit servant to carry items, scout ahead, preserve remains, and perform simple tasks." },
     [219] = { name="Spell Shield",         mnemonic="SPELLSHIELD",      spell_type="buff",    mana_cost=19,
               description="Grants significant TD and resistance to warding spells." },
     [220] = { name="Major Sanctuary",      mnemonic="MAJORSANCTUARY",   spell_type="utility", mana_cost=20,
               description="Creates a powerful sanctuary. +30 sec per rank. Persists much longer than minor version." },
     [225] = { name="Transference",         mnemonic="TRANSFERENCE",     spell_type="utility", mana_cost=25,
-              description="Transfers mana from caster to target. Amount transferred limited by caster's ranks." },
+              description="Spiritually transfers the caster to the target's room. Mana cost decreases with skill." },
     [230] = { name="Spiritual Abolition",  mnemonic="SPIRITUALABOLITION",spell_type="warding", mana_cost=30,
               description="Warding attack that dispels multiple active spiritual buffs. Number removed scales with ranks." },
     [240] = { name="Spirit Slayer",        mnemonic="SPIRITSLAYER",     spell_type="buff",    mana_cost=40,
@@ -99,14 +99,28 @@ handlers[202] = function(ctx) -- Spirit Shield
 end
 
 handlers[203] = function(ctx)
-    local rank_bonus = math.floor((ctx.circle_ranks or 1) / 4)
+    local blessings = (ctx.lore_ranks and ctx.lore_ranks.blessings) or 0
+    local mana_restore = SpellFx.support_heal_amount(ctx, {
+        base = 6,
+        stat = "wisdom",
+        skill = "spell_research",
+        mana_control = "spirit",
+        lore = "blessings",
+        circle_scale = 0.20,
+        stat_scale = 0.12,
+        skill_scale = 0.04,
+        lore_scale = 0.03,
+        min = 6,
+    })
+    local max_mana_bonus = math.min(50, math.floor(blessings / 10) * 5)
     local item = DB.queryOne("SELECT id FROM items WHERE short_name = ? LIMIT 1", { "manna bread" })
     if not item then
         return "The blessing forms briefly, but there is no proper vessel prepared for manna."
     end
     ItemMagic.create_item(ctx.caster.id, item.id, {
-        mana_restore = 3 + rank_bonus,
-        uses = 1,
+        mana_restore = mana_restore,
+        manna_max_bonus = max_mana_bonus,
+        manna_fresh = true,
         blessed_food = true,
     }, nil)
     return "A small loaf of manna bread materializes for later use."
@@ -118,13 +132,23 @@ handlers[204] = function(ctx) -- Unpresence
 end
 
 handlers[205] = function(ctx) -- Light
-    ActiveBuffs.apply(tid(ctx), 205, CIRCLE_ID, ctx.caster.id, dur(ctx), { light_source=true })
+    local duration = 1200 + ((ctx.circle_ranks or 1) * 60)
+    ActiveBuffs.apply(tid(ctx), 205, CIRCLE_ID, ctx.caster.id, duration, { light_source=true })
     return "A warm light radiates from your hand, illuminating the area."
 end
 
 handlers[206] = function(ctx) -- Tend Lore
-    ActiveBuffs.apply(tid(ctx), 206, CIRCLE_ID, ctx.caster.id, dur(ctx), { first_aid_bonus=20 })
-    return string.format("The healing knowledge of %s is spiritually enhanced.", tname(ctx))
+    local blessings = (ctx.lore_ranks and ctx.lore_ranks.blessings) or 0
+    local extra = 0
+    local threshold = 2
+    while blessings >= threshold do
+        extra = extra + 1
+        threshold = threshold + (extra + 2)
+    end
+    local bonus = 20 + extra
+    ActiveBuffs.apply(tid(ctx), 206, CIRCLE_ID, ctx.caster.id, 60,
+        { first_aid_bonus=bonus, tend_rt_reduction_pct=25 })
+    return string.format("The healing knowledge of %s is spiritually enhanced (+%d First Aid).", tname(ctx), bonus)
 end
 
 handlers[207] = function(ctx) -- Purify Air
@@ -173,10 +197,10 @@ handlers[211] = function(ctx) -- Bravery
 end
 
 handlers[212] = function(ctx) -- Interference
-    if not ctx.result.hit then return end
-    local sdur = 10 + math.floor(math.max(0, (ctx.result.total or 101) - 100) / 5)
-    ActiveBuffs.apply(tid(ctx), 212, CIRCLE_ID, ctx.caster.id, sdur, { hindrance_penalty=20 })
-    return string.format("Spiritual static crackles around %s, disrupting their spellcasting!", tname(ctx))
+    local sdur = 60
+    ActiveBuffs.apply(tid(ctx), 212, CIRCLE_ID, ctx.caster.id, sdur,
+        { as_penalty=20, ds_penalty=20, td_spiritual=-20, td_elemental=-20, td_mental=-20 })
+    return string.format("Spiritual static crackles around %s, interfering with every action!", tname(ctx))
 end
 
 handlers[213] = function(ctx) -- Minor Sanctuary
@@ -223,14 +247,19 @@ end
 
 handlers[218] = function(ctx)
     local summoning = (ctx.lore_ranks and ctx.lore_ranks.summoning) or 0
-    local duration = 120 + ((ctx.circle_ranks or 1) * 12) + summoning * 2
-    local carry_bonus = 25 + math.floor((ctx.circle_ranks or 1) / 3) + math.floor(summoning / 20)
-    ActiveBuffs.apply(ctx.caster.id, 218, CIRCLE_ID, ctx.caster.id, duration, {
+    local preservation = 300 + (math.min(summoning, 100) * 15) + (math.max(0, summoning - 100) * 10)
+    ActiveBuffs.apply(ctx.caster.id, 218, CIRCLE_ID, ctx.caster.id, nil, {
         spirit_servant=true,
-        carry_bonus=carry_bonus,
+        summon_key="spirit_servant",
+        hand_capacity=2,
+        spirit_servant_hands=2,
+        preservation_seconds=preservation,
         see_hidden=true,
     })
-    return string.format("A translucent spirit servant materializes and lingers nearby for %d seconds.", duration)
+    return string.format(
+        "A translucent spirit servant materializes at your side, its ghostly hands ready for labor and its preserving touch lasting %d seconds.",
+        preservation
+    )
 end
 
 handlers[219] = function(ctx) -- Spell Shield
@@ -252,20 +281,17 @@ handlers[220] = function(ctx) -- Major Sanctuary
 end
 
 handlers[225] = function(ctx) -- Transference
-    if not ctx.target or ctx.target.mana_current == nil then
-        return "No compatible mana target for mana transference."
+    if not ctx.target or not ctx.target.current_room_id then
+        return "You need a same-realm player target to transfer yourself to."
     end
     local spirit_mc = (ctx.mana_control and ctx.mana_control.spirit) or 0
-    local transfer_pool = (ctx.circle_ranks or 1) + math.floor(spirit_mc / 10)
-    local amount = math.min(transfer_pool, ctx.caster.mana_current or 0)
-    local sender_bonus = spirit_mc + ((ctx.circle_ranks or 1) * 2)
-    local receiver_bonus = sender_bonus
-    local received = Mana.calc_sharing(amount, sender_bonus, receiver_bonus)
-    local new_caster = math.max(0, (ctx.caster.mana_current or 0) - amount)
-    local new_target = math.min((ctx.target.mana_max or 99), (ctx.target.mana_current or 0) + received)
-    DB.execute("UPDATE characters SET mana_current=? WHERE id=?", { new_caster, ctx.caster.id })
-    DB.execute("UPDATE characters SET mana_current=? WHERE id=?", { new_target, ctx.target.id })
-    return string.format("You transfer %d mana to %s, who receives %d mana.", amount, tname(ctx), received)
+    local travel_cost = math.max(5, 25 - math.floor((ctx.circle_ranks or 1) / 3) - math.floor(spirit_mc / 20))
+    if (ctx.caster.mana_current or 0) < travel_cost then
+        return string.format("You need %d mana to transfer to %s.", travel_cost, tname(ctx))
+    end
+    DB.execute("UPDATE characters SET mana_current=GREATEST(0,mana_current-?), current_room_id=? WHERE id=?",
+        { travel_cost, ctx.target.current_room_id, ctx.caster.id })
+    return string.format("Spiritual transference carries you instantly to %s.", tname(ctx))
 end
 
 handlers[230] = function(ctx) -- Spiritual Abolition

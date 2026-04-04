@@ -90,6 +90,7 @@ _EXPIRE_MESSAGES = {
     "groggy":         "  The grogginess fades.",
     "wounded":        "  Your body's natural recovery resumes.",
     "unconscious":    "  You regain consciousness.",
+    "revival_shroud": "  The protective starlight around you fades.",
 }
 
 
@@ -789,6 +790,10 @@ class StatusManager:
             "kneeling":  "kneeling",
             "prone":     "lying",
         }
+        bool_map = {
+            "hidden": "hidden",
+            "sneaking": "sneaking",
+        }
         if eid == "in_combat":
             if not applied:
                 entity.in_combat = False
@@ -801,6 +806,14 @@ class StatusManager:
                 other_pos = [k for k in pos_map if k != eid and self.has(entity, k)]
                 if not other_pos:
                     entity.position = "standing"
+        elif eid in bool_map and hasattr(entity, bool_map[eid]):
+            attr = bool_map[eid]
+            if applied:
+                setattr(entity, attr, True)
+            else:
+                other_active = [k for k, v in bool_map.items() if k != eid and v == attr and self.has(entity, k)]
+                if not other_active:
+                    setattr(entity, attr, False)
 
     # ── Creature helpers ──────────────────────────────────────────────────────
 

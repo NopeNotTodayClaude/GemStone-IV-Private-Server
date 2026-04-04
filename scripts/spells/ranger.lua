@@ -8,6 +8,7 @@
 
 local DB          = require("globals/utils/db")
 local ActiveBuffs = require("globals/magic/active_buffs")
+local SpellFx     = require("globals/magic/spell_formulas")
 
 local Ran = {}
 
@@ -88,6 +89,25 @@ local function dur(ctx, ov) return ov or (60 * math.max(1, ctx.circle_ranks or 1
 
 local handlers = {}
 
+local function ward_dmg(ctx, base, mult, opts)
+    opts = opts or {}
+    opts.base = base
+    opts.margin_mult = mult
+    opts.stat = opts.stat or "wisdom"
+    opts.skill = opts.skill or "spell_research"
+    opts.mana_control = opts.mana_control or "spirit"
+    return SpellFx.warding_damage(ctx, opts)
+end
+
+local function bolt_dmg(ctx, base, mult, opts)
+    opts = opts or {}
+    opts.base = base
+    opts.margin_mult = mult
+    opts.stat = opts.stat or "wisdom"
+    opts.mana_control = opts.mana_control or "spirit"
+    return SpellFx.bolt_damage(ctx, opts)
+end
+
 handlers[601] = function(ctx)
     local sh_bonus = 15 + math.floor((ctx.circle_ranks or 1) / 3)
     ActiveBuffs.apply(tid(ctx), 601, CIRCLE_ID, ctx.caster.id, dur(ctx),
@@ -103,7 +123,7 @@ end
 
 handlers[603] = function(ctx)
     if not ctx.result.hit then return end
-    local dmg = math.max(5, math.floor((ctx.result.total or 101) - 100))
+    local dmg = ward_dmg(ctx, 8, 1.00, { lore="summoning", lore_scale=0.04, stat="avg_wis_int" })
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
     return string.format("Wild entropy tears through %s for %d damage!", tname(ctx), dmg)
@@ -146,7 +166,7 @@ end
 
 handlers[609] = function(ctx) -- Sun Burst bolt
     if not ctx.result.hit then return end
-    local dmg = math.max(8, math.floor((ctx.result.total or 101) - 100))
+    local dmg = bolt_dmg(ctx, 10, 1.10, { lore="summoning", lore_scale=0.03, stat="wisdom", flat_bonus=2 })
     local is_undead = ctx.target and (ctx.target.is_undead == 1 or ctx.target.is_undead == true)
     if is_undead then dmg = math.floor(dmg * 1.5) end
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
@@ -163,9 +183,10 @@ end
 
 handlers[611] = function(ctx) -- Moonbeam
     if not ctx.result.hit then return end
-    local bdur = 5 + math.floor(math.max(0, (ctx.result.total or 101) - 100) / 15)
-    ActiveBuffs.apply(tid(ctx), 611, CIRCLE_ID, ctx.caster.id, bdur, { blinded=true })
-    return string.format("Moonlight dazzles %s, blinding them!", tname(ctx))
+    local summoning = (ctx.lore_ranks and ctx.lore_ranks.summoning) or 0
+    local mdur = math.min(60, 6 + math.floor(summoning / 25))
+    ActiveBuffs.apply(tid(ctx), 611, CIRCLE_ID, ctx.caster.id, mdur, { immobilized=true, rooted=true, moonbeam_bound=true })
+    return string.format("A pale moonbeam locks %s in place, pinning them in shimmering light!", tname(ctx))
 end
 
 handlers[612] = function(ctx) -- Breeze — clear gas, aid movement
@@ -198,7 +219,7 @@ end
 
 handlers[616] = function(ctx) -- Spike Thorn bolt
     if not ctx.result.hit then return end
-    local dmg = math.max(5, math.floor((ctx.result.total or 101) - 100) + (ctx.circle_ranks or 1))
+    local dmg = bolt_dmg(ctx, 11, 1.00, { lore="summoning", lore_scale=0.04, flat_bonus=math.floor((ctx.circle_ranks or 1) / 3) })
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
     return string.format("A volley of thorns pierces %s for %d damage!", tname(ctx), dmg)
@@ -260,7 +281,7 @@ end
 
 handlers[635] = function(ctx) -- Nature's Fury bolt
     if not ctx.result.hit then return end
-    local dmg = math.max(15, math.floor((ctx.result.total or 101) - 100) * 2)
+    local dmg = bolt_dmg(ctx, 18, 1.45, { lore="summoning", lore_scale=0.05, stat="avg_wis_int", flat_bonus=4 })
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
     return string.format("The fury of nature UNLEASHES upon %s for %d damage!", tname(ctx), dmg)

@@ -9,8 +9,8 @@ import logging
 import re
 import time
 
-from server.core.protocol.colors import colorize, roundtime_msg, TextPresets
-from server.core.engine.magic_effects import get_active_buff_totals, is_visible_to
+from server.core.protocol.colors import colorize, roundtime_msg, TextPresets, healing_msg
+from server.core.engine.magic_effects import apply_roundtime_effects, get_active_buff_totals, is_visible_to
 
 log = logging.getLogger(__name__)
 
@@ -21,6 +21,11 @@ def _is_silenced(session, server) -> bool:
         return True
     buffs = _active_buff_totals(session, server)
     return bool(buffs.get("silenced"))
+
+
+def _is_revival_shrouded(session, server) -> bool:
+    status = getattr(server, "status", None)
+    return bool(status and status.has(session, "revival_shroud"))
 
 
 def _get_spell_engine(server):
@@ -69,8 +74,15 @@ def _session_to_spell_entity(session, server=None):
         "level": int(getattr(session, "level", 1) or 1),
         "profession_id": int(getattr(session, "profession_id", 0) or 0),
         "race_id": int(getattr(session, "race_id", 12) or 12),
+        "health_current": int(getattr(session, "health_current", 0) or 0),
+        "health_max": int(getattr(session, "health_max", 0) or 0),
         "mana_current": int(getattr(session, "mana_current", 0) or 0),
         "mana_max": int(getattr(session, "mana_max", 0) or 0),
+        "spirit_current": int(getattr(session, "spirit_current", 0) or 0),
+        "spirit_max": int(getattr(session, "spirit_max", 0) or 0),
+        "stamina_current": int(getattr(session, "stamina_current", 0) or 0),
+        "stamina_max": int(getattr(session, "stamina_max", 0) or 0),
+        "silver": int(getattr(session, "silver", 0) or 0),
         "position": getattr(session, "stance", "neutral") or "neutral",
         "stance": getattr(session, "stance", "neutral") or "neutral",
         "current_room_id": int(room_id or 0),
@@ -131,6 +143,14 @@ def _resolve_room_target(session, server, target_name):
         return None
 
     target_name = target_name.strip().lower()
+    self_aliases = {
+        "self",
+        "me",
+        str(getattr(session, "character_name", "") or "").strip().lower(),
+    }
+    if target_name in self_aliases:
+        return session
+
     for player in server.world.get_players_in_room(room.id):
         if player is session:
             continue
@@ -225,6 +245,73 @@ def _lookup_spell_number(server, spell_arg):
     if isinstance(row, (tuple, list)) and row:
         return int(row[0] or 0) or None
     return None
+
+
+def _spellbook_entry(session, spell_number):
+    try:
+        spell_number = int(spell_number or 0)
+    except Exception:
+        return None
+    if spell_number <= 0:
+        return None
+    for row in (getattr(session, "spellbook", []) or []):
+        if not isinstance(row, dict):
+            continue
+        try:
+            if int(row.get("spell_number", 0) or 0) == spell_number:
+                return row
+        except Exception:
+            continue
+    return None
+
+
+def _spell_help_text(session, spell_number):
+    row = _spellbook_entry(session, spell_number)
+    if not row:
+        return ""
+    description = str(row.get("description") or "").strip()
+    if not description:
+        return ""
+    mana_cost = int(row.get("mana_cost", 0) or 0)
+    spell_type = str(row.get("spell_type") or "spell").strip().title()
+    cast_rt = int(row.get("cast_roundtime", 0) or 0)
+    stats = [f"Mana {mana_cost}", spell_type]
+    if cast_rt > 0:
+        stats.append(f"RT {cast_rt}s")
+    return f"  {description} ({' | '.join(stats)})"
+
+
+def _is_healing_spell(session, spell_number):
+    row = _spellbook_entry(session, spell_number) or {}
+    return str(row.get("spell_type") or "").strip().lower() == "healing"
+
+
+def _healing_room_message(session, target, message):
+    text = str(message or "").strip()
+    if not text:
+        return ""
+    if target is session or target is None:
+        return text.replace("into you", f"into {session.character_name}", 1)
+    tname = getattr(target, "character_name", None)
+    if tname:
+        return text.replace("into you", f"into {tname}", 1)
+    return text
+
+
+async def _broadcast_healing_spell(session, server, spell_number, target, message):
+    if not _is_healing_spell(session, spell_number):
+        return
+    room = getattr(session, "current_room", None)
+    if not room:
+        return
+    line = _healing_room_message(session, target, message)
+    if not line:
+        return
+    await server.world.broadcast_to_room(
+        room.id,
+        healing_msg(f"  {line}"),
+        exclude=session,
+    )
 
 
 _WOUND_GROUPS = {
@@ -341,9 +428,61 @@ def _apply_lua_char_updates(engine, lua_char, session):
         session.mana_current = int(updated.get("mana_current") or 0)
 
 
-def _refresh_post_spell_state(session, server):
-    if not getattr(server, "db", None) or not getattr(session, "character_id", None):
+def _refresh_spell_resources(target_session, server):
+    if not getattr(server, "db", None) or not getattr(target_session, "character_id", None):
         return
+    try:
+        rows = server.db.execute_query(
+            """
+            SELECT health_current, health_max, mana_current, mana_max,
+                   spirit_current, spirit_max, stamina_current, stamina_max, silver, current_room_id
+            FROM characters
+            WHERE id = %s
+            LIMIT 1
+            """,
+            (target_session.character_id,),
+        )
+    except Exception:
+        return
+    if not rows:
+        return
+    row = rows[0]
+    attrs = (
+        "health_current", "health_max",
+        "mana_current", "mana_max",
+        "spirit_current", "spirit_max",
+        "stamina_current", "stamina_max",
+        "silver",
+    )
+    room_id = None
+    if isinstance(row, dict):
+        for attr in attrs:
+            if attr in row and row[attr] is not None:
+                setattr(target_session, attr, int(row[attr] or 0))
+        room_id = int(row.get("current_room_id") or 0) if row.get("current_room_id") is not None else None
+    elif isinstance(row, (tuple, list)):
+        for idx, attr in enumerate(attrs):
+            if idx < len(row) and row[idx] is not None:
+                setattr(target_session, attr, int(row[idx] or 0))
+        if len(row) > len(attrs) and row[len(attrs)] is not None:
+            room_id = int(row[len(attrs)] or 0)
+    if room_id and getattr(server, "world", None):
+        current_room = getattr(target_session, "current_room", None)
+        current_room_id = int(getattr(current_room, "id", 0) or 0)
+        if room_id != current_room_id:
+            new_room = server.world.get_room(room_id)
+            if new_room:
+                if current_room_id:
+                    server.world.remove_player_from_room(target_session, current_room_id)
+                target_session.previous_room = current_room
+                target_session.current_room = new_room
+                server.world.add_player_to_room(target_session, new_room.id)
+
+
+def _refresh_post_spell_state(session, server, target_obj=None):
+    _refresh_spell_resources(session, server)
+    if hasattr(target_obj, "character_id") and target_obj is not session:
+        _refresh_spell_resources(target_obj, server)
     try:
         session.fame = int(server.db.get_character_fame(session.character_id) or 0)
     except Exception:
@@ -354,6 +493,13 @@ def _cast_roundtime(prepared_state=None):
     if prepared_state and int(prepared_state.get("number") or 0) == 1700:
         return 5
     return 3
+
+
+def _spell_cast_roundtime(session, server, spell_number, prepared_state=None):
+    base_rt = _cast_roundtime(prepared_state)
+    row = _spellbook_entry(session, spell_number)
+    is_bolt = str((row or {}).get("spell_type") or "").strip().lower() == "bolt"
+    return apply_roundtime_effects(base_rt, server, session, is_bolt=is_bolt)
 
 
 async def cmd_send(session, cmd, args, server):
@@ -465,6 +611,9 @@ async def cmd_send(session, cmd, args, server):
 
 
 async def cmd_prepare(session, cmd, args, server):
+    if _is_revival_shrouded(session, server):
+        await session.send_line(colorize("  You are still wrapped in revival starlight and cannot shape an attack yet.", TextPresets.WARNING))
+        return
     if _is_silenced(session, server):
         await session.send_line(colorize("  You are silenced and cannot shape the words of a spell.", TextPresets.WARNING))
         return
@@ -485,6 +634,9 @@ async def cmd_prepare(session, cmd, args, server):
         _clear_prepared_scroll_state(session)
         session._prepared_lua_spell_number = _lookup_spell_number(server, spell_arg)
         await session.send_line(colorize(f"  {message}", TextPresets.SYSTEM))
+        help_text = _spell_help_text(session, session._prepared_lua_spell_number)
+        if help_text:
+            await session.send_line(colorize(help_text, TextPresets.NPC_EMOTE))
         session.set_roundtime(3)
         await session.send_line(roundtime_msg(3))
     else:
@@ -514,6 +666,9 @@ async def cmd_release(session, cmd, args, server):
 
 
 async def cmd_cast(session, cmd, args, server):
+    if _is_revival_shrouded(session, server):
+        await session.send_line(colorize("  You are still wrapped in revival starlight and cannot cast yet.", TextPresets.WARNING))
+        return
     if _is_silenced(session, server):
         await session.send_line(colorize("  You are silenced and cannot cast.", TextPresets.WARNING))
         return
@@ -554,13 +709,19 @@ async def cmd_cast(session, cmd, args, server):
         if ok:
             _clear_prepared_scroll_state(session)
             message = f"{message}{await _apply_post_cast_side_effects(session, server, spell_number, target, verb)}"
-            await session.send_line(colorize(f"  {message}", TextPresets.SYSTEM))
+            _apply_lua_char_updates(engine, raw_char, session)
+            _refresh_post_spell_state(session, server, target)
+            if _is_healing_spell(session, spell_number):
+                await session.send_line(healing_msg(f"  {message}"))
+                await _broadcast_healing_spell(session, server, spell_number, target, message)
+            else:
+                await session.send_line(colorize(f"  {message}", TextPresets.SYSTEM))
             if getattr(server, "guild", None):
                 try:
                     await server.guild.record_event(session, "spell_cast_success")
                 except Exception:
                     pass
-            rt = _cast_roundtime(prepared)
+            rt = _spell_cast_roundtime(session, server, spell_number, prepared)
             session.set_roundtime(rt)
             await session.send_line(roundtime_msg(rt))
         else:
@@ -573,24 +734,32 @@ async def cmd_cast(session, cmd, args, server):
     ok = bool(values[0]) if values else False
     message = values[1] if len(values) > 1 else "The spell fizzles."
     _apply_lua_char_updates(engine, raw_char, session)
-    _refresh_post_spell_state(session, server)
     if ok:
         message = f"{message}{await _apply_post_cast_side_effects(session, server, spell_number, target, verb)}"
+        _refresh_post_spell_state(session, server, target)
         session._prepared_lua_spell_number = None
-        await session.send_line(colorize(f"  {message}", TextPresets.SYSTEM))
+        if _is_healing_spell(session, spell_number):
+            await session.send_line(healing_msg(f"  {message}"))
+            await _broadcast_healing_spell(session, server, spell_number, target, message)
+        else:
+            await session.send_line(colorize(f"  {message}", TextPresets.SYSTEM))
         if getattr(server, "guild", None):
             try:
                 await server.guild.record_event(session, "spell_cast_success")
             except Exception:
                 pass
-        session.set_roundtime(3)
-        await session.send_line(roundtime_msg(3))
+        rt = _spell_cast_roundtime(session, server, spell_number, prepared)
+        session.set_roundtime(rt)
+        await session.send_line(roundtime_msg(rt))
     else:
         session._prepared_lua_spell_number = None
         await session.send_line(colorize(f"  {message}", TextPresets.WARNING))
 
 
 async def cmd_incant(session, cmd, args, server):
+    if _is_revival_shrouded(session, server):
+        await session.send_line(colorize("  You are still wrapped in revival starlight and cannot incant yet.", TextPresets.WARNING))
+        return
     if _is_silenced(session, server):
         await session.send_line(colorize("  You are silenced and cannot incant a spell.", TextPresets.WARNING))
         return
@@ -615,17 +784,25 @@ async def cmd_incant(session, cmd, args, server):
     ok = bool(values[0]) if values else False
     message = values[1] if len(values) > 1 else "The spell fizzles."
     _apply_lua_char_updates(engine, raw_char, session)
-    _refresh_post_spell_state(session, server)
     if ok:
         _clear_prepared_scroll_state(session)
         message = f"{message}{await _apply_post_cast_side_effects(session, server, spell_number, target_obj, 'cast')}"
-        await session.send_line(colorize(f"  {message}", TextPresets.SYSTEM))
+        _refresh_post_spell_state(session, server, target_obj)
+        if _is_healing_spell(session, spell_number):
+            await session.send_line(healing_msg(f"  {message}"))
+            await _broadcast_healing_spell(session, server, spell_number, target_obj, message)
+        else:
+            await session.send_line(colorize(f"  {message}", TextPresets.SYSTEM))
+        help_text = _spell_help_text(session, spell_number)
+        if help_text:
+            await session.send_line(colorize(help_text, TextPresets.NPC_EMOTE))
         if getattr(server, "guild", None):
             try:
                 await server.guild.record_event(session, "spell_cast_success")
             except Exception:
                 pass
-        session.set_roundtime(3)
-        await session.send_line(roundtime_msg(3))
+        rt = _spell_cast_roundtime(session, server, spell_number)
+        session.set_roundtime(rt)
+        await session.send_line(roundtime_msg(rt))
     else:
         await session.send_line(colorize(f"  {message}", TextPresets.WARNING))

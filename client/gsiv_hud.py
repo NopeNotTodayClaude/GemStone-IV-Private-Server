@@ -375,6 +375,7 @@ MIND_STATES = [
 
 # Sync control line injected by server on login (null-byte delimited, never displayed)
 SYNC_INIT_RE = re.compile(r"\x00SYNC:([0-9a-f]{64}):(\d+)\x00")
+PET_ABILITY_SFX_RE = re.compile(r"\x00PETSFX:([^\x00]+)\x00")
 # Server sends the training/character-creator URL as a plain text line.
 # Detect it client-side and open the browser here — not on the server.
 AUTOOPEN_URL_RE = re.compile(r"https?://\S+(?:8765|8766|8767)/\S+token=\S+")
@@ -2241,6 +2242,7 @@ class HUDApp:
         self._hotbar_slot_rows: Dict[int, dict] = {}
         self._hotbar_pulse_job: Optional[str] = None
         self._hotbar_pulse_phase: bool = False
+        self._hotbar_tooltip_win: "Optional[tk.Toplevel]" = None
 
         # Embedded status effect bar (toolbar strip)
         self._fx_icon_frame: "Optional[tk.Frame]" = None
@@ -3371,9 +3373,17 @@ class HUDApp:
         }
         slot_info = slot_map.get(int(slot)) or {}
         targeting = str(slot_info.get("targeting") or "").strip().lower()
+        is_prepared = bool(slot_info.get("prepared"))
+        submenu_actions = [row for row in (slot_info.get("submenu_actions") or []) if isinstance(row, dict)]
 
         target_name = ""
-        if targeting.startswith("current_target"):
+        if is_prepared and submenu_actions:
+            if self._execute_hotbar_subaction_menu(slot, slot_info):
+                return
+        elif targeting in {"room_player_or_self", "room_player_only"} and is_prepared:
+            if self._execute_hotbar_player_target(slot, slot_info):
+                return
+        elif targeting.startswith("current_target"):
             if not self._current_target and self._room_enemies:
                 self._set_target_entry(self._room_enemies[0], fg=ACCENT_RED)
             target_name = str(self._current_target or "").strip()
@@ -3383,6 +3393,205 @@ class HUDApp:
             payload["target"] = target_name
         self._send_sync_event(payload)
 
+    def _submenu_action_by_key(self, slot_info: dict, subaction_key: str) -> dict:
+        wanted = str(subaction_key or "").strip().lower()
+        for row in (slot_info.get("submenu_actions") or []):
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("key") or "").strip().lower() == wanted:
+                return row
+        return {}
+
+    def _send_hotbar_subaction(self, slot: int, subaction_key: str, target_name: str = ""):
+        payload = {
+            "type": "hotbar_execute",
+            "slot": int(slot),
+            "subaction_key": str(subaction_key or "").strip(),
+        }
+        if target_name:
+            payload["target"] = target_name
+        self._send_sync_event(payload)
+
+    def _execute_hotbar_subaction_player_target(self, slot: int, slot_info: dict, subaction: dict) -> bool:
+        targeting = str(subaction.get("targeting") or "").strip().lower()
+        include_self = targeting == "room_player_or_self"
+        choices = self._room_player_target_choices(include_self=include_self)
+
+        if targeting == "room_player_or_self" and len(choices) == 1 and choices[0].get("target") == "self":
+            self._send_hotbar_subaction(slot, str(subaction.get("key") or "").strip(), "self")
+            return True
+
+        if not choices:
+            self._sys("No valid player targets are here for that spell.")
+            return True
+
+        btn = self._hotbar_buttons.get(int(slot))
+        if btn is None:
+            return False
+
+        menu = tk.Menu(self.root, tearoff=0, bg="#1a1e26", fg=TEXT_MAIN,
+                       font=(self._game_font, 10),
+                       activebackground="#2a3a5a",
+                       activeforeground=TEXT_MAIN,
+                       relief="flat", bd=1)
+        title = str(subaction.get("label") or slot_info.get("label") or f"Hotbar {slot}").strip()
+        menu.add_command(label=title, state="disabled")
+        menu.add_separator()
+        for choice in choices:
+            label = str(choice.get("label") or "").strip()
+            target = str(choice.get("target") or "").strip()
+            if not label or not target:
+                continue
+            menu.add_command(
+                label=label,
+                command=lambda t=target, sk=str(subaction.get("key") or "").strip(): self._send_hotbar_subaction(int(slot), sk, t),
+            )
+        try:
+            menu.tk_popup(btn.winfo_rootx(), btn.winfo_rooty() - 4)
+        finally:
+            menu.grab_release()
+        return True
+
+    def _execute_hotbar_subaction_menu(self, slot: int, slot_info: dict) -> bool:
+        btn = self._hotbar_buttons.get(int(slot))
+        if btn is None:
+            return False
+
+        actions = [row for row in (slot_info.get("submenu_actions") or []) if isinstance(row, dict)]
+        if not actions:
+            return False
+
+        hostile_available = bool(str(self._current_target or "").strip()) or bool(self._room_enemies)
+        other_player_choices = self._room_player_target_choices(include_self=False)
+        filtered_actions = []
+        for action in actions:
+            targeting = str(action.get("targeting") or "").strip().lower()
+            action_key = str(action.get("key") or "").strip().lower()
+            if targeting.startswith("current_target") and not hostile_available:
+                continue
+            if targeting == "room_player_only" and not other_player_choices:
+                continue
+            filtered_actions.append(action)
+        actions = filtered_actions
+        if not actions:
+            self._sys("No valid spell actions are available right now.")
+            return True
+
+        if len(actions) == 1:
+            action = actions[0]
+            targeting = str(action.get("targeting") or "").strip().lower()
+            if targeting == "self_only":
+                self._send_hotbar_subaction(int(slot), str(action.get("key") or "").strip(), "self")
+                return True
+            if targeting == "room_player_or_self":
+                choices = self._room_player_target_choices(include_self=True)
+                if len(choices) == 1 and str(choices[0].get("target") or "") == "self":
+                    self._send_hotbar_subaction(int(slot), str(action.get("key") or "").strip(), "self")
+                    return True
+
+        menu = tk.Menu(self.root, tearoff=0, bg="#1a1e26", fg=TEXT_MAIN,
+                       font=(self._game_font, 10),
+                       activebackground="#2a3a5a",
+                       activeforeground=TEXT_MAIN,
+                       relief="flat", bd=1)
+        title = str(slot_info.get("submenu_label") or slot_info.get("label") or f"Hotbar {slot}").strip()
+        menu.add_command(label=title, state="disabled")
+        menu.add_separator()
+        tooltips = {}
+        for action in actions:
+            label = str(action.get("label") or "").strip()
+            action_key = str(action.get("key") or "").strip()
+            if not label or not action_key:
+                continue
+
+            def _fire_subaction(action_row=action, key=action_key):
+                child_targeting = str(action_row.get("targeting") or "").strip().lower()
+                if child_targeting in {"room_player_or_self", "room_player_only"}:
+                    self._execute_hotbar_subaction_player_target(int(slot), slot_info, action_row)
+                    return
+                target_name = ""
+                if child_targeting.startswith("current_target"):
+                    if not self._current_target and self._room_enemies:
+                        self._set_target_entry(self._room_enemies[0], fg=ACCENT_RED)
+                    target_name = str(self._current_target or "").strip()
+                self._send_hotbar_subaction(int(slot), key, target_name)
+
+            menu.add_command(label=label, command=_fire_subaction)
+            end_idx = menu.index("end")
+            if end_idx is not None:
+                tooltips[int(end_idx)] = str(action.get("tooltip") or action.get("description") or "").strip()
+        self._bind_hotbar_menu_tooltips(menu, tooltips)
+        try:
+            menu.tk_popup(btn.winfo_rootx(), btn.winfo_rooty() - 4)
+        finally:
+            menu.grab_release()
+        return True
+
+    def _room_player_target_choices(self, *, include_self: bool) -> list[dict]:
+        choices = []
+        seen = set()
+        if include_self:
+            self_name = str((((self._last_sync or {}).get("character") or {}).get("name") or "").strip())
+            if self_name:
+                choices.append({"label": "Self", "target": "self"})
+                seen.add(self_name.lower())
+                seen.add("self")
+        for npc in self._room_npcs:
+            if str(npc.get("kind") or "").strip().lower() != "player":
+                continue
+            name = str(npc.get("name") or npc.get("display") or "").strip()
+            if not name:
+                continue
+            key = name.lower()
+            if key in seen:
+                continue
+            choices.append({"label": name, "target": name})
+            seen.add(key)
+        return choices
+
+    def _execute_hotbar_player_target(self, slot: int, slot_info: dict) -> bool:
+        targeting = str(slot_info.get("targeting") or "").strip().lower()
+        include_self = targeting == "room_player_or_self"
+        choices = self._room_player_target_choices(include_self=include_self)
+
+        if targeting == "room_player_or_self" and len(choices) == 1 and choices[0].get("target") == "self":
+            payload = {"type": "hotbar_execute", "slot": int(slot)}
+            self._send_sync_event(payload)
+            return True
+
+        if not choices:
+            self._sys("No valid player targets are here for that spell.")
+            return True
+
+        btn = self._hotbar_buttons.get(int(slot))
+        if btn is None:
+            return False
+
+        menu = tk.Menu(self.root, tearoff=0, bg="#1a1e26", fg=TEXT_MAIN,
+                       font=(self._game_font, 10),
+                       activebackground="#2a3a5a",
+                       activeforeground=TEXT_MAIN,
+                       relief="flat", bd=1)
+        title = str(slot_info.get("label") or slot_info.get("short_label") or f"Hotbar {slot}").strip()
+        menu.add_command(label=title, state="disabled")
+        menu.add_separator()
+        for choice in choices:
+            label = str(choice.get("label") or "").strip()
+            target = str(choice.get("target") or "").strip()
+            if not label or not target:
+                continue
+            menu.add_command(
+                label=label,
+                command=lambda t=target: self._send_sync_event(
+                    {"type": "hotbar_execute", "slot": int(slot), "target": t}
+                ),
+            )
+        try:
+            menu.tk_popup(btn.winfo_rootx(), btn.winfo_rooty() - 4)
+        finally:
+            menu.grab_release()
+        return True
+
     def _execute_hotbar_slot_variant(self, slot: int, subaction_key: str):
         slot_map = {
             int(row.get("slot", 0) or 0): row
@@ -3390,10 +3599,14 @@ class HUDApp:
             if 1 <= int(row.get("slot", 0) or 0) <= 9
         }
         slot_info = slot_map.get(int(slot)) or {}
-        targeting = str(slot_info.get("targeting") or "").strip().lower()
+        subaction = self._submenu_action_by_key(slot_info, subaction_key)
+        targeting = str((subaction or {}).get("targeting") or slot_info.get("targeting") or "").strip().lower()
 
         target_name = ""
-        if targeting.startswith("current_target"):
+        if targeting in {"room_player_or_self", "room_player_only"}:
+            if self._execute_hotbar_subaction_player_target(slot, slot_info, subaction or {"key": subaction_key, "targeting": targeting}):
+                return
+        elif targeting.startswith("current_target"):
             if not self._current_target and self._room_enemies:
                 self._set_target_entry(self._room_enemies[0], fg=ACCENT_RED)
             target_name = str(self._current_target or "").strip()
@@ -3424,6 +3637,7 @@ class HUDApp:
                        relief="flat", bd=1)
         menu.add_command(label=f"Hotbar {slot}", state="disabled")
         menu.add_separator()
+        root_tooltips = {}
 
         submenu_actions = slot_info.get("submenu_actions") or []
         assigned_category = str(slot_info.get("category_key") or "").strip()
@@ -3437,6 +3651,7 @@ class HUDApp:
                               activebackground="#2a3a5a",
                               activeforeground=TEXT_MAIN,
                               relief="flat", bd=1)
+            submenu_tooltips = {}
             category_key = str(category.get("key") or "").strip()
             if submenu_actions and category_key == assigned_category:
                 exec_menu = tk.Menu(submenu, tearoff=0, bg="#1a1e26", fg=TEXT_MAIN,
@@ -3444,6 +3659,7 @@ class HUDApp:
                                     activebackground="#2a3a5a",
                                     activeforeground=TEXT_MAIN,
                                     relief="flat", bd=1)
+                exec_tooltips = {}
                 for action in submenu_actions:
                     label = str(action.get("label") or "").strip()
                     action_key = str(action.get("key") or "").strip()
@@ -3458,11 +3674,18 @@ class HUDApp:
                         state=("normal" if enabled else "disabled"),
                         command=lambda a=action_key: self._execute_hotbar_slot_variant(slot, a),
                     )
+                    end_idx = exec_menu.index("end")
+                    if end_idx is not None:
+                        exec_tooltips[int(end_idx)] = str(action.get("tooltip") or action.get("description") or "").strip()
+                self._bind_hotbar_menu_tooltips(exec_menu, exec_tooltips)
                 if exec_menu.index("end") is not None:
                     submenu.add_cascade(
                         label=f"{str(slot_info.get('submenu_label') or slot_info.get('label') or 'Variants').strip()} >",
                         menu=exec_menu,
                     )
+                    sub_end_idx = submenu.index("end")
+                    if sub_end_idx is not None:
+                        submenu_tooltips[int(sub_end_idx)] = f"{str(slot_info.get('submenu_label') or slot_info.get('label') or 'Variants').strip()}\nChoose a specific variant to use immediately."
                     submenu.add_separator()
             for action in actions:
                 label = str(action.get("label") or "").strip()
@@ -3472,16 +3695,29 @@ class HUDApp:
                     label=label,
                     command=lambda c=category.get("key"), a=action.get("key"): self._assign_hotbar_slot(slot, c, a),
                 )
+                end_idx = submenu.index("end")
+                if end_idx is not None:
+                    submenu_tooltips[int(end_idx)] = str(action.get("tooltip") or action.get("description") or "").strip()
+            self._bind_hotbar_menu_tooltips(submenu, submenu_tooltips)
             if submenu.index("end") is not None:
                 menu.add_cascade(label=str(category.get("label") or "Actions"), menu=submenu)
+                end_idx = menu.index("end")
+                if end_idx is not None:
+                    root_tooltips[int(end_idx)] = f"{str(category.get('label') or 'Actions')}\nChoose an action to assign to hotbar slot {slot}."
 
         if slot_info.get("assigned"):
             menu.add_separator()
             menu.add_command(label="Clear Slot", command=lambda: self._clear_hotbar_slot(slot))
+            end_idx = menu.index("end")
+            if end_idx is not None:
+                root_tooltips[int(end_idx)] = f"Clear Slot\nRemove the current assignment from hotbar slot {slot}."
+
+        self._bind_hotbar_menu_tooltips(menu, root_tooltips)
 
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
+            self._hide_hotbar_tooltip()
             menu.grab_release()
 
     def _assign_hotbar_slot(self, slot: int, category_key: str, action_key: str):
@@ -3577,6 +3813,72 @@ class HUDApp:
             except Exception:
                 pass
             self._fx_tooltip_win = None
+
+    def _show_hotbar_tooltip(self, x_root: int, y_root: int, text: str):
+        self._hide_hotbar_tooltip()
+        if not text:
+            return
+        tip = tk.Toplevel(self.root)
+        tip.overrideredirect(True)
+        tip.attributes("-topmost", True)
+        tip.configure(bg="#1c2128")
+
+        tk.Frame(tip, bg="#58a6ff", height=1).pack(fill="x")
+        inner = tk.Frame(tip, bg="#1c2128", padx=8, pady=5)
+        inner.pack()
+        lines = text.split("\n")
+        for i, line in enumerate(lines):
+            if not line:
+                continue
+            tk.Label(
+                inner,
+                text=line,
+                fg="#ffffff" if i == 0 else "#8b949e",
+                bg="#1c2128",
+                font=("Georgia", 9, "bold" if i == 0 else "normal"),
+                justify="left",
+                anchor="w",
+                wraplength=340,
+            ).pack(fill="x")
+        tk.Frame(tip, bg="#30363d", height=1).pack(fill="x")
+
+        tip.update_idletasks()
+        x = min(int(x_root) + 14, tip.winfo_screenwidth() - tip.winfo_reqwidth() - 4)
+        y = min(int(y_root) + 14, tip.winfo_screenheight() - tip.winfo_reqheight() - 4)
+        tip.geometry(f"+{x}+{y}")
+        self._hotbar_tooltip_win = tip
+
+    def _hide_hotbar_tooltip(self):
+        if self._hotbar_tooltip_win:
+            try:
+                self._hotbar_tooltip_win.destroy()
+            except Exception:
+                pass
+            self._hotbar_tooltip_win = None
+
+    def _bind_hotbar_menu_tooltips(self, menu, tooltip_map: dict):
+        def _on_select(_event, menu_ref=menu, tips=tooltip_map):
+            try:
+                active = menu_ref.index("active")
+            except Exception:
+                active = None
+            if active in (None, "none"):
+                self._hide_hotbar_tooltip()
+                return
+            try:
+                idx = int(active)
+            except Exception:
+                self._hide_hotbar_tooltip()
+                return
+            text = str(tips.get(idx) or "").strip()
+            if not text:
+                self._hide_hotbar_tooltip()
+                return
+            self._show_hotbar_tooltip(self.root.winfo_pointerx(), self.root.winfo_pointery(), text)
+
+        menu.bind("<<MenuSelect>>", _on_select, add="+")
+        menu.bind("<Unmap>", lambda _e: self._hide_hotbar_tooltip(), add="+")
+        menu.bind("<Destroy>", lambda _e: self._hide_hotbar_tooltip(), add="+")
 
     def _build_exp_panel(self, parent):
         """Left-side EXP / mind-state panel."""
@@ -6200,6 +6502,11 @@ class HUDApp:
             if m.group(10):
                 self._update_room(int(m.group(10)))
             return  # Don't display this line
+
+        pet_sfx = PET_ABILITY_SFX_RE.search(raw)
+        if pet_sfx:
+            self._play_sfx(str(pet_sfx.group(1) or "").strip())
+            return  # hidden control line only
 
         # ── Prompt line ──
         # Also extract RT from "[RT: 2s]>" prompts directly

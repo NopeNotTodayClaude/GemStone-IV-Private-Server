@@ -16,6 +16,7 @@ NOTE: Lua scripts use '?' as parameter placeholders (SQLite/JDBC style).
 """
 
 import logging
+import re
 from typing import Any, Optional
 
 log = logging.getLogger(__name__)
@@ -31,15 +32,15 @@ class LuaDBBridge:
     # ── Internal ──────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _sanitize_sql(sql: str) -> str:
+    def _sanitize_sql(sql: str, has_params: bool = False) -> str:
         """
         Translate Lua-style '?' placeholders to MySQL-style '%s'.
-        Also normalises any stray literal '%' that aren't already '%%'
-        so mysql.connector doesn't misinterpret them as format tokens.
+        Preserve existing '%s' placeholders for newer callers while escaping
+        other literal '%' tokens that mysql.connector would treat as Python
+        formatting markers during bound execution.
         """
-        # First escape any literal % signs (that aren't already %%)
-        sql = sql.replace('%', '%%')
-        # Then replace ? placeholders with %s
+        if has_params:
+            sql = re.sub(r"%(?!s)", "%%", sql)
         sql = sql.replace('?', '%s')
         return sql
 
@@ -64,7 +65,21 @@ class LuaDBBridge:
         try:
             import lupa
             if lupa.lua_type(params) == "table":
-                return tuple(v for _, v in params.items())
+                items = list(params.items())
+                if not items:
+                    return tuple()
+                numeric = []
+                other = []
+                for key, value in items:
+                    if isinstance(key, (int, float)) and int(key) == key:
+                        numeric.append((int(key), value))
+                    else:
+                        other.append((key, value))
+                if numeric and not other:
+                    numeric.sort(key=lambda kv: kv[0])
+                    return tuple(value for _, value in numeric)
+                items.sort(key=lambda kv: str(kv[0]))
+                return tuple(value for _, value in items)
         except Exception:
             pass
         if isinstance(params, (list, tuple)):
@@ -73,7 +88,7 @@ class LuaDBBridge:
 
     def _raw_query(self, sql: str, params=None):
         """Execute SQL using a raw dictionary cursor."""
-        sql = self._sanitize_sql(sql)
+        sql = self._sanitize_sql(sql, has_params=bool(params))
         conn = self._db._get_conn()
         try:
             import mysql.connector
@@ -85,14 +100,19 @@ class LuaDBBridge:
             rows = cur.fetchall()
             return rows
         except Exception as e:
-            log.error("LuaDBBridge.query error: %s | SQL: %s", e, sql[:200])
+            log.error(
+                "LuaDBBridge.query error: %s | params=%s | SQL: %s",
+                e,
+                len(params) if params is not None else 0,
+                sql[:200],
+            )
             return []
         finally:
             conn.close()
 
     def _raw_execute(self, sql: str, params=None):
         """Execute a non-SELECT statement."""
-        sql = self._sanitize_sql(sql)
+        sql = self._sanitize_sql(sql, has_params=bool(params))
         conn = self._db._get_conn()
         try:
             cur = conn.cursor()
@@ -101,7 +121,12 @@ class LuaDBBridge:
             else:
                 cur.execute(sql)
         except Exception as e:
-            log.error("LuaDBBridge.execute error: %s | SQL: %s", e, sql[:200])
+            log.error(
+                "LuaDBBridge.execute error: %s | params=%s | SQL: %s",
+                e,
+                len(params) if params is not None else 0,
+                sql[:200],
+            )
         finally:
             conn.close()
 

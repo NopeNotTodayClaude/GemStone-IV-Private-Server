@@ -6,6 +6,7 @@
 local DB          = require("globals/utils/db")
 local ActiveBuffs = require("globals/magic/active_buffs")
 local ItemMagic   = require("globals/magic/item_magic")
+local SpellFx     = require("globals/magic/spell_formulas")
 
 local MnE = {}
 
@@ -81,6 +82,15 @@ end
 local function dur(ctx, ov) return ov or (60 * math.max(1, ctx.circle_ranks or 1)) end
 
 local handlers = {}
+
+local function bolt_dmg(ctx, base, mult, opts)
+    opts = opts or {}
+    opts.base = base
+    opts.margin_mult = mult
+    opts.stat = opts.stat or "aura"
+    opts.mana_control = opts.mana_control or "elemental"
+    return SpellFx.bolt_damage(ctx, opts)
+end
 
 handlers[401] = function(ctx)
     ActiveBuffs.apply(tid(ctx), 401, CIRCLE_ID, ctx.caster.id, dur(ctx), { td_elemental=10, ds=10 })
@@ -163,7 +173,7 @@ end
 
 handlers[409] = function(ctx)
     if not ctx.result.hit then return end
-    local dmg = math.max(1, math.floor((ctx.result.total or 101) - 100))
+    local dmg = bolt_dmg(ctx, 8, 0.95, { lore="earth", lore_scale=0.04 })
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
     return string.format("An elemental blast strikes %s for %d damage!", tname(ctx), dmg)
@@ -213,7 +223,7 @@ end
 
 handlers[415] = function(ctx)
     if not ctx.result.hit then return end
-    local dmg = math.max(5, math.floor((ctx.result.total or 101) - 100))
+    local dmg = bolt_dmg(ctx, 12, 1.10, { lore="air", lore_scale=0.05, flat_bonus=2 })
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
     return string.format("A lightning strike crackles through %s for %d damage!", tname(ctx), dmg)
@@ -304,7 +314,7 @@ handlers[435] = function(ctx)
         local targets = DB.query(
             "SELECT id, health_current FROM characters WHERE current_room_id=? AND id!=?",
             { room_id, ctx.caster.id })
-        local dmg = 15 + (ctx.circle_ranks or 1)
+        local dmg = bolt_dmg(ctx, 16, 1.20, { lore="air", lore_scale=0.04, flat_bonus=4 })
         for _, t in ipairs(targets) do
             local new_hp = math.max(0, (t.health_current or 0) - dmg)
             DB.execute("UPDATE characters SET health_current=?, position='prone' WHERE id=?",

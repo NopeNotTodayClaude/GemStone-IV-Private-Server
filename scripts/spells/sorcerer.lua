@@ -9,6 +9,7 @@
 local DB          = require("globals/utils/db")
 local ActiveBuffs = require("globals/magic/active_buffs")
 local ItemMagic   = require("globals/magic/item_magic")
+local SpellFx     = require("globals/magic/spell_formulas")
 
 local Sor = {}
 
@@ -84,14 +85,34 @@ local function tname(ctx)
     return "you"
 end
 local function dur(ctx, ov) return ov or (60 * math.max(1, ctx.circle_ranks or 1)) end
+local function sor_dmg(ctx, base, mult, opts)
+    if not ctx.result.hit then return end
+    opts = opts or {}
+    local dmg = SpellFx.warding_damage(ctx, {
+        base = base,
+        min = opts.min or base,
+        margin_mult = mult or 1.0,
+        stat = "avg_aura_wis",
+        skill = "spell_research",
+        lore = opts.lore or "necromancy",
+        mana_control = "spirit",
+        level_scale = opts.level_scale or 0.40,
+        circle_scale = opts.circle_scale or 0.45,
+        stat_scale = opts.stat_scale or 0.35,
+        skill_scale = opts.skill_scale or 0.10,
+        lore_scale = opts.lore_scale or 0.06,
+        flat_bonus = opts.flat_bonus or 0,
+    })
+    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
+    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    return dmg
+end
 
 local handlers = {}
 
 handlers[701] = function(ctx) -- Blood Burst
-    if not ctx.result.hit then return end
-    local dmg = math.max(10, math.floor((ctx.result.total or 101) - 100) * 2)
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    local dmg = sor_dmg(ctx, 12, 1.40, { lore = "necromancy", min = 12 })
+    if not dmg then return end
     ActiveBuffs.apply(tid(ctx), 9905, nil, ctx.caster.id, 5, { bleeding=true, bleed_dmg=3 })
     return string.format("Internal vessels rupture within %s for %d damage!", tname(ctx), dmg)
 end
@@ -105,10 +126,8 @@ handlers[702] = function(ctx) -- Mana Disruption
 end
 
 handlers[703] = function(ctx) -- Corrupt Essence
-    if not ctx.result.hit then return end
-    local dmg = math.max(5, math.floor((ctx.result.total or 101) - 100))
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    local dmg = sor_dmg(ctx, 7, 1.05, { lore = "demonology", min = 7 })
+    if not dmg then return end
     ActiveBuffs.apply(tid(ctx), 703, CIRCLE_ID, ctx.caster.id, 10, { corrupted=true, td_spiritual=-10 })
     return string.format("Dark essence corrupts %s for %d damage and weakens their spirit!", tname(ctx), dmg)
 end
@@ -121,8 +140,20 @@ end
 
 handlers[705] = function(ctx) -- Disintegrate bolt
     if not ctx.result.hit then return end
-    local dmg = math.max(20, math.floor((ctx.result.total or 101) - 100) * 3)
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
+    local dmg = SpellFx.bolt_damage(ctx, {
+        base = 20,
+        min = 20,
+        margin_mult = 1.80,
+        lore = "necromancy",
+        stat = "avg_aura_wis",
+        mana_control = "spirit",
+        level_scale = 0.32,
+        circle_scale = 0.42,
+        stat_scale = 0.28,
+        aiming_scale = 0.10,
+        lore_scale = 0.06,
+    })
+    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
     return string.format("Void energy tears %s apart for %d damage!", tname(ctx), dmg)
 end
@@ -215,9 +246,20 @@ handlers[712] = function(ctx) -- Cloak of Shadows
 end
 
 handlers[713] = function(ctx) -- Balefire bolt
-    if not ctx.result.hit then return end
-    local dmg = math.max(8, math.floor((ctx.result.total or 101) - 100))
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
+    local dmg = SpellFx.bolt_damage(ctx, {
+        base = 10,
+        min = 10,
+        margin_mult = 1.15,
+        lore = "demonology",
+        stat = "avg_aura_wis",
+        mana_control = "spirit",
+        level_scale = 0.30,
+        circle_scale = 0.40,
+        stat_scale = 0.28,
+        aiming_scale = 0.10,
+        lore_scale = 0.06,
+    })
+    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
     return string.format("Balefire scorches %s for %d damage, burning through their defenses!", tname(ctx), dmg)
 end

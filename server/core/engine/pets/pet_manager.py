@@ -21,6 +21,9 @@ from server.core.protocol.colors import colorize, TextPresets
 log = logging.getLogger(__name__)
 
 PET_COMFORTING_GLOW_SPELL = 5001
+PET_SCALEGUARD_WARD_SPELL = 5002
+PET_STATIC_LASH_SPELL = 5003
+PET_REVIVAL_SHROUD_STATUS = "revival_shroud"
 
 
 class PetManager:
@@ -66,6 +69,26 @@ class PetManager:
 
     def species_cfg(self, species_key: str) -> dict:
         return ((self.cfg.get("species") or {}).get(species_key) or {})
+
+    def _species_profession_allowed(self, session, species: dict) -> bool:
+        allowed = species.get("required_professions") or []
+        if not allowed:
+            return True
+        try:
+            profession_id = int(getattr(session, "profession_id", 0) or 0)
+        except Exception:
+            profession_id = 0
+        return profession_id in {int(v or 0) for v in allowed}
+
+    def _species_allow_before_first_claim(self, species: dict) -> bool:
+        return bool(species.get("allow_before_first_pet") or species.get("free_first_pet"))
+
+    def _species_price_for_session(self, session, species_key: str, species: dict) -> int:
+        progress = getattr(session, "pet_progress", {}) or {}
+        price = int(species.get("base_price") or 0)
+        if bool(species.get("free_first_pet")) and not progress.get("first_pet_claimed"):
+            price = 0
+        return price
 
     def get_xp_curve(self) -> list:
         curve = self.cfg.get("xp_curve") or []
@@ -458,7 +481,9 @@ class PetManager:
             return
 
         await self._maybe_emit_pet_emote(session, pet, now)
-        await self._maybe_cast_pet_regen(session, pet, now)
+        await self._maybe_cast_pet_support_spells(session, pet, now)
+        await self._maybe_cast_pet_attack_spells(session, pet, now)
+        await self._maybe_cast_pet_room_attack_spells(session, pet, now)
 
     async def _maybe_emit_pet_emote(self, session, pet: dict, now: int):
         species = self.species_cfg(pet.get("species_key"))
@@ -564,43 +589,72 @@ class PetManager:
                 return int(row.get("level") or 1)
         return 1
 
-    def _ability_summary_text(self, ability_key: str, scaling: dict, *, locked: bool = False) -> str:
-        if ability_key == "guardian_spark":
+    def _ability_summary_text(self, ability_key: str, ability: dict, scaling: dict, *, locked: bool = False) -> str:
+        ability_type = str(ability.get("type") or "")
+        if ability_type == "death_prevention":
             charges = int(scaling.get("charges") or 0)
             cooldown = self._format_duration_short(int(scaling.get("cooldown_seconds") or 0))
+            revive_pct = float(scaling.get("revive_health_pct") or 0.0)
+            if revive_pct > 0:
+                return f"Prevents death and leaves the owner at {revive_pct * 100:.0f}% HP. Restores {charges} charge{'s' if charges != 1 else ''} every {cooldown}."
             return f"Prevents death and leaves the owner at 1 HP. Restores {charges} charge{'s' if charges != 1 else ''} every {cooldown}."
-        if ability_key == "comforting_glow":
-            heal_pct = float(scaling.get("heal_pct") or 0.0) * 100.0
-            tick = self._format_duration_short(int(scaling.get("tick_interval") or 0))
-            duration = self._format_duration_short(int(scaling.get("duration_seconds") or 0))
-            recast = self._format_duration_short(int(scaling.get("recast_seconds") or 0))
-            threshold = int(round(float(scaling.get("threshold_pct") or 0.0) * 100.0))
-            return f"Heals {heal_pct:.1f}% HP every {tick} for {duration} when the owner falls below {threshold}% HP. Recasts every {recast}."
-        if ability_key == "starlight_recall":
+        if ability_type == "death_recall":
             revive_pct = float(scaling.get("revive_health_pct") or 0.0) * 100.0
             cooldown = self._format_duration_short(int(scaling.get("cooldown_seconds") or 0))
             return f"Revives the owner in place at {revive_pct:.0f}% HP once every {cooldown}."
+        if ability_type == "pet_spell":
+            if "heal_pct" in scaling:
+                heal_pct = float(scaling.get("heal_pct") or 0.0) * 100.0
+                tick = self._format_duration_short(int(scaling.get("tick_interval") or 0))
+                duration = self._format_duration_short(int(scaling.get("duration_seconds") or 0))
+                recast = self._format_duration_short(int(scaling.get("recast_seconds") or 0))
+                threshold = int(round(float(scaling.get("threshold_pct") or 0.0) * 100.0))
+                return f"Heals {heal_pct:.1f}% HP every {tick} for {duration} when the owner falls below {threshold}% HP. Recasts every {recast}."
+            absorb = int(scaling.get("absorb_amount") or 0)
+            ds_bonus = int(scaling.get("ds_bonus") or 0)
+            duration = self._format_duration_short(int(scaling.get("duration_seconds") or 0))
+            recast = self._format_duration_short(int(scaling.get("recast_seconds") or 0))
+            threshold = int(round(float(scaling.get("threshold_pct") or 0.0) * 100.0))
+            return f"Absorbs {absorb} incoming damage and adds +{ds_bonus} DS for {duration} when the owner falls below {threshold}% HP. Recasts every {recast}."
+        if ability_type == "pet_attack_spell":
+            recast = self._format_duration_short(int(scaling.get("recast_seconds") or 0))
+            return f"Strikes the owner's current foe for {int(scaling.get('min_damage') or 0)}-{int(scaling.get('max_damage') or 0)} damage. Recasts every {recast}."
+        if ability_type == "pet_room_attack_spell":
+            cooldown = self._format_duration_short(int(scaling.get("cooldown_seconds") or 0))
+            return f"Unleashes a room-wide strike for {int(scaling.get('min_damage') or 0)}-{int(scaling.get('max_damage') or 0)} damage against every hostile enemy. Recasts every {cooldown}."
         if locked:
             unlock_level = int(scaling.get("level") or 1)
             return f"Unlocks at level {unlock_level}."
         return ""
 
-    def _ability_status_text(self, session, pet: dict, ability_key: str, state: dict, scaling: dict) -> str:
+    def _ability_status_text(self, session, pet: dict, ability_key: str, ability: dict, state: dict, scaling: dict) -> str:
         now = self._now()
         cooldown_remaining = max(0, int(state.get("cooldown_until") or 0) - now)
-        if ability_key == "guardian_spark":
+        ability_type = str(ability.get("type") or "")
+        if ability_type == "death_prevention":
             charges_current = int(state.get("charges_current") or 0)
             charges_max = int(scaling.get("charges") or 0)
             if cooldown_remaining > 0 and charges_current <= 0:
                 return f"Recharging: {self._format_duration_short(cooldown_remaining)} remaining"
             return f"Ready: {charges_current}/{charges_max} charge{'s' if charges_max != 1 else ''}"
-        if ability_key == "comforting_glow":
-            if getattr(session, "active_pet", None) is pet and getattr(self.server, "status", None) and self.server.status.has(session, "floofer_glow"):
+        if ability_type == "pet_spell":
+            status_effect = str(ability.get("status_effect") or scaling.get("status_effect") or "")
+            if status_effect and getattr(session, "active_pet", None) is pet and getattr(self.server, "status", None) and self.server.status.has(session, status_effect):
                 return "Active on owner"
             if cooldown_remaining > 0:
                 return f"Recast: {self._format_duration_short(cooldown_remaining)} remaining"
             return "Ready to cast"
-        if ability_key == "starlight_recall":
+        if ability_type == "pet_attack_spell":
+            if cooldown_remaining > 0:
+                return f"Recast: {self._format_duration_short(cooldown_remaining)} remaining"
+            return "Ready to strike"
+        if ability_type == "pet_room_attack_spell":
+            if not scaling.get("unlocked"):
+                return f"Locked until level {self._ability_unlock_level((self.species_cfg(pet.get('species_key')).get('abilities') or {}).get(ability_key) or {})}"
+            if cooldown_remaining > 0:
+                return f"Recharging: {self._format_duration_short(cooldown_remaining)} remaining"
+            return "Ready to erupt"
+        if ability_type == "death_recall":
             if not scaling.get("unlocked"):
                 return f"Locked until level {self._ability_unlock_level((self.species_cfg(pet.get('species_key')).get('abilities') or {}).get(ability_key) or {})}"
             if cooldown_remaining > 0:
@@ -631,33 +685,37 @@ class PetManager:
             "description": ability.get("description", ""),
             "unlock_level": unlock_level,
             "locked": locked,
-            "status": self._ability_status_text(session, pet, ability_key, state, scaling) if pet else ("Locked until level %d" % unlock_level if locked else "Available at purchase"),
+            "status": self._ability_status_text(session, pet, ability_key, ability, state, scaling) if pet else ("Locked until level %d" % unlock_level if locked else "Available at purchase"),
             "current_level": int(level or 1),
-            "current_summary": self._ability_summary_text(ability_key, scaling if not locked else {"level": unlock_level}, locked=locked),
+            "current_summary": self._ability_summary_text(ability_key, ability, scaling if not locked else {"level": unlock_level}, locked=locked),
             "next_level": next_level if next_level > int(level or 1) else None,
-            "next_summary": self._ability_summary_text(ability_key, next_scaling if not next_locked else {"level": unlock_level}, locked=next_locked) if next_level > int(level or 1) else "",
+            "next_summary": self._ability_summary_text(ability_key, ability, next_scaling if not next_locked else {"level": unlock_level}, locked=next_locked) if next_level > int(level or 1) else "",
         }
 
-    async def _maybe_cast_pet_regen(self, session, pet: dict, now: int):
-        if getattr(session, "is_dead", False):
-            return
-        if self.is_companion_hidden(session, pet):
-            return
+    def _pet_target_name(self, target) -> str:
+        return str(
+            getattr(target, "full_name", None)
+            or getattr(target, "name", None)
+            or getattr(target, "character_name", None)
+            or "your foe"
+        )
+
+    def _pet_ability_sfx_file(self, pet: dict, ability: dict) -> str:
         species = self.species_cfg(pet.get("species_key"))
-        if pet.get("species_key") != "floofer" or not species:
-            return
+        return str(ability.get("sfx_file") or species.get("ability_sfx") or "").strip()
 
-        scaling = self._ability_scaling_for_level("floofer", "comforting_glow", pet.get("pet_level"))
-        state = self._ensure_ability_state(pet, "comforting_glow")
-        threshold = float(scaling.get("threshold_pct") or 0.60)
-        hp_pct = (float(getattr(session, "health_current", 0) or 0) / max(1.0, float(getattr(session, "health_max", 1) or 1)))
-        if hp_pct >= threshold:
+    async def _emit_pet_ability_sfx(self, session, pet: dict, ability: dict):
+        file_name = self._pet_ability_sfx_file(pet, ability)
+        if not file_name:
             return
-        if self.server.status.has(session, "floofer_glow"):
-            return
-        if int(state.get("cooldown_until") or 0) > now:
-            return
+        control = f"\x00PETSFX:{file_name}\x00"
+        room = getattr(session, "current_room", None)
+        if room:
+            await self.server.world.broadcast_to_room(room.id, control, exclude=None)
+        else:
+            await session.send_line(control)
 
+    async def _cast_pet_spell(self, session, pet: dict, spell_number: int, target_obj, pet_spell_data: Optional[dict] = None):
         from server.core.commands.player.spellcasting import (
             _apply_lua_char_updates,
             _get_spell_engine,
@@ -669,22 +727,18 @@ class PetManager:
 
         engine, spell_engine = _get_spell_engine(self.server)
         if not engine or not spell_engine:
-            return
+            return False, "", {}
 
         caster_entity = _session_to_spell_entity(session, self.server)
         caster_entity["pet_cheat_cast"] = True
         caster_entity["pet_name"] = pet.get("pet_name")
         caster_entity["pet_species_key"] = pet.get("species_key")
 
-        target_entity = _target_to_entity(session, self.server) or {}
-        target_entity["pet_spell_data"] = {
-            "heal_pct": float(scaling.get("heal_pct") or 0.01),
-            "duration_seconds": int(scaling.get("duration_seconds") or 60),
-            "tick_interval": int(scaling.get("tick_interval") or 5),
-            "status_effect": "floofer_glow",
-            "pet_name": pet.get("pet_name"),
-            "owner_pet_id": pet.get("id"),
-        }
+        target_entity = _target_to_entity(target_obj, self.server) or {}
+        spell_payload = dict(pet_spell_data or {})
+        spell_payload.setdefault("pet_name", pet.get("pet_name"))
+        spell_payload.setdefault("owner_pet_id", pet.get("id"))
+        target_entity["pet_spell_data"] = spell_payload
 
         raw_char = engine.python_to_lua(caster_entity)
         raw_target = engine.python_to_lua(target_entity)
@@ -693,45 +747,260 @@ class PetManager:
             "cast_direct",
             raw_char,
             raw_target,
-            PET_COMFORTING_GLOW_SPELL,
+            int(spell_number or 0),
             "cast",
             None,
             True,
         )
         values = _lua_returns(raw)
         ok = bool(values[0]) if values else False
+        message = str(values[1] or "") if len(values) > 1 else ""
+        result = values[2] if len(values) > 2 and isinstance(values[2], dict) else {}
         _apply_lua_char_updates(engine, raw_char, session)
         _refresh_post_spell_state(session, self.server)
-        if not ok:
-            return
+        return ok, message, result
 
-        pet_name = str(pet.get("pet_name") or "Your companion")
-        await session.send_line(colorize(
-            f"  {pet_name} gathers a soft restorative glow around you.",
-            TextPresets.EXPERIENCE,
-        ))
-        if session.current_room:
+    async def _emit_pet_cast_lines(self, session, pet: dict, ability: dict, *, target=None):
+        lines = ability.get("cast_lines") or {}
+        self_line = str(lines.get("self") or "").strip()
+        room_line = str(lines.get("room") or "").strip()
+        replacements = {
+            "pet": pet.get("pet_name") or "Your companion",
+            "owner": getattr(session, "character_name", "someone"),
+            "target": self._pet_target_name(target),
+        }
+        if self_line:
+            await session.send_line(colorize(f"  {self_line.format(**replacements)}", TextPresets.EXPERIENCE))
+        if room_line and getattr(session, "current_room", None):
             await self.server.world.broadcast_to_room(
                 session.current_room.id,
-                colorize(
-                    f"{pet_name} gathers a soft restorative glow around {session.character_name}.",
-                    TextPresets.EXPERIENCE,
-                ),
+                colorize(room_line.format(**replacements), TextPresets.EXPERIENCE),
                 exclude=session,
             )
 
-        self.server.status.apply(
-            session,
-            "floofer_glow",
-            duration=float(scaling.get("duration_seconds") or 60),
-            magnitude=float(scaling.get("heal_pct") or 0.01),
-            source=pet.get("pet_name"),
-            owner_pet_id=pet.get("id"),
-            heal_pct=float(scaling.get("heal_pct") or 0.01),
-        )
-        state["last_triggered_at"] = now
-        state["cooldown_until"] = now + int(scaling.get("recast_seconds") or 180)
-        self._save_pet_ability(pet, "comforting_glow")
+    def _clear_owner_aggro(self, session):
+        room = getattr(session, "current_room", None)
+        creatures = getattr(self.server, "creatures", None)
+        if not room or not creatures:
+            return
+        for creature in (creatures.get_creatures_in_room(room.id) or []):
+            if getattr(creature, "target", None) is session:
+                creature.in_combat = False
+                creature.target = None
+
+    def _apply_post_revive_protection(self, session, pet: dict, *, duration_seconds: int = 10):
+        status = getattr(self.server, "status", None)
+        if status and status.has(session, "in_combat"):
+            status.exit_combat(session)
+        else:
+            session.in_combat = False
+            session.target = None
+        session.hidden = True
+        session.sneaking = False
+        if status:
+            status.apply(
+                session,
+                PET_REVIVAL_SHROUD_STATUS,
+                duration=float(duration_seconds),
+                source=pet.get("pet_name"),
+            )
+            status.apply(
+                session,
+                "hidden",
+                duration=float(duration_seconds),
+                source=pet.get("pet_name"),
+            )
+        self._clear_owner_aggro(session)
+
+    def _pet_combat_target(self, session):
+        target = getattr(session, "target", None)
+        room = getattr(session, "current_room", None)
+        if not target or not room:
+            return None
+        if hasattr(target, "alive") and not getattr(target, "alive", False):
+            return None
+        if hasattr(target, "current_room_id") and int(getattr(target, "current_room_id", 0) or 0) != int(room.id or 0):
+            return None
+        if hasattr(target, "current_room") and getattr(getattr(target, "current_room", None), "id", room.id) != room.id:
+            return None
+        return target
+
+    def _engaged_room_hostiles(self, session):
+        room = getattr(session, "current_room", None)
+        creatures = getattr(self.server, "creatures", None)
+        if not room or not creatures:
+            return []
+        current_target = self._pet_combat_target(session)
+        engaged = []
+        for creature in (creatures.get_creatures_in_room(room.id) or []):
+            if not getattr(creature, "alive", False):
+                continue
+            fighting_player = bool(getattr(creature, "in_combat", False) and getattr(creature, "target", None) is session)
+            player_target = bool(current_target is creature)
+            if fighting_player or player_target:
+                engaged.append(creature)
+        return engaged
+
+    async def _maybe_cast_pet_support_spells(self, session, pet: dict, now: int):
+        if getattr(session, "is_dead", False):
+            return
+        if self.is_companion_hidden(session, pet):
+            return
+        species = self.species_cfg(pet.get("species_key"))
+        if not species:
+            return
+        hp_pct = (float(getattr(session, "health_current", 0) or 0) / max(1.0, float(getattr(session, "health_max", 1) or 1)))
+        for ability_key, ability in (species.get("abilities") or {}).items():
+            if str(ability.get("type") or "") != "pet_spell" or str(ability.get("trigger") or "") != "low_health":
+                continue
+            scaling = self._ability_scaling_for_level(pet.get("species_key"), ability_key, pet.get("pet_level"))
+            state = self._ensure_ability_state(pet, ability_key)
+            threshold = float(scaling.get("threshold_pct") or 0.60)
+            if hp_pct >= threshold:
+                continue
+            status_effect = str(ability.get("status_effect") or scaling.get("status_effect") or "")
+            if status_effect and getattr(self.server, "status", None) and self.server.status.has(session, status_effect):
+                continue
+            if int(state.get("cooldown_until") or 0) > now:
+                continue
+            ok, _, _ = await self._cast_pet_spell(
+                session,
+                pet,
+                int(ability.get("spell_number") or 0),
+                session,
+                dict(scaling),
+            )
+            if not ok:
+                continue
+            await self._emit_pet_ability_sfx(session, pet, ability)
+            await self._emit_pet_cast_lines(session, pet, ability)
+            if status_effect and "heal_pct" in scaling and getattr(self.server, "status", None):
+                self.server.status.apply(
+                    session,
+                    status_effect,
+                    duration=float(scaling.get("duration_seconds") or 60),
+                    magnitude=float(scaling.get("heal_pct") or 0.01),
+                    source=pet.get("pet_name"),
+                    owner_pet_id=pet.get("id"),
+                    heal_pct=float(scaling.get("heal_pct") or 0.01),
+                )
+            state["last_triggered_at"] = now
+            state["cooldown_until"] = now + int(scaling.get("recast_seconds") or 180)
+            self._save_pet_ability(pet, ability_key)
+
+    async def _maybe_cast_pet_attack_spells(self, session, pet: dict, now: int):
+        if getattr(session, "is_dead", False) or self.is_companion_hidden(session, pet):
+            return
+        species = self.species_cfg(pet.get("species_key"))
+        if not species:
+            return
+        target = self._pet_combat_target(session)
+        if not target:
+            return
+        for ability_key, ability in (species.get("abilities") or {}).items():
+            if str(ability.get("type") or "") != "pet_attack_spell" or str(ability.get("trigger") or "") != "combat_target":
+                continue
+            scaling = self._ability_scaling_for_level(pet.get("species_key"), ability_key, pet.get("pet_level"))
+            state = self._ensure_ability_state(pet, ability_key)
+            if int(state.get("cooldown_until") or 0) > now:
+                continue
+            ok, _, _ = await self._cast_pet_spell(
+                session,
+                pet,
+                int(ability.get("spell_number") or 0),
+                target,
+                dict(scaling),
+            )
+            if not ok:
+                continue
+            await self._emit_pet_ability_sfx(session, pet, ability)
+            damage = random.randint(
+                int(scaling.get("min_damage") or 1),
+                max(int(scaling.get("min_damage") or 1), int(scaling.get("max_damage") or 1)),
+            )
+            actual = 0
+            if hasattr(target, "take_damage"):
+                actual = int(target.take_damage(damage) or 0)
+            elif hasattr(target, "character_id"):
+                target.health_current = max(0, int(getattr(target, "health_current", 0) or 0) - damage)
+                actual = damage
+                if getattr(self.server, "db", None):
+                    self.server.db.save_character_resources(
+                        target.character_id,
+                        target.health_current,
+                        target.mana_current,
+                        target.spirit_current,
+                        target.stamina_current,
+                        target.silver,
+                    )
+            if actual <= 0:
+                continue
+            await self._emit_pet_cast_lines(session, pet, ability, target=target)
+            if getattr(session, "current_room", None):
+                await self.server.world.broadcast_to_room(
+                    session.current_room.id,
+                    colorize(
+                        f"  {self._pet_target_name(target)} is struck for {actual} damage by {pet.get('pet_name')}'s spell.",
+                        TextPresets.EXPERIENCE,
+                    ),
+                    exclude=None,
+                )
+            state["last_triggered_at"] = now
+            state["cooldown_until"] = now + int(scaling.get("recast_seconds") or 30)
+            self._save_pet_ability(pet, ability_key)
+
+    async def _maybe_cast_pet_room_attack_spells(self, session, pet: dict, now: int):
+        if getattr(session, "is_dead", False) or self.is_companion_hidden(session, pet):
+            return
+        species = self.species_cfg(pet.get("species_key"))
+        room = getattr(session, "current_room", None)
+        if not species or not room:
+            return
+        hostiles = self._engaged_room_hostiles(session)
+        if len(hostiles) < 3:
+            return
+        for ability_key, ability in (species.get("abilities") or {}).items():
+            if str(ability.get("type") or "") != "pet_room_attack_spell" or str(ability.get("trigger") or "") != "room_hostiles":
+                continue
+            scaling = self._ability_scaling_for_level(pet.get("species_key"), ability_key, pet.get("pet_level"))
+            if not scaling.get("unlocked"):
+                continue
+            state = self._ensure_ability_state(pet, ability_key)
+            if int(state.get("cooldown_until") or 0) > now:
+                continue
+            ok, _, _ = await self._cast_pet_spell(
+                session,
+                pet,
+                int(ability.get("spell_number") or 0),
+                session,
+                dict(scaling),
+            )
+            if not ok:
+                continue
+            await self._emit_pet_ability_sfx(session, pet, ability)
+            await self._emit_pet_cast_lines(session, pet, ability)
+            total_hits = 0
+            total_damage = 0
+            min_damage = int(scaling.get("min_damage") or 1)
+            max_damage = max(min_damage, int(scaling.get("max_damage") or 1))
+            for creature in hostiles:
+                dmg = random.randint(min_damage, max_damage)
+                actual = int(creature.take_damage(dmg) or 0)
+                if actual > 0:
+                    total_hits += 1
+                    total_damage += actual
+            if total_hits > 0:
+                await self.server.world.broadcast_to_room(
+                    room.id,
+                    colorize(
+                        f"  Crackling force lashes through the room, striking {total_hits} foe{'s' if total_hits != 1 else ''} for {total_damage} total damage!",
+                        TextPresets.EXPERIENCE,
+                    ),
+                    exclude=None,
+                )
+            state["last_triggered_at"] = now
+            state["cooldown_until"] = now + int(scaling.get("cooldown_seconds") or 3600)
+            self._save_pet_ability(pet, ability_key)
 
     # ------------------------------------------------------------------
     # Death / revival hooks
@@ -751,10 +1020,17 @@ class PetManager:
             if int(guardian_state.get("charges_current") or 0) <= 0:
                 guardian_state["cooldown_until"] = now + int(guardian_scaling.get("cooldown_seconds") or 10800)
             self._save_pet_ability(pet, "guardian_spark")
+            guardian_ability = ((self.species_cfg(pet.get("species_key")).get("abilities") or {}).get("guardian_spark") or {})
+            await self._emit_pet_ability_sfx(session, pet, guardian_ability)
             session.health_current = 1
+            self._apply_post_revive_protection(session, pet)
             await session.send_line(colorize(
                 f"  {pet.get('pet_name')} erupts in a desperate halo of sparks and drags you back from the brink of death!",
                 TextPresets.EXPERIENCE,
+            ))
+            await session.send_line(colorize(
+                "  A veil of starlight conceals you and holds death at bay for a few precious moments.",
+                TextPresets.SYSTEM,
             ))
             if session.current_room:
                 await self.server.world.broadcast_to_room(
@@ -784,11 +1060,18 @@ class PetManager:
         recall_state["last_triggered_at"] = now
         recall_state["cooldown_until"] = now + int(recall_scaling.get("cooldown_seconds") or 3600)
         self._save_pet_ability(pet, "starlight_recall")
+        recall_ability = ((self.species_cfg(pet.get("species_key")).get("abilities") or {}).get("starlight_recall") or {})
+        await self._emit_pet_ability_sfx(session, pet, recall_ability)
         revived_hp = max(1, int((float(getattr(session, "health_max", 1) or 1) * float(recall_scaling.get("revive_health_pct") or 0.10))))
         session.health_current = revived_hp
+        self._apply_post_revive_protection(session, pet)
         await session.send_line(colorize(
             f"  As death closes in, {pet.get('pet_name')} refuses to flee.  A veil of starlight folds around you and you lurch back to life!",
             TextPresets.EXPERIENCE,
+        ))
+        await session.send_line(colorize(
+            "  The starlight keeps you hidden and untouchable for a brief moment while you gather yourself.",
+            TextPresets.SYSTEM,
         ))
         if session.current_room:
             await self.server.world.broadcast_to_room(
@@ -1028,9 +1311,10 @@ class PetManager:
         progress = getattr(session, "pet_progress", {}) or {}
         species_out = []
         for species_key, species in (self.cfg.get("species") or {}).items():
-            price = int(species.get("base_price") or 0)
-            if species_key == "floofer" and not progress.get("first_pet_claimed"):
-                price = 0
+            if not self._species_profession_allowed(session, species):
+                continue
+            price = self._species_price_for_session(session, species_key, species)
+            available_now = bool(progress.get("first_pet_claimed") or self._species_allow_before_first_claim(species))
             sale_abilities = [
                 self._build_portal_ability(session, None, species_key, ability_key, 1)
                 for ability_key in (species.get("abilities") or {}).keys()
@@ -1043,6 +1327,7 @@ class PetManager:
                 "price": price,
                 "image_path": species.get("image_path") or "",
                 "first_pet_only": bool(species.get("free_first_pet")),
+                "available_now": available_now,
                 "abilities": sale_abilities,
             })
 
@@ -1104,6 +1389,8 @@ class PetManager:
         species = self.species_cfg(species_key)
         if not species:
             return False, "Unknown pet species.", None
+        if not self._species_profession_allowed(session, species):
+            return False, "That companion is not available to your profession.", None
 
         pet_name = (pet_name or "").strip()
         if pet_name:
@@ -1113,12 +1400,10 @@ class PetManager:
         else:
             pet_name = self._default_pet_name(species)
 
-        if not progress.get("first_pet_claimed") and species_key != "floofer":
+        if not progress.get("first_pet_claimed") and not self._species_allow_before_first_claim(species):
             return False, "You must claim your free Floofer before other companions become available.", None
 
-        price = int(species.get("base_price") or 0)
-        if species_key == "floofer" and not progress.get("first_pet_claimed"):
-            price = 0
+        price = self._species_price_for_session(session, species_key, species)
         if int(getattr(session, "silver", 0) or 0) < price:
             return False, "You do not have enough silver for that companion.", None
 

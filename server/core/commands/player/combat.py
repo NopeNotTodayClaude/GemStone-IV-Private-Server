@@ -118,6 +118,13 @@ _CHEAPSHOT_VERB_ORDER = (
 )
 
 
+def _revival_shroud_message(session, server) -> str | None:
+    status = getattr(server, "status", None)
+    if status and status.has(session, "revival_shroud"):
+        return "You are still wrapped in revival starlight and cannot attack yet."
+    return None
+
+
 def _rogue_guild_skill_ranks(session, skill_name: str) -> int:
     membership = getattr(session, "guild_membership", None) or {}
     if membership.get("guild_id") != "rogue":
@@ -255,7 +262,16 @@ def _resolve_combat_target(session, server, raw_target):
     if raw_target:
         return server.creatures.find_creature_in_room(session.current_room.id, raw_target)
     if session.target and not session.target.is_dead:
-        return session.target
+        room = getattr(session, "current_room", None)
+        same_room = False
+        if room:
+            if getattr(session.target, "current_room_id", None) == room.id:
+                same_room = True
+            elif getattr(getattr(session.target, "current_room", None), "id", None) == room.id:
+                same_room = True
+        if same_room:
+            return session.target
+        session.target = None
     return None
 
 
@@ -937,13 +953,16 @@ async def cmd_attack(session, cmd, args, server):
     If hidden, automatically uses ambush mechanics per GS4 rules.
     """
     _status = getattr(server, "status", None)
+    shroud_msg = _revival_shroud_message(session, server)
+    if shroud_msg:
+        await session.send_line(shroud_msg)
+        return
     if _status and _status.has(session, "stunned"):
         await session.send_line("You are stunned!  Try STUNMAN ATTACK if you have the training for it.")
         return
     if not args:
-        if session.target and not session.target.is_dead:
-            creature = session.target
-        else:
+        creature = _resolve_combat_target(session, server, None)
+        if not creature:
             await session.send_line("What do you want to attack?")
             return
     else:
@@ -989,6 +1008,10 @@ async def cmd_kill(session, cmd, args, server):
 async def cmd_ambush(session, cmd, args, server):
     """AMBUSH [target] [location] - Attack from hiding with aimed strike."""
     _status = getattr(server, "status", None)
+    shroud_msg = _revival_shroud_message(session, server)
+    if shroud_msg:
+        await session.send_line(shroud_msg)
+        return
     if _status and _status.has(session, "stunned"):
         await session.send_line("You are stunned!  Try STUNMAN ATTACK if you have the training for it.")
         return
@@ -1005,13 +1028,13 @@ async def cmd_ambush(session, cmd, args, server):
     creature = None
 
     if not raw_args:
-        if session.target and not session.target.is_dead:
-            creature = session.target
-        else:
+        creature = _resolve_combat_target(session, server, None)
+        if not creature:
             await session.send_line("Ambush what?")
             return
     else:
         words = raw_args.split()
+        used_fallback_target = False
         for idx in range(len(words), 0, -1):
             candidate_name = " ".join(words[:idx])
             creature = server.creatures.find_creature_in_room(
@@ -1022,11 +1045,13 @@ async def cmd_ambush(session, cmd, args, server):
                 aimed_location = remainder or None
                 break
 
-        if not creature and session.target and not session.target.is_dead:
-            creature = session.target
-            aimed_location = raw_args
-
         if not creature:
+            creature = _resolve_combat_target(session, server, None)
+            used_fallback_target = creature is not None
+        if creature:
+            if used_fallback_target:
+                aimed_location = raw_args
+        else:
             await session.send_line(f"You don't see any '{raw_args}' here.")
             return
 
@@ -2195,6 +2220,10 @@ async def cmd_feint(session, cmd, args, server):
 async def cmd_ambush(session, cmd, args, server):
     """AMBUSH [target] [location] - Attack from hiding with aimed strike."""
     _status = getattr(server, "status", None)
+    shroud_msg = _revival_shroud_message(session, server)
+    if shroud_msg:
+        await session.send_line(shroud_msg)
+        return
     if _status and _status.has(session, "stunned"):
         await session.send_line("You are stunned!  Try STUNMAN ATTACK if you have the training for it.")
         return
@@ -2285,6 +2314,10 @@ async def cmd_ready(session, cmd, args, server):
 
 async def cmd_fire(session, cmd, args, server):
     """FIRE <target> - Launch a ranged attack with readied ammunition."""
+    shroud_msg = _revival_shroud_message(session, server)
+    if shroud_msg:
+        await session.send_line(shroud_msg)
+        return
     weapon, _weapon_hand = _get_missile_weapon(session)
     if not weapon or (weapon.get("weapon_category", "") or "").lower() != "ranged":
         await session.send_line("You need to be holding a bow or crossbow to FIRE.")
@@ -2329,6 +2362,10 @@ async def cmd_fire(session, cmd, args, server):
 
 async def cmd_hurl(session, cmd, args, server):
     """HURL <target> - Throw a hurled weapon or throwable item."""
+    shroud_msg = _revival_shroud_message(session, server)
+    if shroud_msg:
+        await session.send_line(shroud_msg)
+        return
     if session.position != "standing":
         await session.send_line("You need to stand up first!")
         return
@@ -2386,6 +2423,10 @@ async def cmd_hurl(session, cmd, args, server):
 
 async def cmd_mstrike(session, cmd, args, server):
     """MSTRIKE [target] - Simple multi-opponent combat pass."""
+    shroud_msg = _revival_shroud_message(session, server)
+    if shroud_msg:
+        await session.send_line(shroud_msg)
+        return
     if session.position != "standing":
         await session.send_line("You need to stand up first!")
         return

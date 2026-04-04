@@ -8,6 +8,7 @@
 
 local DB          = require("globals/utils/db")
 local ActiveBuffs = require("globals/magic/active_buffs")
+local SpellFx     = require("globals/magic/spell_formulas")
 
 local Cle = {}
 
@@ -86,6 +87,31 @@ local function tname(ctx)
 end
 local function dur(ctx, ov) return ov or (60 * math.max(1, ctx.circle_ranks or 1)) end
 local function is_undead(ctx) return ctx.target and (ctx.target.is_undead == 1 or ctx.target.is_undead == true) end
+local function ward_dmg(ctx, base, mult, opts)
+    if not ctx.result.hit then return end
+    opts = opts or {}
+    local dmg = SpellFx.warding_damage(ctx, {
+        base = base,
+        min = opts.min or base,
+        margin_mult = mult or 1.0,
+        stat = "wisdom",
+        skill = "spell_research",
+        lore = opts.lore or "religion",
+        mana_control = "spirit",
+        level_scale = opts.level_scale or 0.38,
+        circle_scale = opts.circle_scale or 0.45,
+        stat_scale = opts.stat_scale or 0.38,
+        skill_scale = opts.skill_scale or 0.10,
+        lore_scale = opts.lore_scale or 0.06,
+        flat_bonus = opts.flat_bonus or 0,
+    })
+    if opts.undead_mult and is_undead(ctx) then
+        dmg = math.floor(dmg * opts.undead_mult)
+    end
+    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
+    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    return dmg
+end
 
 local handlers = {}
 
@@ -97,11 +123,13 @@ handlers[301] = function(ctx) -- Prayer of Holding
 end
 
 handlers[302] = function(ctx) -- Smite/Bane
-    if not ctx.result.hit then return end
-    local dmg_bonus = is_undead(ctx) and 50 or 15
-    local dmg = math.max(1, math.floor((ctx.result.total or 101) - 100) + dmg_bonus)
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    local dmg = ward_dmg(ctx, 10, 0.85, {
+        lore = "religion",
+        undead_mult = 1.50,
+        flat_bonus = is_undead(ctx) and 10 or 4,
+        min = 10,
+    })
+    if not dmg then return end
     if is_undead(ctx) then
         return string.format("Divine smite scorches %s for %d damage!", tname(ctx), dmg)
     end
@@ -134,9 +162,21 @@ end
 
 handlers[306] = function(ctx) -- Holy Bolt
     if not ctx.result.hit then return end
-    local dmg = math.max(1, math.floor((ctx.result.total or 101) - 100))
-    if is_undead(ctx) then dmg = math.floor(dmg * 1.5) end
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
+    local dmg = SpellFx.bolt_damage(ctx, {
+        base = 6,
+        min = 6,
+        margin_mult = 1.00,
+        lore = "religion",
+        stat = "wisdom",
+        mana_control = "spirit",
+        level_scale = 0.30,
+        circle_scale = 0.40,
+        stat_scale = 0.30,
+        aiming_scale = 0.10,
+        lore_scale = 0.04,
+    })
+    if is_undead(ctx) then dmg = math.floor(dmg * 1.35) end
+    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
     return string.format("A bolt of holy energy strikes %s for %d damage!", tname(ctx), dmg)
 end
@@ -156,10 +196,8 @@ handlers[308] = function(ctx) -- Well of Life
 end
 
 handlers[309] = function(ctx) -- Condemn
-    if not ctx.result.hit then return end
-    local dmg = math.max(1, math.floor((ctx.result.total or 101) - 100) * 2)
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    local dmg = ward_dmg(ctx, 12, 1.20, { lore = "religion", min = 12 })
+    if not dmg then return end
     return string.format("Divine condemnation strikes %s for %d damage!", tname(ctx), dmg)
 end
 
@@ -177,11 +215,8 @@ handlers[311] = function(ctx) -- Blind
 end
 
 handlers[312] = function(ctx) -- Fervent Reproach
-    if not ctx.result.hit then return end
-    local dmg = math.max(5, math.floor((ctx.result.total or 101) - 100))
-    if is_undead(ctx) then dmg = dmg * 2 end
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    local dmg = ward_dmg(ctx, 8, 1.05, { lore = "religion", undead_mult = 1.75, min = 8 })
+    if not dmg then return end
     return string.format("Holy flames of fervent reproach lash %s for %d damage!", tname(ctx), dmg)
 end
 
@@ -210,12 +245,14 @@ handlers[316] = function(ctx) -- Censure
 end
 
 handlers[317] = function(ctx) -- Divine Fury
-    if not ctx.result.hit then return end
     local religion = (ctx.lore_ranks and ctx.lore_ranks.religion) or 0
-    local dmg = math.max(10, math.floor((ctx.result.total or 101) - 100) * 2)
-    if is_undead(ctx) then dmg = math.floor(dmg * (1.75 + (religion / 200))) end
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    local dmg = ward_dmg(ctx, 14, 1.35, {
+        lore = "religion",
+        undead_mult = 1.50 + (religion / 250),
+        min = 14,
+        lore_scale = 0.08,
+    })
+    if not dmg then return end
     return string.format("Divine fury descends upon %s for %d damage!", tname(ctx), dmg)
 end
 

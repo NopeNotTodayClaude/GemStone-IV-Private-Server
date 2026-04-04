@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 
 WEB_PORT = 8767
 TOKEN_TTL = 600
-FLOOFER_ASSET_DIR = os.path.abspath(
+PET_ASSET_DIR = os.path.abspath(
     os.path.join(
         os.path.dirname(__file__),
         "..",
@@ -31,16 +31,6 @@ FLOOFER_ASSET_DIR = os.path.abspath(
         "pets",
     )
 )
-FLOOFER_ASSET_CANDIDATES = (
-    "Floof.jpg",
-    "floofer.jpg",
-    "Floof.jpeg",
-    "floofer.jpeg",
-    "Floof.png",
-    "floofer.png",
-)
-
-
 def _json_safe(value):
     if isinstance(value, (datetime.datetime, datetime.date)):
         return value.isoformat(sep=" ")
@@ -90,11 +80,23 @@ def _svg_floofer() -> str:
 </svg>"""
 
 
-def _find_floofer_asset():
-    for filename in FLOOFER_ASSET_CANDIDATES:
-        path = os.path.join(FLOOFER_ASSET_DIR, filename)
-        if os.path.exists(path):
-            return path
+def _find_pet_asset(asset_key: str):
+    key = str(asset_key or "").strip()
+    if not key:
+        return None
+    stem_variants = {
+        key,
+        key.lower(),
+        key.title(),
+        key.capitalize(),
+    }
+    if key.lower() == "floofer":
+        stem_variants.update({"Floof", "floof", "Floofer", "floofer"})
+    for stem in stem_variants:
+        for ext in (".jpg", ".jpeg", ".png", ".webp"):
+            path = os.path.join(PET_ASSET_DIR, f"{stem}{ext}")
+            if os.path.exists(path):
+                return path
     return None
 
 
@@ -111,8 +113,8 @@ class PetRequestHandler(BaseHTTPRequestHandler):
             self._serve_page(params)
         elif parsed.path == "/api/pets/state":
             self._serve_state(params)
-        elif parsed.path == "/assets/floofer":
-            self._serve_floofer_asset()
+        elif parsed.path.startswith("/assets/"):
+            self._serve_pet_asset(parsed.path.rsplit("/", 1)[-1])
         else:
             self._send_html("<h1>404</h1>", 404)
 
@@ -189,8 +191,8 @@ class PetRequestHandler(BaseHTTPRequestHandler):
         payload = self.server_ref.pets.portal_payload(session)
         self._json_response(payload)
 
-    def _serve_floofer_asset(self):
-        asset_path = _find_floofer_asset()
+    def _serve_pet_asset(self, asset_key: str):
+        asset_path = _find_pet_asset(asset_key)
         if asset_path:
             with open(asset_path, "rb") as handle:
                 body = handle.read()
@@ -536,7 +538,7 @@ function renderItems(){
 }
 function renderTraining(){
   const root = $('#training'); root.innerHTML = '<div class="owned"></div>'; const g=root.firstChild;
-  if(!state.pets.length){ g.appendChild(el('div','card','<strong>No pets owned yet.</strong><div class="muted">Claim your first Floofer from the sale tab.</div>')); return; }
+  if(!state.pets.length){ g.appendChild(el('div','card','<strong>No pets owned yet.</strong><div class="muted">Claim or purchase your first companion from the sale tab.</div>')); return; }
   state.pets.forEach(pet => {
     const card = el('div','pet-card');
     const pct = pet.xp_to_next>0 ? Math.max(0,Math.min(100,(pet.xp_into_level / pet.xp_to_next)*100)) : 100;

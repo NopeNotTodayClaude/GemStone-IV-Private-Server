@@ -234,6 +234,11 @@ async def cmd_weapon(session, cmd: str, args: str, server):
     if not _session_can_use_weapon_verbs(session):
         return
 
+    status = getattr(server, "status", None)
+    if status and status.has(session, "revival_shroud"):
+        await session.send_line("You are still wrapped in revival starlight and cannot use weapon techniques yet.")
+        return
+
     # ── Dead / unconscious checks ─────────────────────────────────────────────
     if getattr(session, 'is_dead', False):
         await session.send_line("You are dead and cannot use weapon techniques.")

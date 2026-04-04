@@ -2473,6 +2473,14 @@ class FakePlayerManager:
         jobs = _db_get_pending(self.server)
         if not jobs:
             return False
+        open_jobs = len(jobs)
+        min_open_jobs = max(0, int(self._defaults.get("locksmith_rogue_min_open_jobs") or 2))
+        backlog_threshold = max(min_open_jobs, int(self._defaults.get("locksmith_rogue_backlog_threshold") or 6))
+        claim_chance = max(0.0, min(1.0, float(self._defaults.get("locksmith_rogue_claim_chance") or 0.55)))
+        if open_jobs <= min_open_jobs:
+            return False
+        if open_jobs < backlog_threshold and random.random() > claim_chance:
+            return False
         job = _db_get_job(self.server, int(random.choice(jobs).get("id") or 0))
         if not job:
             return False

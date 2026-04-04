@@ -145,20 +145,6 @@ AGE_STAGES = [
     "Leaving Middle Aged","Mature","Retiring","Old","Very Old","Extremely Old",
 ]
 
-# Suggested stat builds per profession (total = 660)
-SUGGESTED_STATS = {
-    1:  [90,85,65,65,70,40,40,55,40,70],
-    2:  [60,50,92,90,68,45,50,80,40,45],
-    3:  [40,50,50,60,70,95,90,55,55,55],
-    4:  [50,60,50,55,60,55,55,80,92,63],
-    5:  [40,60,50,55,65,55,50,60,90,95],
-    6:  [40,50,50,55,65,95,90,55,80,40],
-    7:  [65,55,90,65,65,50,45,85,55,40],
-    8:  [50,50,60,60,55,70,50,60,50,95],
-    9:  [90,80,55,60,65,50,40,50,90,40],
-    10: [80,65,60,90,85,50,55,60,40,35],
-}
-
 
 # ── Request Handler ────────────────────────────────────────────────────────────
 
@@ -261,7 +247,7 @@ class CharacterCreatorHandler(BaseHTTPRequestHandler):
             mime, _ = mimetypes.guess_type(abs_path)
             self.send_response(200)
             self.send_header("Content-Type", mime or "application/octet-stream")
-            self.send_header("Cache-Control", "max-age=3600")
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
             self.end_headers()
             self.wfile.write(content)
         except FileNotFoundError:
@@ -286,6 +272,10 @@ class CharacterCreatorHandler(BaseHTTPRequestHandler):
         _professions  = cc._get_professions()
         _prof_stats   = cc._get_profession_stats()
         _primes       = cc._get_prime_requisites()
+        _appearance   = _require_lua_data(server, "get_appearance")
+        _suggested    = (_appearance or {}).get("suggested_stats", {})
+        _cultures     = (_appearance or {}).get("cultures", {})
+        _age_stages   = (_appearance or {}).get("age_stage_names", AGE_STAGES)
 
         races_out = []
         for r in _races:
@@ -313,11 +303,11 @@ class CharacterCreatorHandler(BaseHTTPRequestHandler):
                 "hp":       stats["hp"],
                 "mana":     stats["mana"],
                 "primes":   primes,
-                "suggested_stats": SUGGESTED_STATS.get(p["id"], [20]*10),
+                "suggested_stats": list(_suggested.get(p["id"], [20] * NUM_STATS)),
             })
 
         cultures_out = {}
-        for race_id, cd in CULTURE_DATA.items():
+        for race_id, cd in _cultures.items():
             cultures_out[str(race_id)] = cd
 
         payload = {
@@ -333,7 +323,7 @@ class CharacterCreatorHandler(BaseHTTPRequestHandler):
             "hair_styles": cc._get_hair_styles(session),
             "eye_colors":  cc._get_eye_colors(session),
             "skin_tones":  cc._get_skin_tones(session),
-            "age_stages":  AGE_STAGES,
+            "age_stages":  _age_stages,
             "total_stat_points": TOTAL_STAT_POINTS,
             "stat_min":    STAT_MIN,
             "stat_max":    STAT_MAX,
@@ -460,6 +450,8 @@ class CharacterCreatorHandler(BaseHTTPRequestHandler):
         # Give starter gear from Lua, matching the terminal creator flow.
         starting_silver = 500
         if server.db:
+            starter_spells = _cc._get_starter_spells().get(prof_id, {})
+            starter_spell_ranks = starter_spells.get("ranks", {})
             lua_gear = _require_lua_data(server, "get_starter_gear")
             gear_cfg = lua_gear.get("kits", {}).get(prof_id)
             starting_silver = lua_gear.get("starting_silver", {}).get(prof_id, 500)
@@ -469,6 +461,12 @@ class CharacterCreatorHandler(BaseHTTPRequestHandler):
                 prof_id,
                 gear_cfg.get("description", "?") if gear_cfg else "none",
             )
+            if starter_spells:
+                log.info(
+                    "starter_spells: loaded Lua kit for prof %d (%s)",
+                    prof_id,
+                    starter_spells.get("description", "?"),
+                )
 
             server.db.save_character_resources(
                 char_id,
@@ -478,6 +476,8 @@ class CharacterCreatorHandler(BaseHTTPRequestHandler):
                 100,
                 starting_silver,
             )
+            if starter_spell_ranks:
+                server.db.save_character_spell_ranks(char_id, starter_spell_ranks)
 
             if gear_cfg:
                 container_inv_ids = {}
@@ -570,10 +570,29 @@ async def _notify_session_char_created(session, char_id, char_data, ptp, mtp, se
     needing to type anything in the game client.
     """
     try:
+        profession_name = str(char_data.get("profession_name") or "").strip()
+        race_name = str(char_data.get("race_name") or "").strip()
+        try:
+            if not profession_name:
+                for row in (server.char_creator._get_professions() or []):
+                    if int(row.get("id", 0) or 0) == int(char_data.get("profession_id", 0) or 0):
+                        profession_name = str(row.get("name") or "").strip()
+                        break
+            if not race_name:
+                for row in (server.char_creator._get_races() or []):
+                    if int(row.get("id", 0) or 0) == int(char_data.get("race_id", 0) or 0):
+                        race_name = str(row.get("name") or "").strip()
+                        break
+        except Exception:
+            pass
+
         session.character_id      = char_id
         session.character_name    = char_data["name"]
-        session.race              = char_data.get("race_name", "")
-        session.profession        = char_data.get("profession_name", "")
+        session.race_id           = int(char_data.get("race_id", 0) or 0)
+        session.race              = race_name
+        session.profession_id     = int(char_data.get("profession_id", 0) or 0)
+        session.profession        = profession_name
+        session.profession_name   = profession_name
         session.physical_tp       = ptp
         session.mental_tp         = mtp
         session.stat_strength     = char_data["strength"]
@@ -595,6 +614,7 @@ async def _notify_session_char_created(session, char_id, char_data, ptp, mtp, se
 
         # Ensure tutorial fields are set so save_character doesn't blow up
         session.tutorial_stage    = 0
+        session.tutorial_flags    = 0
         session.tutorial_complete = False
 
         # Advance the session immediately — no player input required

@@ -109,6 +109,7 @@ class TextPresets:
     HEALTH_MID = YELLOW
     HEALTH_LOW = BRIGHT_RED
     HEALTH_CRIT = BOLD + RED
+    HEALING = BOLD + BRIGHT_GREEN
 
     # Mind state (experience)
     MIND_CLEAR = BRIGHT_GREEN
@@ -298,6 +299,11 @@ def health_bar(label, current, maximum):
     """Format a health/mana/stamina bar with appropriate color."""
     color = health_color(current, maximum)
     return f"  {label}: {colorize(f'{current}/{maximum}', color)}"
+
+
+def healing_msg(text):
+    """Format healing text in a distinct bright green style."""
+    return colorize(text, TextPresets.HEALING)
 
 
 def npc_emote(text):

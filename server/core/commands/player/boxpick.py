@@ -22,6 +22,7 @@ completable from locksmiths in other cities.
 
 import json
 import logging
+from decimal import Decimal
 from server.core.protocol.colors import colorize, TextPresets, npc_speech
 
 log = logging.getLogger(__name__)
@@ -86,6 +87,20 @@ def _normalize_container_name(value: str) -> str:
     return text
 
 
+def _box_template_candidates(item_snapshot: dict) -> list[str]:
+    candidates = []
+    for key in ("base_name", "short_name", "name", "noun"):
+        raw = str((item_snapshot or {}).get(key) or "").strip()
+        if not raw:
+            continue
+        normalized = _normalize_container_name(raw)
+        for value in (normalized, raw, f"a {normalized}", f"an {normalized}", f"the {normalized}"):
+            value = str(value or "").strip()
+            if value and value not in candidates:
+                candidates.append(value)
+    return candidates
+
+
 def _locksmith_treasure_names(server) -> set[str]:
     names = set()
     try:
@@ -101,6 +116,98 @@ def _locksmith_treasure_names(server) -> set[str]:
             if normalized:
                 names.add(normalized)
     return names
+
+
+def _resolve_box_template_for_snapshot(server, item_snapshot: dict) -> dict | None:
+    if not isinstance(item_snapshot, dict):
+        return None
+    item_id = int(item_snapshot.get("item_id") or 0)
+    if item_id > 0:
+        return {
+            "item_id": item_id,
+            "name": item_snapshot.get("name"),
+            "short_name": item_snapshot.get("short_name"),
+            "noun": item_snapshot.get("noun"),
+            "article": item_snapshot.get("article"),
+            "container_capacity": item_snapshot.get("container_capacity"),
+            "description": item_snapshot.get("description"),
+            "container_type": item_snapshot.get("container_type") or "treasure",
+            "base_name": item_snapshot.get("base_name") or _normalize_container_name(item_snapshot.get("short_name") or item_snapshot.get("name")),
+        }
+    db = getattr(server, "db", None)
+    if not db:
+        return None
+    candidates = _box_template_candidates(item_snapshot)
+    if not candidates:
+        return None
+    query = """
+        SELECT id, name, short_name, noun, article, container_capacity, description, container_type, base_name
+        FROM items
+        WHERE item_type = 'container'
+          AND is_template = 1
+          AND (
+                LOWER(COALESCE(base_name, '')) = LOWER(%s)
+             OR LOWER(COALESCE(short_name, '')) = LOWER(%s)
+             OR LOWER(COALESCE(name, '')) = LOWER(%s)
+             OR LOWER(COALESCE(name, '')) = LOWER(%s)
+             OR LOWER(COALESCE(name, '')) = LOWER(%s)
+             OR LOWER(COALESCE(name, '')) = LOWER(%s)
+          )
+        ORDER BY
+            CASE
+                WHEN LOWER(COALESCE(base_name, '')) = LOWER(%s) THEN 0
+                WHEN LOWER(COALESCE(short_name, '')) = LOWER(%s) THEN 1
+                WHEN LOWER(COALESCE(name, '')) = LOWER(%s) THEN 2
+                ELSE 3
+            END,
+            id ASC
+        LIMIT 1
+    """
+    params = (
+        candidates[0],
+        candidates[0],
+        candidates[0],
+        candidates[1] if len(candidates) > 1 else candidates[0],
+        candidates[2] if len(candidates) > 2 else candidates[0],
+        candidates[3] if len(candidates) > 3 else candidates[0],
+        candidates[0],
+        candidates[0],
+        candidates[0],
+    )
+    try:
+        result = db.execute_query(query, params)
+    except Exception:
+        log.exception("Failed resolving locksmith box template for snapshot %s", item_snapshot.get("short_name") or item_snapshot.get("name"))
+        return None
+    if not result:
+        return None
+    row = result[0]
+    return {
+        "item_id": row[0],
+        "name": row[1],
+        "short_name": row[2],
+        "noun": row[3],
+        "article": row[4] or "a",
+        "container_capacity": row[5],
+        "description": row[6],
+        "container_type": row[7] or "treasure",
+        "base_name": row[8] or _normalize_container_name(row[2] or row[1]),
+    }
+
+
+def _normalize_box_snapshot_for_queue(server, item_snapshot: dict) -> dict:
+    snapshot = dict(item_snapshot or {})
+    template = _resolve_box_template_for_snapshot(server, snapshot)
+    if template:
+        snapshot["item_id"] = int(template.get("item_id") or 0)
+        for key in ("name", "short_name", "noun", "article", "container_capacity", "description", "container_type", "base_name"):
+            if template.get(key) not in (None, ""):
+                snapshot[key] = template.get(key)
+    if not snapshot.get("container_type"):
+        snapshot["container_type"] = "treasure"
+    if not snapshot.get("base_name"):
+        snapshot["base_name"] = _normalize_container_name(snapshot.get("short_name") or snapshot.get("name"))
+    return snapshot
 
 
 def _is_locksmith_box(server, item, *, require_locked: bool = False) -> bool:
@@ -206,6 +313,7 @@ def _restore_snapshot_to_inventory(server, character_id, item_snapshot: dict, sl
     Recreate an escrowed item in inventory and persist its runtime extra_data.
     Returns a fresh in-memory item dict or None on failure.
     """
+    item_snapshot = _normalize_box_snapshot_for_queue(server, item_snapshot)
     item_id = item_snapshot.get("item_id", 0)
     if not item_id:
         return None
@@ -233,15 +341,36 @@ def _restore_snapshot_to_inventory(server, character_id, item_snapshot: dict, sl
     return restored
 
 
+def _json_safe_value(value):
+    """Normalize runtime item snapshot values for JSON storage."""
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, dict):
+        return {k: _json_safe_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe_value(v) for v in value]
+    if isinstance(value, tuple):
+        return [_json_safe_value(v) for v in value]
+    return value
+
+
+def _json_safe_snapshot(item_snapshot: dict) -> dict:
+    return {
+        k: _json_safe_value(v)
+        for k, v in (item_snapshot or {}).items()
+    }
+
+
 def _db_submit(server, owner_id, owner_name, item, fee):
     """Insert a new pending job. Returns new job id or None."""
     conn = server.db._get_conn()
     try:
         cur = conn.cursor()
-        item_snapshot = json.dumps({
-            k: v for k, v in item.items()
+        normalized_item = _normalize_box_snapshot_for_queue(server, item)
+        item_snapshot = json.dumps(_json_safe_snapshot({
+            k: v for k, v in normalized_item.items()
             if k not in ("inv_id",)  # strip live inv_id from snapshot
-        })
+        }))
         cur.execute("""
             INSERT INTO picking_queue
                 (owner_id, owner_name, item_id, item_name, item_short_name,
@@ -249,9 +378,9 @@ def _db_submit(server, owner_id, owner_name, item, fee):
             VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending')
         """, (
             owner_id, owner_name,
-            item.get("item_id", 0),
-            item.get("name", "a box"),
-            item.get("short_name", "box"),
+            normalized_item.get("item_id", 0),
+            normalized_item.get("name", "a box"),
+            normalized_item.get("short_name", "box"),
             item_snapshot,
             fee,
         ))
@@ -342,6 +471,7 @@ def _db_complete(server, job_id, item_snapshot: dict):
     conn = server.db._get_conn()
     try:
         cur = conn.cursor()
+        normalized_item = _normalize_box_snapshot_for_queue(server, item_snapshot)
         cur.execute("""
             UPDATE picking_queue
             SET status = 'completed',
@@ -351,9 +481,9 @@ def _db_complete(server, job_id, item_snapshot: dict):
                 completed_at = NOW()
             WHERE id = %s AND status = 'claimed'
         """, (
-            json.dumps({k: v for k, v in item_snapshot.items() if k != "inv_id"}),
-            item_snapshot.get("name", "a box"),
-            item_snapshot.get("short_name", "box"),
+            json.dumps(_json_safe_snapshot({k: v for k, v in normalized_item.items() if k != "inv_id"})),
+            normalized_item.get("name", "a box"),
+            normalized_item.get("short_name", "box"),
             job_id,
         ))
         return cur.rowcount == 1
@@ -594,12 +724,6 @@ async def cmd_pay(session, cmd, args, server):
         if not box.get("is_locked", True):
             _clear_locksmith_quote(session)
             await session.send_line("That box no longer needs locksmith service.")
-            return
-
-        existing = _db_get_owner_jobs(server, session.character_id)
-        active = [j for j in existing if j["status"] in ("pending", "claimed")]
-        if len(active) >= 3:
-            await session.send_line("You already have 3 active locksmith jobs in the queue.")
             return
 
         session.silver -= amount
@@ -883,14 +1007,30 @@ async def cmd_claim(session, cmd, args, server):
             return
 
         item_data = json.loads(job["item_data"])
-        restored = _restore_snapshot_to_inventory(server, session.character_id, item_data, slot=None)
+        target_slot = None
+        if session.right_hand is None:
+            target_slot = "right_hand"
+        elif session.left_hand is None:
+            target_slot = "left_hand"
+
+        restored = _restore_snapshot_to_inventory(server, session.character_id, item_data, slot=target_slot)
         if not restored:
             await session.send_line("Something went wrong retrieving your finished box.  Try again.")
             return
 
-        session.inventory.append(restored)
+        if target_slot == "right_hand":
+            session.right_hand = restored
+        elif target_slot == "left_hand":
+            session.left_hand = restored
+        else:
+            session.inventory.append(restored)
+
         if not _db_collect_completed(server, job_id, session.character_id):
-            if restored in session.inventory:
+            if target_slot == "right_hand" and session.right_hand is restored:
+                session.right_hand = None
+            elif target_slot == "left_hand" and session.left_hand is restored:
+                session.left_hand = None
+            elif restored in session.inventory:
                 session.inventory.remove(restored)
             if restored.get("inv_id"):
                 server.db.remove_item_from_inventory(restored["inv_id"])
@@ -898,9 +1038,14 @@ async def cmd_claim(session, cmd, args, server):
             return
 
         box_disp = colorize(restored.get("short_name", job["item_short_name"]), TextPresets.ITEM_NAME)
-        await session.send_line(
-            npc_speech(npc_name, f"retrieves {box_disp} and hands it over to you.")
-        )
+        if target_slot in ("right_hand", "left_hand"):
+            await session.send_line(
+                npc_speech(npc_name, f"retrieves {box_disp} and hands it over to you.")
+            )
+        else:
+            await session.send_line(
+                npc_speech(npc_name, f"retrieves {box_disp} and places it in your pack.")
+            )
         await session.send_line(
             npc_speech(npc_name, f"says, 'Job #{job_id} was finished by {job['claimer_name']}.  Mind the contents.'")
         )

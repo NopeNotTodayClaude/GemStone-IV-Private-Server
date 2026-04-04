@@ -301,6 +301,7 @@ class Database:
                     position = %(position)s,
                     stance = %(stance)s,
                     tutorial_stage = %(tutorial_stage)s,
+                    tutorial_flags = %(tutorial_flags)s,
                     tutorial_complete = %(tutorial_complete)s,
                     aimed_location = %(aimed_location)s,
                     total_playtime = total_playtime + %(session_time)s,
@@ -329,6 +330,7 @@ class Database:
                 "position": session.position,
                 "stance": getattr(session, "stance", "neutral"),
                 "tutorial_stage": getattr(session, "tutorial_stage", 0),
+                "tutorial_flags": int(getattr(session, "tutorial_flags", 0) or 0),
                 "tutorial_complete": 1 if getattr(session, "tutorial_complete", False) else 0,
                 "aimed_location": getattr(session, "aimed_location", None),
                 "session_time": int(time.time() - session.connect_time),
@@ -365,7 +367,7 @@ class Database:
     # REAL-TIME SAVE METHODS
     # =========================================================
 
-    def save_quest_progress(self, character_id, tutorial_stage, tutorial_complete):
+    def save_quest_progress(self, character_id, tutorial_stage, tutorial_complete, tutorial_flags=None):
         """Save tutorial/quest progress immediately to database."""
         conn = self._get_conn()
         try:
@@ -373,9 +375,10 @@ class Database:
             cur.execute("""
                 UPDATE characters SET
                     tutorial_stage = %s,
+                    tutorial_flags = COALESCE(%s, tutorial_flags),
                     tutorial_complete = %s
                 WHERE id = %s
-            """, (tutorial_stage, 1 if tutorial_complete else 0, character_id))
+            """, (tutorial_stage, tutorial_flags, 1 if tutorial_complete else 0, character_id))
             return True
         except Exception as e:
             log.error("Failed to save quest progress for char %s: %s", character_id, e)
@@ -2614,6 +2617,38 @@ class Database:
         finally:
             conn.close()
 
+    def save_character_spell_ranks(self, character_id, ranks_by_circle):
+        """Upsert native spell circle ranks for a character."""
+        payload = {
+            int(circle_id): max(0, int(ranks or 0))
+            for circle_id, ranks in dict(ranks_by_circle or {}).items()
+            if int(circle_id) > 0
+        }
+        if not payload:
+            return True
+
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.executemany(
+                """
+                INSERT INTO character_spell_ranks (character_id, circle_id, ranks)
+                VALUES (%s, %s, %s)
+                ON DUPLICATE KEY UPDATE ranks = VALUES(ranks)
+                """,
+                [
+                    (int(character_id), int(circle_id), int(ranks))
+                    for circle_id, ranks in sorted(payload.items())
+                ],
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            log.error("Failed to save spell ranks for char %s: %s", character_id, e)
+            return False
+        finally:
+            conn.close()
+
     def load_character_spellbook(self, character_id):
         """Load castable native spells for a character from current circle ranks."""
         conn = self._get_conn()
@@ -2621,11 +2656,12 @@ class Database:
             cur = conn.cursor(dictionary=True)
             cur.execute("""
                 SELECT s.spell_number, s.mnemonic, s.name, s.circle_id, s.rank,
-                       s.mana_cost, s.spell_type, s.activation_verbs
+                       s.mana_cost, s.spell_type, s.activation_verbs,
+                       s.cast_roundtime, s.description, s.targeting_mode
                 FROM character_spell_ranks csr
                 JOIN spells s
                   ON s.circle_id = csr.circle_id
-                 AND s.rank <= csr.ranks
+                 AND s.rank < csr.ranks
                 WHERE csr.character_id = %s
                 ORDER BY s.circle_id, s.spell_number
             """, (character_id,))

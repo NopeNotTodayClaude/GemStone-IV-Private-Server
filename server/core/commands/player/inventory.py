@@ -543,6 +543,77 @@ def _container_accepts_item(container, item, server, *, allow_special_sheath=Fal
     return True
 
 
+def _special_container_manager(server):
+    return getattr(server, 'spell_summons', None)
+
+
+def _container_item_count(session, container):
+    return len(_get_container_contents(session, container)) + len(container.get('contents', []))
+
+
+def _inline_item_weight_total(item):
+    total = int((item or {}).get('weight') or 0) * _item_stack_quantity(item)
+    for child in (item or {}).get('contents', []) or []:
+        total += _inline_item_weight_total(child)
+    return total
+
+
+def _container_item_units_for(session, server, container, item):
+    summon_key = str((container or {}).get('spell_summon_key') or '')
+    summon_mgr = _special_container_manager(server)
+    if summon_key and summon_mgr:
+        try:
+            return int(summon_mgr._item_units_for_container(session, item, summon_key))
+        except Exception:
+            return 1
+    return 1
+
+
+def _container_used_units(session, server, container):
+    summon_key = str((container or {}).get('spell_summon_key') or '')
+    summon_mgr = _special_container_manager(server)
+    if summon_key and summon_mgr:
+        try:
+            return int(summon_mgr._container_units_used(session, container))
+        except Exception:
+            return _container_item_count(session, container)
+    return _container_item_count(session, container)
+
+
+def _container_used_weight(session, server, container):
+    summon_key = str((container or {}).get('spell_summon_key') or '')
+    summon_mgr = _special_container_manager(server)
+    if summon_key and summon_mgr:
+        try:
+            return int(summon_mgr._container_weight_used(session, container))
+        except Exception:
+            return 0
+    return 0
+
+
+def _container_can_store(session, server, container, item=None):
+    capacity = int((container or {}).get('container_capacity', 10) or 10)
+    used_units = _container_used_units(session, server, container)
+    pending_units = _container_item_units_for(session, server, container, item) if item else 0
+    free_units = capacity - used_units
+    summon_key = str((container or {}).get('spell_summon_key') or '')
+    if used_units + pending_units > capacity:
+        if summon_key == 'spirit_servant':
+            return False, "Your spirit servant's ghostly hands are already full.", free_units
+        if summon_key == 'floating_disk':
+            return False, "The floating disk cannot carry any more items.", free_units
+        return False, "That container is full.", free_units
+
+    if summon_key == 'floating_disk':
+        max_weight = int((container or {}).get('max_weight_units') or 500)
+        used_weight = _container_used_weight(session, server, container)
+        pending_weight = _inline_item_weight_total(item) if item else 0
+        if used_weight + pending_weight > max_weight:
+            return False, "The floating disk cannot bear that much weight.", free_units
+
+    return True, None, free_units
+
+
 def _find_best_stow_container(session, server, item_dict, *, allow_special_sheath=False):
     candidates = []
     for cont in _get_worn_containers(session):
@@ -557,10 +628,8 @@ def _find_best_stow_container(session, server, item_dict, *, allow_special_sheat
         cont_inv_id = cont.get('inv_id')
         if cont_inv_id is None:
             continue
-        contents = _get_container_contents(session, cont)
-        capacity = cont.get('container_capacity', 10) or 10
-        free = capacity - len(contents)
-        if free <= 0:
+        can_store, _, free = _container_can_store(session, server, cont, item_dict)
+        if not can_store or free <= 0:
             continue
         candidates.append((_container_priority_key(cont), -free, cont))
     if not candidates:
@@ -578,10 +647,9 @@ def _move_held_item_to_container(session, server, hand, container):
         return False, None, "You don't have anywhere to stow that."
     if not _container_accepts_item(container, item, server, allow_special_sheath=True):
         return False, None, "That won't fit in there."
-    contents = _get_container_contents(session, container)
-    capacity = container.get('container_capacity', 10) or 10
-    if len(contents) >= capacity:
-        return False, None, "That container is full."
+    can_store, fail_msg, _ = _container_can_store(session, server, container, item)
+    if not can_store:
+        return False, None, fail_msg or "That container is full."
 
     _clear_hand(session, hand, server)
 
@@ -1394,11 +1462,9 @@ async def cmd_put(session, cmd, args, server):
             await session.send_line("That won't fit in there.")
         return
 
-    # Capacity check
-    contents = _get_container_contents(session, cont)
-    capacity = cont.get('container_capacity', 10) or 10
-    if len(contents) >= capacity:
-        await session.send_line("That container is full.")
+    can_store, fail_msg, _ = _container_can_store(session, server, cont, item)
+    if not can_store:
+        await session.send_line(fail_msg or "That container is full.")
         return
 
     _clear_hand(session, hand, server)
@@ -1691,11 +1757,9 @@ async def cmd_stow(session, cmd, args, server):
     if not default_cont.get('opened'):
         default_cont['opened'] = True
 
-    # Capacity
-    contents = _get_container_contents(session, default_cont)
-    capacity = default_cont.get('container_capacity', 10) or 10
-    if len(contents) >= capacity:
-        await session.send_line("Your " + (default_cont.get('noun') or 'container') + " is full.")
+    can_store, fail_msg, _ = _container_can_store(session, server, default_cont, item)
+    if not can_store:
+        await session.send_line(fail_msg or ("Your " + (default_cont.get('noun') or 'container') + " is full."))
         return
 
     _clear_hand(session, hand, server)
@@ -1943,12 +2007,18 @@ def _item_stat_lines(item: dict) -> list:
         cap  = item.get('container_capacity') or 0
         wt   = item.get('weight') or 1.0
         loc  = (item.get('worn_location') or '').replace('_', ' ')
+        summon_key = str(item.get('spell_summon_key') or '')
+        max_weight = item.get('max_weight_units') or 0
 
         lines.append(_section('Container Stats'))
         if cap:
             lines.append(_kv('Capacity', f"{cap} items", OK))
         else:
             lines.append(_kv('Capacity', 'unlimited / unknown'))
+        if summon_key == 'floating_disk' and max_weight:
+            lines.append(_kv('Carry limit', f"{int(max_weight)} pounds", OK))
+        elif summon_key == 'spirit_servant' and cap:
+            lines.append(_kv('Ghostly hands', f"{cap} item slots", OK))
         if loc:
             lines.append(_kv('Worn on', loc.title()))
         lines.append(_kv('Weight', f"{float(wt):.1f} lbs (empty)"))
@@ -2186,7 +2256,7 @@ async def cmd_look_in(session, cmd, args, server):
     if all_items:
         await session.send_line(f'In {disp} you see:')
         for ci in all_items:
-            await session.send_line('  ' + colorize(ci['name'], TextPresets.ITEM_NAME))
+            await session.send_line('  ' + _item_display(ci))
     else:
         await session.send_line(f'In {disp} you see nothing.')
 
@@ -2448,13 +2518,9 @@ async def cmd_get_all(session, cmd, args, server):
         for cont in containers:
             if cont is exclude:
                 continue
-            cap      = cont.get("container_capacity", 10) or 10
-            inv_id   = cont.get("inv_id")
-            in_cont  = [i for i in session.inventory if i.get("container_id") == inv_id]
-            # Also count inline contents
-            in_cont_inline = len(cont.get("contents", []))
-            used     = len(in_cont) + in_cont_inline
-            free     = cap - used
+            can_store, _, free = _container_can_store(session, server, cont, None)
+            if not can_store:
+                continue
             if free > best_free:
                 is_bp = (cont.get("noun") or "").lower() == "backpack"
                 if is_bp:
@@ -2503,57 +2569,18 @@ async def cmd_get_all(session, cmd, args, server):
     for item in remaining_contents:
         iname = colorize(item.get("name") or "something", TextPresets.ITEM_NAME)
 
-        if dest and dest_free > 0:
-            # Resolve item_id - dynamic treasure items (scrolls, wands, etc.)
-            # are stored inline without a real item_id.  Mint one now so they
-            # survive as proper DB-backed inventory rows.
-            item_id = item.get("item_id") or item.get("id")
-            if not item_id and server.db:
-                item_id = server.db.get_or_create_item(
-                    name        = item.get("name", "something"),
-                    short_name  = item.get("short_name") or item.get("name", "something"),
-                    noun        = item.get("noun", "item"),
-                    item_type   = item.get("item_type", "misc"),
-                    article     = item.get("article", "a"),
-                    value       = item.get("value", 0),
-                    description = item.get("description", ""),
-                )
-                if item_id:
-                    item["item_id"] = item_id
-
-            if server.db and session.character_id and item_id:
-                inv_id = server.db.add_item_to_inventory(
-                    session.character_id, item_id
-                )
-                if inv_id:
-                    _db_update_container(server, inv_id, dest.get("inv_id"))
-                    item["inv_id"]       = inv_id
-                    item["container_id"] = dest.get("inv_id")
-                    item["slot"]         = None
-                    session.inventory.append(item)
-                    dest_free -= 1
-                    stowed.append((item.get("name", "something"), dest_name))
-                    await session.send_line(
-                        f"  You put {iname} in your {dest_name}."
-                    )
-                    continue
-
-            # No DB record possible - still track in session.inventory so
-            # inv full can display it (container_id links it to dest).
-            item["container_id"] = dest.get("inv_id")
-            item["slot"]         = None
-            item.setdefault("inv_id", None)
-            if item not in session.inventory:
-                session.inventory.append(item)
-            dest_free -= 1
-            stowed.append((item.get("name", "something"), dest_name))
-            await session.send_line(f"  You put {iname} in your {dest_name}.")
-        else:
-            # Can't stow - stays in box
-            couldnt_stow.append(item)
-            await session.send_line(
-                colorize(f"  No room - {item.get('name', 'something')} stays in the box.", TextPresets.WARNING)
-            )
+        success, location_name, _ = auto_stow_item(session, server, item, allow_hands=False)
+        if success:
+            stowed.append((item.get("name", "something"), location_name))
+            await session.send_line(f"  You put {iname} in your {location_name}.")
+            dest, dest_free = _largest_container(session, exclude=box)
+            dest_name = (dest.get("short_name") or dest.get("noun") or "your pack") if dest else None
+            continue
+        # Can't stow - stays in box
+        couldnt_stow.append(item)
+        await session.send_line(
+            colorize(f"  No room - {item.get('name', 'something')} stays in the box.", TextPresets.WARNING)
+        )
 
     # Update the box's inline contents to only what couldn't be stowed
     box["contents"] = couldnt_stow

@@ -169,6 +169,7 @@ class Session:
 
         # Tutorial tracking
         self.tutorial_stage = 0
+        self.tutorial_flags = 0
         self.tutorial_complete = False
 
         # Pet / companion system
@@ -314,6 +315,7 @@ class Session:
         # Load tutorial state from database (0/1 -> bool for tutorial_complete)
         self.tutorial_complete = bool(char_data.get("tutorial_complete", 0))
         self.tutorial_stage = char_data.get("tutorial_stage", 0)
+        self.tutorial_flags = int(char_data.get("tutorial_flags", 0) or 0)
 
         # Load persistent AIM preference
         raw_aim = char_data.get("aimed_location", None)
@@ -387,6 +389,15 @@ class SessionManager:
                     fake_players.on_player_logout(session)
             except Exception as _fake_err:
                 log.debug("Fake player logout hook failed: %s", _fake_err)
+            try:
+                spell_summons = getattr(self.server, "spell_summons", None)
+                if spell_summons:
+                    import asyncio
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        loop.create_task(spell_summons.on_player_logout(session))
+            except Exception as _summon_err:
+                log.debug("Spell summon logout hook failed: %s", _summon_err)
 
             # Save character before removing
             if session.character_id:

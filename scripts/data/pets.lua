@@ -145,6 +145,9 @@ end
 local guardian_levels = {}
 local regen_levels = {}
 local recall_levels = {}
+local scale_ward_levels = {}
+local scale_arc_levels = {}
+local scale_tempest_levels = {}
 for level = 1, 50 do
     local guardian_cd = math.floor(10800 - ((level - 1) * ((10800 - 3600) / 49)))
     if guardian_cd < 3600 then guardian_cd = 3600 end
@@ -170,6 +173,34 @@ for level = 1, 50 do
         cooldown_seconds = 3600,
         revive_health_pct = 0.10,
     }
+
+    local ward_recast = math.floor(80 - ((level - 1) * ((80 - 32) / 49)))
+    if ward_recast < 32 then ward_recast = 32 end
+    scale_ward_levels[level] = {
+        level = level,
+        threshold_pct = 0.72,
+        absorb_amount = 8 + math.floor((level - 1) * (28 / 49)),
+        ds_bonus = 4 + math.floor((level - 1) * (10 / 49)),
+        duration_seconds = 25,
+        recast_seconds = ward_recast,
+    }
+
+    local arc_recast = math.floor(42 - ((level - 1) * ((42 - 16) / 49)))
+    if arc_recast < 16 then arc_recast = 16 end
+    scale_arc_levels[level] = {
+        level = level,
+        min_damage = 6 + math.floor((level - 1) * (10 / 49)),
+        max_damage = 11 + math.floor((level - 1) * (18 / 49)),
+        recast_seconds = arc_recast,
+    }
+
+    scale_tempest_levels[level] = {
+        level = level,
+        unlocked = (level >= 50),
+        cooldown_seconds = 3600,
+        min_damage = 22,
+        max_damage = 36,
+    }
 end
 
 PetData.species = {
@@ -179,6 +210,7 @@ PetData.species = {
         sale_label = "Floofer",
         image_key = "floofer",
         image_path = "/assets/floofer",
+        ability_sfx = "FlooferAbility.mp3",
         first_pet_only = false,
         base_price = 25000,
         free_first_pet = true,
@@ -221,9 +253,15 @@ PetData.species = {
                 key = "comforting_glow",
                 label = "Comforting Glow",
                 type = "pet_spell",
-                spell_name = "Comforting Glow",
+                trigger = "low_health",
+                spell_number = 5001,
                 status_effect = "floofer_glow",
+                spell_name = "Comforting Glow",
                 description = "When the owner drops below 60%% health, the Floofer quietly casts a restorative glow that heals over time.",
+                cast_lines = {
+                    self = "{pet} gathers a soft restorative glow around you.",
+                    room = "{pet} gathers a soft restorative glow around {owner}.",
+                },
                 scaling = regen_levels,
             },
             starlight_recall = {
@@ -232,6 +270,82 @@ PetData.species = {
                 type = "death_recall",
                 description = "At level 50, once per hour, the Floofer can pull the owner back from death with a dim starlit revival.",
                 scaling = recall_levels,
+            },
+        },
+    },
+    scale = {
+        species_key = "scale",
+        race_name = "Scale",
+        sale_label = "Scale",
+        image_key = "scale",
+        image_path = "/assets/scale",
+        ability_sfx = "ScaleAbility.mp3",
+        first_pet_only = false,
+        free_first_pet = false,
+        allow_before_first_pet = true,
+        required_professions = {},
+        base_price = 30000,
+        description = "A sleek, rune-marked drakelet with layered cobalt scales, bright gold eyes, and a habit of crouching between danger and the empath it has chosen to protect.",
+        appearance_lines = {
+            "Its scales overlap in neat lacquered rows that flash with traced sigils whenever danger draws close.",
+            "A dry crackle of static clings to its claws and jawline, suggesting that the little creature takes offense very personally.",
+        },
+        personality = {
+            random_emotes = {
+                "{pet} curls its tail around {owner}'s boots and watches the room with bright, suspicious eyes.",
+                "{pet}'s scales click softly as it shifts, then it lifts its muzzle to scent the air for trouble.",
+                "{pet} lets out a low electric chirr and settles into a protective crouch near {owner}.",
+                "{pet} flexes its tiny claws against the floor and a brief blue spark jumps between two scales.",
+            },
+            state_emotes = {
+                low_health = {
+                    "{pet} flares its neck spines and wedges itself closer to {owner}, clearly ready to intercept danger.",
+                    "{pet}'s scales brighten with warning light as it circles {owner} in a tight protective path.",
+                },
+                recovered = {
+                    "{pet} relaxes a fraction, though it still keeps one watchful eye on every possible threat.",
+                },
+            },
+        },
+        abilities = {
+            scaleguard_ward = {
+                key = "scaleguard_ward",
+                label = "Scaleguard Ward",
+                type = "pet_spell",
+                trigger = "low_health",
+                spell_number = 5002,
+                description = "When the owner is pressured, the Scale casts a layered ward that absorbs a chunk of incoming damage and stiffens the owner's defenses.",
+                cast_lines = {
+                    self = "{pet} snaps its jaws and a sapphire ward settles over you.",
+                    room = "{pet} snaps its jaws and a sapphire ward settles over {owner}.",
+                },
+                scaling = scale_ward_levels,
+            },
+            static_lash = {
+                key = "static_lash",
+                label = "Static Lash",
+                type = "pet_attack_spell",
+                trigger = "combat_target",
+                spell_number = 5003,
+                description = "The Scale periodically lashes the owner's current foe with a quick wizard-like burst of crackling arcane force.",
+                cast_lines = {
+                    self = "{pet} spits a crackling ribbon of blue force at {target}.",
+                    room = "{pet} spits a crackling ribbon of blue force at {target}, shielding {owner}'s flank while it strikes.",
+                },
+                scaling = scale_arc_levels,
+            },
+            static_tempest = {
+                key = "static_tempest",
+                label = "Static Tempest",
+                type = "pet_room_attack_spell",
+                trigger = "room_hostiles",
+                spell_number = 5004,
+                description = "At level 50, the Scale can unleash a violent room-wide storm of crackling force that lashes every hostile enemy near its owner.",
+                cast_lines = {
+                    self = "{pet} arches its back and detonates into a room-wide storm of sapphire force!",
+                    room = "{pet} arches its back and detonates into a room-wide storm of sapphire force around {owner}!",
+                },
+                scaling = scale_tempest_levels,
             },
         },
     },

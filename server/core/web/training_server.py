@@ -574,31 +574,12 @@ class TrainingRequestHandler(BaseHTTPRequestHandler):
             return
 
         from server.core.commands.player.training import (
-            SKILL_NAMES, SKILL_COSTS, SKILL_CATEGORIES,
-            get_train_limit, get_max_ranks
+            build_training_catalog, get_spell_rank_cap,
         )
 
         prof_id = session.profession_id
         level   = session.level
-
-        skills_out = {}
-        for skill_id, name in SKILL_NAMES.items():
-            raw   = (session.skills or {}).get(skill_id, {})
-            ranks = int(raw.get('ranks', 0)) if isinstance(raw, dict) else 0
-            bonus = int(raw.get('bonus', 0)) if isinstance(raw, dict) else 0
-            ptp, mtp = SKILL_COSTS.get(skill_id, {}).get(prof_id, (0, 0))
-            max_r    = get_max_ranks(skill_id, prof_id, level)
-            limit    = get_train_limit(skill_id, prof_id)
-            skills_out[skill_id] = {
-                'name':       name,
-                'ranks':      ranks,
-                'bonus':      bonus,
-                'ptp':        ptp,
-                'mtp':        mtp,
-                'trainable':  not (ptp == 0 and mtp == 0),
-                'max_ranks':  max_r,   # total rank ceiling at current level
-                'limit':      limit,   # ranks per level (for cost-doubling display)
-            }
+        skills_out, display_categories = build_training_catalog(session, TrainingRequestHandler.server_ref)
 
         import time as _time
         from server.core.commands.player.fixstat_convert import (
@@ -618,7 +599,8 @@ class TrainingRequestHandler(BaseHTTPRequestHandler):
             'physical_tp':       session.physical_tp,
             'mental_tp':         session.mental_tp,
             'skills':            skills_out,
-            'categories':        {cat: ids for cat, ids in SKILL_CATEGORIES.items()},
+            'categories':        {cat: ids for cat, ids in display_categories.items()},
+            'spell_rank_cap':    get_spell_rank_cap(prof_id, level),
             'stats':             stats_out,
             'base_stats':        base_stats_out,
             'total_stats':       total_stats,
@@ -760,28 +742,40 @@ class TrainingRequestHandler(BaseHTTPRequestHandler):
         prof_id = session.profession_id
 
         from server.core.commands.player.training import (
-            SKILL_NAMES, SKILL_COSTS, calc_skill_bonus,
-            get_train_limit, get_max_ranks, cost_for_rank_range
+            SKILL_NAMES, calc_skill_bonus, get_train_limit, get_max_ranks,
+            cost_for_rank_range, get_skill_cost, is_spell_circle_subject,
+            spell_circle_id_for_subject, get_spell_rank_cap, get_total_spell_ranks,
+            get_spell_circle_max_ranks, build_training_catalog, SPELL_RESEARCH_SKILL_ID
         )
 
         level   = session.level
         total_ptp = 0
         total_mtp = 0
-        changes   = []
+        skill_changes = []
+        circle_changes = []
         cap_errors = []
+        current_spell_ranks = dict(getattr(session, 'spell_ranks', {}) or {})
+        desired_spell_ranks = dict(current_spell_ranks)
 
         for skill_id_str, new_ranks in desired.items():
             skill_id  = int(skill_id_str)
             new_ranks = max(0, int(new_ranks))
+            if is_spell_circle_subject(skill_id):
+                circle_id = spell_circle_id_for_subject(skill_id)
+                old_ranks = int(desired_spell_ranks.get(circle_id, 0) or 0)
+                if new_ranks == old_ranks:
+                    continue
+                desired_spell_ranks[int(circle_id)] = new_ranks
+                circle_changes.append((int(circle_id), old_ranks, new_ranks))
+                continue
             raw       = (session.skills or {}).get(skill_id, {})
             old_ranks = int(raw.get('ranks', 0)) if isinstance(raw, dict) else 0
             if new_ranks == old_ranks:
                 continue
-            ptp_per, mtp_per = SKILL_COSTS.get(skill_id, {}).get(prof_id, (0, 0))
+            ptp_per, mtp_per = get_skill_cost(skill_id, prof_id)
             if ptp_per == 0 and mtp_per == 0:
                 continue
 
-            # ── Enforce total rank cap: max = train_limit × level ─────────────
             max_r = get_max_ranks(skill_id, prof_id, level)
             if new_ranks > max_r:
                 name = SKILL_NAMES.get(skill_id, 'Skill {}'.format(skill_id))
@@ -792,26 +786,52 @@ class TrainingRequestHandler(BaseHTTPRequestHandler):
                     )
                 )
                 continue
-
-            # ── Cost uses slot-position doubling formula ───────────────────────
-            # Only adds cost for ranks being purchased (delta > 0).
-            # Untraining (delta < 0) refunds at a flat base rate.
-            if new_ranks > old_ranks:
-                limit   = get_train_limit(skill_id, prof_id) or 1
-                rp, rm  = cost_for_rank_range(ptp_per, mtp_per, limit, level, old_ranks, new_ranks)
-                total_ptp += rp
-                total_mtp += rm
-            else:
-                # Untrain: refund flat base (no doubling on refunds)
-                delta      = old_ranks - new_ranks
-                total_ptp -= ptp_per * delta
-                total_mtp -= mtp_per * delta
-
-            changes.append((skill_id, old_ranks, new_ranks))
+            skill_changes.append((skill_id, old_ranks, new_ranks))
 
         if cap_errors:
             self._json_error('Rank cap exceeded:\n' + '\n'.join(cap_errors))
             return
+
+        for skill_id, old_ranks, new_ranks in skill_changes:
+            ptp_per, mtp_per = get_skill_cost(skill_id, prof_id)
+            if new_ranks > old_ranks:
+                limit = get_train_limit(skill_id, prof_id) or 1
+                rp, rm = cost_for_rank_range(ptp_per, mtp_per, limit, level, old_ranks, new_ranks)
+                total_ptp += rp
+                total_mtp += rm
+            else:
+                delta = old_ranks - new_ranks
+                total_ptp -= ptp_per * delta
+                total_mtp -= mtp_per * delta
+
+        old_total_spell_ranks = get_total_spell_ranks(session, server, prof_id)
+        new_total_spell_ranks = sum(max(0, int(ranks or 0)) for ranks in desired_spell_ranks.values())
+        spell_rank_cap = get_spell_rank_cap(prof_id, level)
+        if new_total_spell_ranks > spell_rank_cap:
+            self._json_error(
+                'Spell rank cap exceeded:\nRequested {} total spell ranks but cap is {} at level {}.'.format(
+                    new_total_spell_ranks, spell_rank_cap, level
+                )
+            )
+            return
+
+        spell_ptp_per, spell_mtp_per = get_skill_cost(SPELL_RESEARCH_SKILL_ID, prof_id)
+        spell_limit = get_train_limit(SPELL_RESEARCH_SKILL_ID, prof_id) or 1
+        if new_total_spell_ranks > old_total_spell_ranks:
+            rp, rm = cost_for_rank_range(
+                spell_ptp_per,
+                spell_mtp_per,
+                spell_limit,
+                level,
+                old_total_spell_ranks,
+                new_total_spell_ranks,
+            )
+            total_ptp += rp
+            total_mtp += rm
+        elif new_total_spell_ranks < old_total_spell_ranks:
+            delta = old_total_spell_ranks - new_total_spell_ranks
+            total_ptp -= spell_ptp_per * delta
+            total_mtp -= spell_mtp_per * delta
 
         new_ptp = session.physical_tp - total_ptp
         new_mtp = session.mental_tp   - total_mtp
@@ -828,7 +848,7 @@ class TrainingRequestHandler(BaseHTTPRequestHandler):
             return
 
         change_lines = []
-        for skill_id, old_ranks, new_ranks in changes:
+        for skill_id, old_ranks, new_ranks in skill_changes:
             new_bonus = calc_skill_bonus(new_ranks)
             if not session.skills:
                 session.skills = {}
@@ -841,6 +861,34 @@ class TrainingRequestHandler(BaseHTTPRequestHandler):
             change_lines.append(
                 '{}: {} \u2192 {} ranks  (bonus +{})'.format(name, old_ranks, new_ranks, new_bonus)
             )
+
+        if circle_changes:
+            session.spell_ranks = desired_spell_ranks
+            if server.db and session.character_id:
+                server.db.save_character_spell_ranks(session.character_id, desired_spell_ranks)
+                session.spellbook = server.db.load_character_spellbook(session.character_id)
+
+            catalog, _ = build_training_catalog(session, server)
+            for circle_id, old_ranks, new_ranks in circle_changes:
+                name = (catalog.get(10000 + int(circle_id)) or {}).get('name', f'Circle {circle_id}')
+                change_lines.append(
+                    '{}: {} \u2192 {} ranks'.format(name, old_ranks, new_ranks)
+                )
+
+            total_spell_bonus = calc_skill_bonus(new_total_spell_ranks)
+            if not session.skills:
+                session.skills = {}
+            session.skills[SPELL_RESEARCH_SKILL_ID] = {
+                'ranks': new_total_spell_ranks,
+                'bonus': total_spell_bonus,
+            }
+            if server.db and session.character_id:
+                server.db.save_character_skill(
+                    session.character_id,
+                    SPELL_RESEARCH_SKILL_ID,
+                    new_total_spell_ranks,
+                    total_spell_bonus,
+                )
 
         session.physical_tp = new_ptp
         session.mental_tp   = new_mtp
@@ -1802,23 +1850,24 @@ async function doCmanAction(mnemonic,action){
 function mkRow(id,sk){
   const cur=pending[id]!==undefined?pending[id]:sk.ranks;
   const changed=cur!==sk.ranks,empty=cur===0;
-  const atCap=sk.max_ranks>0&&cur>=sk.max_ranks;
+  const maxRanks=skillMaxRanks(id,sk);
+  const atCap=maxRanks>0&&cur>=maxRanks;
   const row=document.createElement('div');
   row.className='sk-row'+(changed?' changed':'')+(!sk.trainable&&empty?' untrained':'');
   row.id='row-'+id;
   row.innerHTML=
     '<div class="sk-name'+(changed?' mod':empty&&!sk.trainable?' dim':'')+'\" id="nm-'+id+'">'+sk.name+'</div>'+
     '<div class="sk-ranks'+(changed?' mod':'')+'\" id="rk-'+id+'">'+cur+'</div>'+
-    '<div class="sk-bonus" id="bn-'+id+'">+'+bonus(cur)+'</div>'+
-    '<div class="sk-cost'+(sk.ptp?' act':'')+'\" id="cp-'+id+'">'+( sk.ptp?slotCost(sk.ptp,sk.limit||1,char.level,cur,cur+1):'\u2014')+'</div>'+
-    '<div class="sk-cost'+(sk.mtp?' act':'')+'\" id="cm-'+id+'">'+( sk.mtp?slotCost(sk.mtp,sk.limit||1,char.level,cur,cur+1):'\u2014')+'</div>'+
-    '<div class="sk-cost" id="cap-'+id+'" style="text-align:center;color:'+(atCap?'var(--amber)':'var(--muted)')+'">'+(sk.max_ranks>0?cur+'/'+sk.max_ranks:'\u2014')+'</div>'+
+    '<div class="sk-bonus" id="bn-'+id+'">'+(sk.show_bonus===false?'\u2014':('+'+bonus(cur)))+'</div>'+
+    '<div class="sk-cost'+(nextCostText(id,sk,'ptp')!=='\u2014'?' act':'')+'\" id="cp-'+id+'">'+nextCostText(id,sk,'ptp')+'</div>'+
+    '<div class="sk-cost'+(nextCostText(id,sk,'mtp')!=='\u2014'?' act':'')+'\" id="cm-'+id+'">'+nextCostText(id,sk,'mtp')+'</div>'+
+    '<div class="sk-cost" id="cap-'+id+'" style="text-align:center;color:'+(atCap?'var(--amber)':'var(--muted)')+'">'+(maxRanks>0?cur+'/'+maxRanks:'\u2014')+'</div>'+
     '<div class="controls" id="ct-'+id+'"></div>';
   const ct=row.querySelector('#ct-'+id);
   if(sk.trainable){
     const m=document.createElement('button');m.className='btn minus';m.textContent='\u2212';m.title='Remove rank';m.onclick=()=>adj(id,-1);
-    const inp=document.createElement('input');inp.type='number';inp.className='rk-input';inp.id='inp-'+id;inp.value=cur;inp.min=0;inp.max=sk.max_ranks>0?sk.max_ranks:9999;inp.onchange=()=>setRk(id,parseInt(inp.value)||0);inp.oninput=()=>setRk(id,parseInt(inp.value)||0);
-    const p=document.createElement('button');p.className='btn plus';p.textContent='+';p.title='Add rank (cap: '+sk.max_ranks+')';p.onclick=()=>adj(id,1);
+    const inp=document.createElement('input');inp.type='number';inp.className='rk-input';inp.id='inp-'+id;inp.value=cur;inp.min=0;inp.max=maxRanks>0?maxRanks:9999;inp.onchange=()=>setRk(id,parseInt(inp.value)||0);inp.oninput=()=>setRk(id,parseInt(inp.value)||0);
+    const p=document.createElement('button');p.className='btn plus';p.textContent='+';p.title='Add rank (cap: '+maxRanks+')';p.onclick=()=>adj(id,1);
     ct.appendChild(m);ct.appendChild(inp);ct.appendChild(p);
   }else{ct.innerHTML='<span style="color:var(--muted);font-size:0.8rem">N/A</span>';}
   ttAttach(row,id);
@@ -1827,29 +1876,88 @@ function mkRow(id,sk){
 function adj(id,d){const cur=pending[id]!==undefined?pending[id]:char.skills[id].ranks;setRk(id,Math.max(0,cur+d));}
 function setRk(id,v){
   const sk=char.skills[id];v=Math.max(0,v);
-  if(sk.max_ranks>0&&v>sk.max_ranks){v=sk.max_ranks;}
+  const maxRanks=skillMaxRanks(id,sk);
+  if(maxRanks>0&&v>maxRanks){v=maxRanks;}
   if(v===sk.ranks)delete pending[id];else pending[id]=v;
   const inp=document.getElementById('inp-'+id);if(inp&&parseInt(inp.value)!==v)inp.value=v;
   const rkEl=document.getElementById('rk-'+id);if(rkEl){rkEl.textContent=v;rkEl.className='sk-ranks'+(v!==sk.ranks?' mod':'');}
-  const bnEl=document.getElementById('bn-'+id);if(bnEl)bnEl.textContent='+'+bonus(v);
-  const lim=sk.limit||1;
-  const cpEl=document.getElementById('cp-'+id);if(cpEl&&sk.ptp)cpEl.textContent=slotCost(sk.ptp,lim,char.level,v,v+1);
-  const cmEl=document.getElementById('cm-'+id);if(cmEl&&sk.mtp)cmEl.textContent=slotCost(sk.mtp,lim,char.level,v,v+1);
+  const bnEl=document.getElementById('bn-'+id);if(bnEl)bnEl.textContent=sk.show_bonus===false?'\u2014':('+'+bonus(v));
+  const cpEl=document.getElementById('cp-'+id);if(cpEl)cpEl.textContent=nextCostText(id,sk,'ptp');
+  const cmEl=document.getElementById('cm-'+id);if(cmEl)cmEl.textContent=nextCostText(id,sk,'mtp');
   const nmEl=document.getElementById('nm-'+id);if(nmEl)nmEl.className='sk-name'+(v!==sk.ranks?' mod':v===0&&!sk.trainable?' dim':'');
   const row=document.getElementById('row-'+id);if(row)row.classList.toggle('changed',v!==sk.ranks);
-  const capEl=document.getElementById('cap-'+id);if(capEl){const atCap=sk.max_ranks>0&&v>=sk.max_ranks;capEl.textContent=v+'/'+sk.max_ranks;capEl.style.color=atCap?'var(--amber)':'var(--muted)';}
+  const capEl=document.getElementById('cap-'+id);if(capEl){const atCap=maxRanks>0&&v>=maxRanks;capEl.textContent=v+'/'+maxRanks;capEl.style.color=atCap?'var(--amber)':'var(--muted)';}
+  refreshSpellCircleDisplays();
   refreshTP();
 }
 function slotCost(base,limit,level,fromRank,toRank){
   if(limit<=0)limit=1;const prevCap=limit*(level-1);let t=0;
   for(let r=fromRank+1;r<=toRank;r++){const sp=r<=prevCap?1:Math.min(r-prevCap,2);t+=base*sp;}return t;
 }
+function desiredRanks(id){const sk=char.skills[id];return pending[id]!==undefined?pending[id]:sk.ranks;}
+function totalDesiredSpellRanks(){
+  let total=0;
+  for(const [id, sk] of Object.entries(char.skills||{})){
+    if(sk && sk.is_spell_circle) total+=desiredRanks(id);
+  }
+  return total;
+}
+function skillMaxRanks(id,sk){
+  if(!sk || !sk.is_spell_circle) return sk&&sk.max_ranks>0?sk.max_ranks:0;
+  const totalCap=char.spell_rank_cap||0;
+  return Math.max(0,totalCap-(totalDesiredSpellRanks()-desiredRanks(id)));
+}
+function nextCostText(id, sk, kind){
+  if(!sk) return '\u2014';
+  const base=kind==='ptp'?(sk.base_ptp||0):(sk.base_mtp||0);
+  if(!base) return '\u2014';
+  if(sk.is_spell_circle){
+    const totalCap=char.spell_rank_cap||0;
+    const totalRanks=totalDesiredSpellRanks();
+    if(totalCap>0 && totalRanks>=totalCap) return '\u2014';
+    return String(slotCost(base,sk.limit||1,char.level,totalRanks,totalRanks+1));
+  }
+  const cur=desiredRanks(id);
+  const maxRanks=skillMaxRanks(id,sk);
+  if(maxRanks>0 && cur>=maxRanks) return '\u2014';
+  return String(slotCost(base,sk.limit||1,char.level,cur,cur+1));
+}
+function refreshSpellCircleDisplays(){
+  for(const [id, sk] of Object.entries(char.skills||{})){
+    if(!sk || !sk.is_spell_circle) continue;
+    const cur=desiredRanks(id);
+    const maxRanks=skillMaxRanks(id,sk);
+    const inp=document.getElementById('inp-'+id);if(inp)inp.max=maxRanks>0?maxRanks:9999;
+    const cpEl=document.getElementById('cp-'+id);if(cpEl)cpEl.textContent=nextCostText(id,sk,'ptp');
+    const cmEl=document.getElementById('cm-'+id);if(cmEl)cmEl.textContent=nextCostText(id,sk,'mtp');
+    const capEl=document.getElementById('cap-'+id);if(capEl){const atCap=maxRanks>0&&cur>=maxRanks;capEl.textContent=cur+'/'+maxRanks;capEl.style.color=atCap?'var(--amber)':'var(--muted)';}
+  }
+}
 function tpDelta(){
   let p=0,m=0;
   for(const[s,v]of Object.entries(pending)){
-    const id=parseInt(s);const sk=char.skills[id];const lim=sk.limit||1;
+    const id=parseInt(s);const sk=char.skills[id];
+    if(sk&&sk.is_spell_circle) continue;
+    const lim=sk.limit||1;
     if(v>sk.ranks){p+=slotCost(sk.ptp,lim,char.level,sk.ranks,v);m+=slotCost(sk.mtp,lim,char.level,sk.ranks,v);}
     else{const d=sk.ranks-v;p-=sk.ptp*d;m-=sk.mtp*d;}
+  }
+  let oldSpell=0,newSpell=0,spellBaseP=0,spellBaseM=0,spellLimit=1;
+  for(const sk of Object.values(char.skills||{})){
+    if(!sk||!sk.is_spell_circle) continue;
+    oldSpell+=sk.ranks||0;
+    spellBaseP=sk.base_ptp||spellBaseP;
+    spellBaseM=sk.base_mtp||spellBaseM;
+    spellLimit=sk.limit||spellLimit;
+  }
+  newSpell=totalDesiredSpellRanks();
+  if(newSpell>oldSpell){
+    p+=slotCost(spellBaseP,spellLimit,char.level,oldSpell,newSpell);
+    m+=slotCost(spellBaseM,spellLimit,char.level,oldSpell,newSpell);
+  }else if(newSpell<oldSpell){
+    const d=oldSpell-newSpell;
+    p-=spellBaseP*d;
+    m-=spellBaseM*d;
   }
   return[p,m];
 }
@@ -1864,7 +1972,7 @@ function refreshTP(){
 }
 async function doSave(){
   const btn=document.getElementById('save-btn');btn.disabled=true;btn.innerHTML='<span class="spinner"></span>Saving...';
-  const skills={};for(const[s,sk]of Object.entries(char.skills)){const id=parseInt(s);skills[id]=pending[id]!==undefined?pending[id]:sk.ranks;}
+  const skills={};for(const[s,sk]of Object.entries(char.skills)){skills[s]=pending[s]!==undefined?pending[s]:sk.ranks;}
   try{
     const res=await fetch('/api/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:TOKEN,skills})});
     const result=await res.json();
@@ -1875,7 +1983,7 @@ async function doSave(){
     html+='Physical TPs: <strong style="color:var(--gold)">'+result.physical_tp+'</strong>&nbsp;&nbsp;Mental TPs: <strong style="color:var(--gold)">'+result.mental_tp+'</strong>';
     showSkillModal('Training Complete',html,false);
     char.physical_tp=result.physical_tp;char.mental_tp=result.mental_tp;
-    for(const[s,v]of Object.entries(pending)){const id=parseInt(s);char.skills[id].ranks=v;char.skills[id].bonus=bonus(v);}
+    for(const[s,v]of Object.entries(pending)){const id=parseInt(s);char.skills[id].ranks=v;char.skills[id].bonus=char.skills[id].show_bonus===false?0:bonus(v);}
     pending={};btn.textContent='Save Skills';
   }catch(e){showSkillModal('Error','<span style="color:var(--red)">Could not reach game server.</span>',true);btn.disabled=false;btn.textContent='Save Skills';}
 }

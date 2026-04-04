@@ -13,6 +13,7 @@
 
 local DB          = require("globals/utils/db")
 local ActiveBuffs = require("globals/magic/active_buffs")
+local SpellFx     = require("globals/magic/spell_formulas")
 
 local Pal = {}
 
@@ -108,6 +109,16 @@ end
 
 local handlers = {}
 
+local function holy_dmg(ctx, base, mult, opts)
+    opts = opts or {}
+    opts.base = base
+    opts.margin_mult = mult
+    opts.stat = opts.stat or "wisdom"
+    opts.skill = opts.skill or "spell_research"
+    opts.mana_control = opts.mana_control or "spirit"
+    return SpellFx.warding_damage(ctx, opts)
+end
+
 handlers[1601] = function(ctx) -- Mantle of Faith
     local ds_bonus = 10 + math.floor((ctx.circle_ranks or 1) / 5)
     ActiveBuffs.apply(tid(ctx), 1601, CIRCLE_ID, ctx.caster.id, dur(ctx), { ds=ds_bonus, td_spiritual=5 })
@@ -124,7 +135,7 @@ end
 
 handlers[1603] = function(ctx) -- Templar's Verdict
     if not ctx.result.hit then return end
-    local dmg = math.max(10, math.floor((ctx.result.total or 101) - 100) * 2)
+    local dmg = holy_dmg(ctx, 12, 1.45, { lore="religion", lore_scale=0.05 })
     if is_undead_or_evil(ctx) then dmg = math.floor(dmg * 1.5) end
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
@@ -156,7 +167,13 @@ handlers[1606] = function(ctx) -- Dauntless
 end
 
 handlers[1607] = function(ctx) -- Rejuvenation
-    local hp = 25 + (ctx.circle_ranks or 1) * 3
+    local hp = SpellFx.support_heal_amount(ctx, {
+        base = 14,
+        stat = "wisdom",
+        lore = "blessings",
+        mana_control = "spirit",
+        flat_bonus = 4,
+    })
     local new_hp = math.min(ctx.target.health_max or 999, (ctx.target.health_current or 0) + hp)
     DB.execute("UPDATE characters SET health_current=?, stamina_current=LEAST(stamina_max,stamina_current+20) WHERE id=?",
         { new_hp, tid(ctx) })
@@ -208,7 +225,7 @@ end
 handlers[1614] = function(ctx) -- Aura of the Arkati
     if not ctx.result.hit then return end
     local religion = (ctx.lore_ranks and ctx.lore_ranks.religion) or 0
-    local dmg = math.max(8, math.floor((ctx.result.total or 101) - 100))
+    local dmg = holy_dmg(ctx, 10, 1.05, { lore="religion", lore_scale=0.06 })
     if is_undead_or_evil(ctx) then dmg = math.floor(dmg * (1.75 + religion / 200)) end
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
@@ -218,7 +235,7 @@ end
 handlers[1615] = function(ctx) -- Repentance
     if not ctx.result.hit then return end
     local religion = (ctx.lore_ranks and ctx.lore_ranks.religion) or 0
-    local dmg = math.max(10, math.floor((ctx.result.total or 101) - 100))
+    local dmg = holy_dmg(ctx, 12, 1.10, { lore="religion", lore_scale=0.07, flat_bonus=2 })
     if is_undead_or_evil(ctx) then dmg = math.floor(dmg * (3 + religion / 150)) end
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
@@ -282,7 +299,7 @@ end
 
 handlers[1630] = function(ctx) -- Judgment
     if not ctx.result.hit then return end
-    local dmg = math.max(20, math.floor((ctx.result.total or 101) - 100) * 3)
+    local dmg = holy_dmg(ctx, 18, 1.80, { lore="religion", lore_scale=0.08, flat_bonus=6 })
     if is_undead_or_evil(ctx) then dmg = math.floor(dmg * 2) end
     local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })

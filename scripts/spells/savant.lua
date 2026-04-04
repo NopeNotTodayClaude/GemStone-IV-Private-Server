@@ -5,6 +5,7 @@
 
 local DB          = require("globals/utils/db")
 local ActiveBuffs = require("globals/magic/active_buffs")
+local SpellFx     = require("globals/magic/spell_formulas")
 
 local Sav = {}
 
@@ -69,8 +70,18 @@ handlers[1408] = function(ctx)
     if not ctx.result.hit or not ctx.target then
         return "The astral spear misses its mark."
     end
-    local dmg = math.max(9, math.floor(((ctx.result.total or 101) - 100) * 1.25))
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
+    local dmg = SpellFx.bolt_damage(ctx, {
+        base = 9,
+        min = 9,
+        margin_mult = 1.25,
+        stat = "avg_aura_wis",
+        mana_control = "mental",
+        level_scale = 0.30,
+        circle_scale = 0.40,
+        stat_scale = 0.28,
+        aiming_scale = 0.10,
+    })
+    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, ctx.target.id })
     return string.format("An astral spear punches through %s for %d damage!", ctx.target.name or "your target", dmg)
 end
@@ -86,9 +97,20 @@ handlers[1414] = function(ctx)
         return "The mana burst dissipates harmlessly."
     end
     local pulses = 2 + math.floor((ctx.circle_ranks or 1) / 20)
-    local per_pulse = math.max(4, math.floor(((ctx.result.total or 101) - 100) / 3))
+    local per_pulse = SpellFx.warding_damage(ctx, {
+        base = 4,
+        min = 4,
+        margin_mult = 0.35,
+        stat = "avg_aura_wis",
+        skill = "spell_research",
+        mana_control = "mental",
+        level_scale = 0.20,
+        circle_scale = 0.20,
+        stat_scale = 0.20,
+        skill_scale = 0.06,
+    })
     local total = pulses * per_pulse
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - total)
+    local new_hp = SpellFx.hp_after_damage(ctx.target, total)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, ctx.target.id })
     DB.execute("UPDATE characters SET mana_current=GREATEST(0, mana_current-?) WHERE id=?", { pulses, ctx.target.id })
     return string.format("A mana burst hammers %s with %d astral pulses for %d damage!", ctx.target.name or "your target", pulses, total)

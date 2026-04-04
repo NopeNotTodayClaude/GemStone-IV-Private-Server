@@ -41,6 +41,28 @@ ROOM_COMPLETION = 59099
 TUTORIAL_ROOM_MIN = 59000
 TUTORIAL_ROOM_MAX = 59099
 
+TUTORIAL_FLAG_COMMUNICATION = 1 << 0
+TUTORIAL_FLAG_INVENTORY = 1 << 1
+TUTORIAL_FLAG_STEALTH = 1 << 2
+TUTORIAL_FLAG_HEALING = 1 << 3
+TUTORIAL_FLAG_COMBAT = 1 << 4
+
+SCENARIO_ENTRY_CONFIG = {
+    ROOM_COMMUNICATION: (10, TUTORIAL_FLAG_COMMUNICATION, (10, 12)),
+    ROOM_INVENTORY_CAMP: (20, TUTORIAL_FLAG_INVENTORY, (20, 23)),
+    ROOM_STEALTH_ALLEY: (30, TUTORIAL_FLAG_STEALTH, (30, 31)),
+    ROOM_HEALING_VILLAGE: (40, TUTORIAL_FLAG_HEALING, (40, 44)),
+    ROOM_COMBAT_ENTRANCE: (50, TUTORIAL_FLAG_COMBAT, (50, 53)),
+}
+
+SCENARIO_COMPLETION_FLAGS = {
+    12: TUTORIAL_FLAG_COMMUNICATION,
+    23: TUTORIAL_FLAG_INVENTORY,
+    31: TUTORIAL_FLAG_STEALTH,
+    44: TUTORIAL_FLAG_HEALING,
+    53: TUTORIAL_FLAG_COMBAT,
+}
+
 
 def is_tutorial_room_id(room_id: int) -> bool:
     try:
@@ -417,18 +439,87 @@ class TutorialManager:
     def __init__(self, server):
         self.server = server
 
+    async def _ensure_combat_encounter(self, session):
+        """Recover tutorial combat mobs after relog/restart if the stage expects one."""
+        if session.tutorial_complete or not hasattr(self.server, "creatures"):
+            return
+
+        room_id = int(getattr(getattr(session, "current_room", None), "id", 0) or 0)
+        stage = int(getattr(session, "tutorial_stage", 0) or 0)
+        expected_template = None
+        expected_room = 0
+
+        if stage == 51:
+            expected_template = "tutorial_rat"
+            expected_room = ROOM_COMBAT_CAVE
+        elif stage == 52:
+            expected_template = "tutorial_troll"
+            expected_room = ROOM_COMBAT_DEEP
+
+        if not expected_template or room_id != expected_room:
+            return
+
+        try:
+            room_creatures = self.server.creatures.get_creatures_in_room(expected_room) or []
+            for creature in room_creatures:
+                if (
+                    getattr(creature, "alive", False)
+                    and getattr(creature, "template_id", "") == expected_template
+                ):
+                    return
+            await self._spawn_creature_in_room(expected_template, expected_room)
+        except Exception as e:
+            log.error("Error ensuring tutorial combat encounter for stage %s: %s", stage, e)
+
+    def _tutorial_flags(self, session) -> int:
+        flags = int(getattr(session, "tutorial_flags", 0) or 0)
+        stage = int(getattr(session, "tutorial_stage", 0) or 0)
+        inferred = 0
+        if stage == 12:
+            inferred |= TUTORIAL_FLAG_COMMUNICATION
+        if stage == 23:
+            inferred |= TUTORIAL_FLAG_INVENTORY
+        if stage == 31:
+            inferred |= TUTORIAL_FLAG_STEALTH
+        if stage == 44:
+            inferred |= TUTORIAL_FLAG_HEALING
+        if 53 <= stage < 99:
+            inferred |= TUTORIAL_FLAG_COMBAT
+        if inferred and (flags & inferred) != inferred:
+            flags |= inferred
+            session.tutorial_flags = flags
+        return flags
+
+    def _save_tutorial_progress(self, session):
+        if self.server.db and session.character_id:
+            self.server.db.save_quest_progress(
+                session.character_id,
+                int(getattr(session, "tutorial_stage", 0) or 0),
+                bool(getattr(session, "tutorial_complete", False)),
+                self._tutorial_flags(session),
+            )
+
+    def _set_tutorial_state(self, session, stage, *, add_flags=0, tutorial_complete=None):
+        session.tutorial_stage = int(stage)
+        if add_flags:
+            session.tutorial_flags = self._tutorial_flags(session) | int(add_flags)
+        else:
+            session.tutorial_flags = self._tutorial_flags(session)
+        if tutorial_complete is not None:
+            session.tutorial_complete = bool(tutorial_complete)
+        self._save_tutorial_progress(session)
+
     async def start_tutorial(self, session):
         """Begin the tutorial for a new character."""
         session.state = "playing"
         session.tutorial_stage = STAGE_WAITING_ACCEPT
+        session.tutorial_flags = 0
         session.tutorial_complete = False
         session.tutorial_pester_count = 0
 
         # Save initial tutorial state to DB
         if self.server.db and session.character_id:
-            self.server.db.save_quest_progress(
-                session.character_id, STAGE_WAITING_ACCEPT, False
-            )
+            self._save_tutorial_progress(session)
             self.server.db.save_character_room(session.character_id, ROOM_ARRIVAL)
 
         # Place in tutorial arrival room
@@ -480,6 +571,8 @@ class TutorialManager:
         room_id = session.current_room.id if session.current_room else ROOM_ARRIVAL
         stage = session.tutorial_stage
 
+        await self._ensure_combat_encounter(session)
+
         # Re-display dialogue for current stage
         if stage == STAGE_WAITING_ACCEPT:
             await self._play_teaser(session)
@@ -507,6 +600,9 @@ class TutorialManager:
             return
 
         stage = session.tutorial_stage
+        flags = self._tutorial_flags(session)
+
+        await self._ensure_combat_encounter(session)
 
         # Still waiting for ACCEPT -- pester every 3 moves
         if stage == STAGE_WAITING_ACCEPT:
@@ -547,28 +643,17 @@ class TutorialManager:
 
         # Scenario entry rooms fire whenever stage >= 2 but < scenario base stage.
         # This handles any order of scenario completion.
-        scenario_entry = {
-            ROOM_COMMUNICATION: 10,
-            ROOM_INVENTORY_CAMP: 20,
-            ROOM_STEALTH_ALLEY: 30,
-            ROOM_HEALING_VILLAGE: 40,
-            ROOM_COMBAT_ENTRANCE: 50,
-        }
-
         new_stage = None
-        if room_id in scenario_entry:
-            target_stage = scenario_entry[room_id]
-            if stage >= 2 and stage < target_stage:
+        add_flags = 0
+        if room_id in SCENARIO_ENTRY_CONFIG:
+            target_stage, completion_flag, active_range = SCENARIO_ENTRY_CONFIG[room_id]
+            if stage >= 2 and not (active_range[0] <= stage <= active_range[1]) and not (flags & completion_flag):
                 new_stage = target_stage
         if new_stage is None:
             new_stage = linear_transitions.get((room_id, stage))
         if new_stage is not None:
-            session.tutorial_stage = new_stage
-            # Save to DB immediately
-            if self.server.db and session.character_id:
-                self.server.db.save_quest_progress(
-                    session.character_id, new_stage, False
-                )
+            add_flags = SCENARIO_COMPLETION_FLAGS.get(new_stage, 0)
+            self._set_tutorial_state(session, new_stage, add_flags=add_flags)
 
             # Spawn creatures at appropriate stages
             if new_stage == 51 and room_id == ROOM_COMBAT_CAVE:
@@ -616,9 +701,8 @@ class TutorialManager:
         self.server.world.add_player_to_room(session, ROOM_COMPLETION)
 
         # Advance stage to completion
-        session.tutorial_stage = 90
+        self._set_tutorial_state(session, 90)
         if self.server.db and session.character_id:
-            self.server.db.save_quest_progress(session.character_id, 90, False)
             self.server.db.save_character_room(session.character_id, ROOM_COMPLETION)
 
         # Show room and dialogue
@@ -636,9 +720,7 @@ class TutorialManager:
 
         if stage == 51 and room_id == ROOM_COMBAT_CAVE:
             # Rat killed - advance to deep cave
-            session.tutorial_stage = 52
-            if self.server.db and session.character_id:
-                self.server.db.save_quest_progress(session.character_id, 52, False)
+            self._set_tutorial_state(session, 52)
 
             await session.send_line("")
             await session.send_line(_sprite_line('Ridijy cheers.  "Nice work!  But I hear something bigger deeper in the cave... head NORTH if you dare!"'))
@@ -646,9 +728,7 @@ class TutorialManager:
 
         elif stage == 52 and room_id == ROOM_COMBAT_DEEP:
             # Troll killed - combat complete
-            session.tutorial_stage = 53
-            if self.server.db and session.character_id:
-                self.server.db.save_quest_progress(session.character_id, 53, False)
+            self._set_tutorial_state(session, 53, add_flags=TUTORIAL_FLAG_COMBAT)
 
             await self._play_dialogue(session, room_id, 53)
 
@@ -664,10 +744,9 @@ class TutorialManager:
 
         # ACCEPT -- begin tutorial proper
         if command == "accept" and stage == STAGE_WAITING_ACCEPT:
-            session.tutorial_stage = 0
+            session.tutorial_flags = 0
+            self._set_tutorial_state(session, 0)
             session.tutorial_pester_count = 0
-            if self.server.db and session.character_id:
-                self.server.db.save_quest_progress(session.character_id, 0, False)
             await session.send_line("")
             await session.send_line(_sprite_line('Ridijy beams.  "Wonderful!  Let\'s get started!"'))
             await session.send_line("")
@@ -679,10 +758,9 @@ class TutorialManager:
             if stage == STAGE_WAITING_ACCEPT:
                 # Treat as implicit ACCEPT
                 await session.send_line(_sprite_line('Ridijy grins.  "I\'ll take that as a yes!  Let\'s go!"'))
-                session.tutorial_stage = 0
+                session.tutorial_flags = 0
+                self._set_tutorial_state(session, 0)
                 session.tutorial_pester_count = 0
-                if self.server.db and session.character_id:
-                    self.server.db.save_quest_progress(session.character_id, 0, False)
                 await self._play_dialogue(session, room_id, 0)
             elif room_id == ROOM_CROSSROADS:
                 await self._play_dialogue(session, ROOM_CROSSROADS, 2)
@@ -697,21 +775,13 @@ class TutorialManager:
 
         # Scenario 1: Communication
         if stage == 10 and command in ("say", "ask"):
-            session.tutorial_stage = 11
-            if self.server.db and session.character_id:
-                self.server.db.save_quest_progress(
-                    session.character_id, session.tutorial_stage, False
-                )
+            self._set_tutorial_state(session, 11)
             await self._play_dialogue(session, room_id, 11)
             return False
 
         if stage == 11 and command == "search":
-            session.tutorial_stage = 12
+            self._set_tutorial_state(session, 12, add_flags=TUTORIAL_FLAG_COMMUNICATION)
             session.silver += 10
-            if self.server.db and session.character_id:
-                self.server.db.save_quest_progress(
-                    session.character_id, session.tutorial_stage, False
-                )
             await self._play_dialogue(session, room_id, 12)
             return False
 
@@ -730,11 +800,7 @@ class TutorialManager:
             else:
                 await session.send_line("You need a free hand to pick up the weathered iron sword.")
                 return True
-            session.tutorial_stage = 22
-            if self.server.db and session.character_id:
-                self.server.db.save_quest_progress(
-                    session.character_id, session.tutorial_stage, False
-                )
+            self._set_tutorial_state(session, 22)
             await session.send_line("You pick up a weathered iron sword.")
             await self._play_dialogue(session, ROOM_INVENTORY_CAMP, 22)
             return True
@@ -743,12 +809,8 @@ class TutorialManager:
             if not _remove_tutorial_sword(session):
                 await session.send_line("You are not holding the weathered iron sword.")
                 return True
-            session.tutorial_stage = 23
+            self._set_tutorial_state(session, 23, add_flags=TUTORIAL_FLAG_INVENTORY)
             session.silver += 25
-            if self.server.db and session.character_id:
-                self.server.db.save_quest_progress(
-                    session.character_id, session.tutorial_stage, False
-                )
             await self._play_dialogue(session, ROOM_INVENTORY_CAMP, 23)
             return True
 
@@ -770,20 +832,12 @@ class TutorialManager:
             elif hasattr(session, "inventory"):
                 herb["slot"] = None
                 session.inventory.append(herb)
-            session.tutorial_stage = 42
-            if self.server.db and session.character_id:
-                self.server.db.save_quest_progress(
-                    session.character_id, session.tutorial_stage, False
-                )
+            self._set_tutorial_state(session, 42)
             await self._play_dialogue(session, room_id, 42)
             return True
 
         if stage == 43 and command == "tend":
-            session.tutorial_stage = 44
-            if self.server.db and session.character_id:
-                self.server.db.save_quest_progress(
-                    session.character_id, session.tutorial_stage, False
-                )
+            self._set_tutorial_state(session, 44, add_flags=TUTORIAL_FLAG_HEALING)
             await self._play_dialogue(session, room_id, 44)
             return True
 
@@ -804,15 +858,9 @@ class TutorialManager:
 
     async def _skip_to_town(self, session):
         """Transport player from tutorial to their selected starter town."""
-        session.tutorial_complete = True
-        session.tutorial_stage = 99
+        self._set_tutorial_state(session, 99, tutorial_complete=True)
 
         # Save completion to DB immediately
-        if self.server.db and session.character_id:
-            self.server.db.save_quest_progress(
-                session.character_id, 99, True
-            )
-
         start_room_id = int(
             getattr(session, "starting_room_id", 0)
             or getattr(session, "home_room_id", 0)

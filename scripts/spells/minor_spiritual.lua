@@ -14,6 +14,7 @@
 
 local DB         = require("globals/utils/db")
 local ActiveBuffs = require("globals/magic/active_buffs")
+local SpellFx    = require("globals/magic/spell_formulas")
 
 local MnS = {}
 
@@ -237,8 +238,20 @@ end
 handlers[111] = function(ctx)
     if not ctx.result.hit then return end
     local tid = target_id(ctx)
-    local dmg = math.max(1, math.floor((ctx.result.total or 101) - 100))
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
+    local dmg = SpellFx.bolt_damage(ctx, {
+        base = 6,
+        min = 6,
+        margin_mult = 1.0,
+        lore = "summoning",
+        stat = "wisdom",
+        mana_control = "spirit",
+        level_scale = 0.28,
+        circle_scale = 0.35,
+        stat_scale = 0.28,
+        aiming_scale = 0.10,
+        lore_scale = 0.05,
+    })
+    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid })
     return string.format(
         "A spirit of fire streaks toward %s and scorches them for %d damage!",
@@ -344,8 +357,20 @@ end
 -- 125: Call Lightning — bolt (lightning); impact via bolt_resolver
 handlers[125] = function(ctx)
     if not ctx.result.hit then return end
-    local dmg    = math.max(1, math.floor((ctx.result.total or 101) - 100))
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
+    local dmg    = SpellFx.bolt_damage(ctx, {
+        base = 12,
+        min = 12,
+        margin_mult = 1.15,
+        lore = "summoning",
+        stat = "wisdom",
+        mana_control = "spirit",
+        level_scale = 0.30,
+        circle_scale = 0.40,
+        stat_scale = 0.30,
+        aiming_scale = 0.10,
+        lore_scale = 0.06,
+    })
+    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?",
         { new_hp, target_id(ctx) })
     return string.format(
@@ -370,8 +395,20 @@ end
 -- 135: Searing Light — bolt (fire)
 handlers[135] = function(ctx)
     if not ctx.result.hit then return end
-    local dmg    = math.max(1, math.floor((ctx.result.total or 101) - 100))
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
+    local dmg    = SpellFx.bolt_damage(ctx, {
+        base = 18,
+        min = 18,
+        margin_mult = 1.20,
+        lore = "summoning",
+        stat = "wisdom",
+        mana_control = "spirit",
+        level_scale = 0.32,
+        circle_scale = 0.42,
+        stat_scale = 0.30,
+        aiming_scale = 0.10,
+        lore_scale = 0.06,
+    })
+    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?",
         { new_hp, target_id(ctx) })
     return string.format(

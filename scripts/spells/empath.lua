@@ -13,6 +13,7 @@
 
 local DB          = require("globals/utils/db")
 local ActiveBuffs = require("globals/magic/active_buffs")
+local SpellFx     = require("globals/magic/spell_formulas")
 
 local Emp = {}
 
@@ -20,7 +21,7 @@ local CIRCLE_ID  = 10
 local LUA_SCRIPT = "spells/empath"
 
 local SPELLS = {
-    [1101] = { name="Harm/Heal",          mnemonic="HEAL",            spell_type="healing", mana_cost=4,
+    [1101] = { name="Harm/Heal",          mnemonic="HEAL",            spell_type="healing", mana_cost=3,
                description="Dual-purpose spell. CAST = Harm (attack on hostile). CHANNEL = Heal (restore HP)." },
     [1102] = { name="Limb Repair",        mnemonic="LIMBREPAIR",      spell_type="healing", mana_cost=6,
                description="Heals limb wounds. Heals more serious wounds after 7 ranks." },
@@ -93,10 +94,48 @@ local function dur(ctx, ov) return ov or (60 * math.max(1, ctx.circle_ranks or 1
 
 -- Healing rank thresholds (each healing spell adds +5 more healing per tier)
 local function heal_amount(ctx, base_ranks)
-    local ranks  = ctx.circle_ranks or 1
-    local tier   = math.floor(math.max(0, ranks - base_ranks) / 5)
-    local base   = 20 + tier * 15
-    return base
+    local ranks = ctx.circle_ranks or 1
+    local bonus_base = 8 + math.max(0, ranks - base_ranks)
+    return SpellFx.empath_heal_amount(ctx, {
+        base = bonus_base,
+        level_scale = 0.55,
+        circle_scale = 0.80,
+        first_aid_scale = 0.24,
+        first_aid_rank_scale = 0.18,
+        wisdom_scale = 0.40,
+        intuition_scale = 0.25,
+        transference_scale = 0.06,
+        manipulation_scale = 0.05,
+        min = 8,
+    })
+end
+
+local function heal_target(ctx, amount, summary)
+    local new_hp, max_hp = SpellFx.heal_summary(ctx.target, amount)
+    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    if summary then
+        return string.format("%s (%d/%d HP)", summary, new_hp, max_hp)
+    end
+    return string.format("%s is restored to %d/%d health.", tname(ctx), new_hp, max_hp)
+end
+
+local function empath_harm_damage(ctx, base, margin_mult, opts)
+    opts = opts or {}
+    return SpellFx.warding_damage(ctx, {
+        base = base,
+        min = opts.min or base,
+        margin_mult = margin_mult or 1.0,
+        stat = "wisdom",
+        skill = "spell_research",
+        lore = opts.lore,
+        mana_control = "spirit",
+        level_scale = opts.level_scale or 0.40,
+        circle_scale = opts.circle_scale or 0.50,
+        stat_scale = opts.stat_scale or 0.40,
+        skill_scale = opts.skill_scale or 0.10,
+        lore_scale = opts.lore_scale or 0.05,
+        flat_bonus = opts.flat_bonus or 0,
+    })
 end
 
 local handlers = {}
@@ -104,17 +143,20 @@ local handlers = {}
 handlers[1101] = function(ctx) -- Harm/Heal
     local verb = ctx.verb or "cast"
     if verb == "channel" then
-        -- Heal mode
         local hp = heal_amount(ctx, 1)
-        local new_hp = math.min(ctx.target.health_max or 999,
-            (ctx.target.health_current or 0) + hp)
-        DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
-        return string.format("Empathic healing flows into %s, restoring %d health.", tname(ctx), hp)
+        return heal_target(
+            ctx,
+            hp,
+            string.format("Empathic healing flows into %s, restoring %d health.", tname(ctx), hp)
+        )
     else
-        -- Harm mode (warding attack)
         if not ctx.result.hit then return end
-        local dmg = math.max(5, math.floor((ctx.result.total or 101) - 100))
-        local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
+        local dmg = empath_harm_damage(ctx, 7, 1.00, {
+            lore = "manipulation",
+            flat_bonus = math.floor((ctx.circle_ranks or 1) / 3),
+            min = 7,
+        })
+        local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
         DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
         return string.format("Empathic harm sears through %s for %d damage!", tname(ctx), dmg)
     end
@@ -123,10 +165,7 @@ end
 local function make_healer(ranks, wtype)
     return function(ctx)
         local hp = heal_amount(ctx, ranks)
-        local new_hp = math.min(ctx.target.health_max or 999,
-            (ctx.target.health_current or 0) + hp)
-        DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
-        return string.format("Empathic %s repair restores %d health to %s.", wtype, hp, tname(ctx))
+        return heal_target(ctx, hp, string.format("Empathic %s repair restores %d health to %s.", wtype, hp, tname(ctx)))
     end
 end
 
@@ -141,8 +180,8 @@ handlers[1114] = function(ctx) return make_healer(14, "organ scar")(ctx) end
 
 handlers[1106] = function(ctx) -- Bone Shatter
     if not ctx.result.hit then return end
-    local dmg = math.max(10, math.floor((ctx.result.total or 101) - 100) * 2)
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
+    local dmg = empath_harm_damage(ctx, 10, 1.60, { lore = "manipulation", min = 10 })
+    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
     local limbs = {"right_arm","left_arm","right_leg","left_leg"}
     ActiveBuffs.apply(tid(ctx), 1106, CIRCLE_ID, ctx.caster.id, 15,
@@ -171,8 +210,8 @@ end
 
 handlers[1110] = function(ctx) -- Empathic Assault
     if not ctx.result.hit then return end
-    local dmg = math.max(5, math.floor((ctx.result.total or 101) - 100))
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
+    local dmg = empath_harm_damage(ctx, 6, 1.10, { lore = "telepathy", min = 6 })
+    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
     DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
     return string.format("Empathic force assaults %s for %d damage!", tname(ctx), dmg)
 end
@@ -185,10 +224,19 @@ handlers[1115] = function(ctx) -- Wither
 end
 
 handlers[1116] = function(ctx) -- Rapid Healing
-    local hp = 30 + (ctx.circle_ranks or 1) * 3
-    local new_hp = math.min(ctx.target.health_max or 999, (ctx.target.health_current or 0) + hp)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
-    return string.format("Rapid healing floods through %s, restoring %d health!", tname(ctx), hp)
+    local hp = SpellFx.empath_heal_amount(ctx, {
+        base = 18,
+        level_scale = 0.75,
+        circle_scale = 1.00,
+        first_aid_scale = 0.30,
+        first_aid_rank_scale = 0.20,
+        wisdom_scale = 0.45,
+        intuition_scale = 0.25,
+        transference_scale = 0.08,
+        manipulation_scale = 0.06,
+        min = 18,
+    })
+    return heal_target(ctx, hp, string.format("Rapid healing floods through %s, restoring %d health!", tname(ctx), hp))
 end
 
 handlers[1117] = function(ctx) -- Empathic Link
@@ -241,10 +289,19 @@ handlers[1135] = function(ctx) -- Bloodsmith
 end
 
 handlers[1140] = function(ctx) -- Solace
-    local hp = 50 + (ctx.circle_ranks or 1) * 2
-    local new_hp = math.min(ctx.target.health_max or 999, (ctx.target.health_current or 0) + hp)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
-    return string.format("Deep solace washes over %s, restoring %d health.", tname(ctx), hp)
+    local hp = SpellFx.empath_heal_amount(ctx, {
+        base = 32,
+        level_scale = 0.85,
+        circle_scale = 1.10,
+        first_aid_scale = 0.32,
+        first_aid_rank_scale = 0.22,
+        wisdom_scale = 0.45,
+        intuition_scale = 0.30,
+        transference_scale = 0.10,
+        manipulation_scale = 0.07,
+        min = 32,
+    })
+    return heal_target(ctx, hp, string.format("Deep solace washes over %s, restoring %d health.", tname(ctx), hp))
 end
 
 handlers[1150] = function(ctx) -- Regeneration

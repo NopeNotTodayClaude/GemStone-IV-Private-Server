@@ -863,6 +863,10 @@ async def handle_cman_command(session, cmd: str, args: str, server):
     if not mnemonic:
         await session.send_line("That is not a known combat maneuver.")
         return
+    status = getattr(server, "status", None)
+    if status and status.has(session, "revival_shroud"):
+        await session.send_line("You are still wrapped in revival starlight and cannot use combat maneuvers yet.")
+        return
     await execute_combat_maneuver(session, mnemonic, raw_args, server, meta=meta)
 
 

@@ -62,6 +62,7 @@ from server.core.commands.player.foraging import cmd_forage, cmd_track
 from server.core.commands.player.crafting import cmd_artisan, cmd_fletching, cmd_cobbling, cmd_cut, cmd_measure
 from server.core.commands.player.guild import cmd_gld, cmd_questlog, cmd_questslog, cmd_answer, cmd_bounty
 from server.core.commands.player.pets import cmd_pet, cmd_touch_companion, cmd_kick_companion
+from server.core.commands.player.spell_summons import cmd_dismiss, cmd_turn, cmd_recover
 from server.core.commands.player.justice import cmd_justice, cmd_inquire, cmd_accuse, cmd_justice_service
 
 log = logging.getLogger(__name__)
@@ -208,8 +209,11 @@ class CommandRouter:
         self.register("send", cmd_send)
         self.register("read", cmd_read)
         self.register("raise", cmd_raise)
+        self.register("dismiss", cmd_dismiss)
         self.register("gaze", cmd_gaze)
         self.register("invoke", cmd_invoke)
+        self.register("turn", cmd_turn)
+        self.register("recover", cmd_recover)
         self.register("forage", cmd_forage)
         self.register("track", cmd_track)
         self.register("artisan", cmd_artisan)

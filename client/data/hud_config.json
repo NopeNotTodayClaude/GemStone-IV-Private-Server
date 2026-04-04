@@ -1,5 +1,5 @@
 {
-  "geometry": "2104x1119+345+30",
+  "geometry": "2104x1119+506+30",
   "font_size": 14,
   "font_family": "Georgia",
   "panel_font_size": 13,
@@ -48,10 +48,10 @@
   "input_mode": "command",
   "comm_input_mode": "chat",
   "auto_login": {
-    "enabled": false,
-    "username": "admin",
-    "password": "admin",
-    "char_slot": 1
+    "enabled": true,
+    "username": "Laernu",
+    "password": "Gateway2",
+    "char_slot": 2
   },
   "audio": {
     "music_enabled": true,

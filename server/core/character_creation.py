@@ -168,6 +168,9 @@ class CharacterCreator:
     def _get_prime_requisites(self):
         return _require_lua_data(self.server, "get_professions", "prime_requisites")
 
+    def _get_starter_spells(self):
+        return _require_lua_data(self.server, "get_starter_spells", "kits")
+
     async def handle_input(self, session, raw_input):
         step = session.state
         if step == "create_name":
@@ -547,28 +550,27 @@ class CharacterCreator:
         await self._set_stat(session, stat_idx, new_val)
 
     def _get_suggested_stats(self, prof_id, primes):
-        """Generate a sensible default stat spread that totals exactly 660."""
-        # Priority-based allocation
-        # Start everyone at minimums (primes at 30, rest at 20) = 200 + 20 = 220
-        # Remaining: 660 - 220 = 440 to distribute
-        stats = [STAT_MIN] * NUM_STATS
-        stats[primes[0]] = PRIME_MIN
-        stats[primes[1]] = PRIME_MIN
+        """Load the Lua-sourced suggested stat build for a profession."""
+        appearance = _load_appearance_data(self.server)
+        suggested = (appearance or {}).get("suggested_stats", {}).get(prof_id)
+        if not suggested or len(suggested) != NUM_STATS:
+            raise RuntimeError(
+                f"_get_suggested_stats: appearance.lua returned no valid suggested stats for profession {prof_id}."
+            )
 
-        # Profession-specific suggested allocations (all total 660)
-        suggestions = {
-            1:  [90, 85, 65, 65, 70, 40, 40, 55, 40, 70],  # Warrior
-            2:  [60, 50, 92, 90, 68, 45, 50, 80, 40, 45],  # Rogue
-            3:  [40, 50, 50, 60, 70, 95, 90, 55, 55, 55],  # Wizard
-            4:  [50, 60, 50, 55, 60, 55, 55, 80, 92, 63],  # Cleric
-            5:  [40, 60, 50, 55, 65, 55, 50, 60, 90, 95],  # Empath
-            6:  [40, 50, 50, 55, 65, 95, 90, 55, 80, 40],  # Sorcerer
-            7:  [65, 55, 90, 65, 65, 50, 45, 85, 55, 40],  # Ranger
-            8:  [50, 50, 60, 60, 55, 70, 50, 60, 50, 95],  # Bard
-            9:  [90, 80, 55, 60, 65, 50, 40, 50, 90, 40],  # Paladin
-            10: [80, 65, 60, 90, 85, 50, 55, 60, 40, 35],  # Monk
-        }
-        return list(suggestions.get(prof_id, stats))
+        stats = [int(v) for v in suggested]
+        if sum(stats) != TOTAL_STAT_POINTS:
+            raise RuntimeError(
+                f"_get_suggested_stats: suggested stats for profession {prof_id} total {sum(stats)}, expected {TOTAL_STAT_POINTS}."
+            )
+
+        for idx, value in enumerate(stats):
+            min_val = PRIME_MIN if idx in primes else STAT_MIN
+            if value < min_val or value > STAT_MAX or (value % 5) != 0:
+                raise RuntimeError(
+                    f"_get_suggested_stats: invalid suggested stat value {value} at index {idx} for profession {prof_id}."
+                )
+        return stats
 
     # --- Appearance steps ---
     def _get_hair_colors(self, session):
@@ -976,12 +978,16 @@ class CharacterCreator:
         session.health_current = char_data["health_max"]
         session.mana_max = char_data["mana_max"]
         session.mana_current = char_data["mana_max"]
+        session.spell_ranks = {}
+        session.spellbook = []
 
         # ============================================================
         # STARTER GEAR - Give new character their starting equipment
         # ============================================================
         if char_id and self.server.db:
             prof_id = d["profession_id"]
+            starter_spells = self._get_starter_spells().get(prof_id, {})
+            starter_spell_ranks = starter_spells.get("ranks", {})
 
             # ── Starter gear is defined exclusively in scripts/data/starter_gear.lua ──
             lua_gear    = _require_lua_data(self.server, "get_starter_gear")
@@ -989,6 +995,9 @@ class CharacterCreator:
             starting_silver = lua_gear.get("starting_silver", {}).get(prof_id, 500)
             log.info("starter_gear: loaded Lua kit for prof %d (%s)",
                      prof_id, gear_config.get("description", "?") if gear_config else "none")
+            if starter_spells:
+                log.info("starter_spells: loaded Lua kit for prof %d (%s)",
+                         prof_id, starter_spells.get("description", "?"))
 
             # Starting silver
             session.silver = starting_silver
@@ -997,6 +1006,11 @@ class CharacterCreator:
                 char_data["health_max"], char_data["mana_max"],
                 10, 100, starting_silver
             )
+
+            if starter_spell_ranks:
+                self.server.db.save_character_spell_ranks(char_id, starter_spell_ranks)
+                session.spell_ranks = self.server.db.load_character_spell_ranks(char_id) or {}
+                session.spellbook = self.server.db.load_character_spellbook(char_id) or []
 
             # Add items to inventory
             # Add items to inventory with proper slots
