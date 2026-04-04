@@ -14,6 +14,16 @@ import time
 
 log = logging.getLogger(__name__)
 
+_WEAPON_CATEGORIES = {
+    "edged",
+    "blunt",
+    "twohanded",
+    "polearm",
+    "ranged",
+    "thrown",
+    "brawling",
+}
+
 
 def _json_safe_snapshot(value):
     """Normalize common DB/python values before storing item snapshots as JSON."""
@@ -24,6 +34,18 @@ def _json_safe_snapshot(value):
     if isinstance(value, (list, tuple, set)):
         return [_json_safe_snapshot(v) for v in value]
     return value
+
+
+def _normalize_loaded_item_fields(item):
+    """Repair generic item field drift before runtime combat/inventory use."""
+    if not isinstance(item, dict):
+        return item
+    if str(item.get("item_type") or "").strip().lower() == "weapon":
+        weapon_category = str(item.get("weapon_category") or "").strip().lower()
+        weapon_type = str(item.get("weapon_type") or "").strip().lower()
+        if not weapon_category and weapon_type in _WEAPON_CATEGORIES:
+            item["weapon_category"] = weapon_type
+    return item
 
 
 class Database:
@@ -1884,6 +1906,7 @@ class Database:
                        i.lockpick_modifier,
                        i.worn_location, i.description, i.examine_text, i.lore_text,
                        i.material, i.color,
+                       COALESCE(ci.flare_type_override, i.flare_type) AS flare_type,
                        i.herb_heal_type, i.herb_heal_amount, i.base_name,
                        i.heal_type, i.heal_rank, i.heal_amount, i.herb_roundtime
                 FROM character_inventory ci
@@ -1898,45 +1921,65 @@ class Database:
             import json as _json
             for row in rows:
                 extra = row.pop("extra_data", None)
-                if not extra:
-                    continue
-                try:
-                    parsed = _json.loads(extra) if isinstance(extra, str) else extra
-                    if not isinstance(parsed, dict):
-                        continue
-                    row.update(parsed)
+                if extra:
+                    try:
+                        parsed = _json.loads(extra) if isinstance(extra, str) else extra
+                        if isinstance(parsed, dict):
+                            row.update(parsed)
 
-                    # ── Restore customized display name ───────────────────
-                    # custom_name holds the fully-built name string saved at
-                    # delivery time (e.g. "an invar silvery falchion").
-                    if parsed.get("custom_name"):
-                        row["name"] = parsed["custom_name"]
-                        # Rebuild short_name: strip leading article
-                        cn = parsed["custom_name"]
-                        words = cn.split(" ", 1)
-                        if len(words) == 2 and words[0].lower() in ("a", "an", "the"):
-                            row["short_name"] = words[1]
-                        else:
-                            row["short_name"] = cn
+                            # ── Restore customized display name ───────────────────
+                            # custom_name holds the fully-built name string saved at
+                            # delivery time (e.g. "an invar silvery falchion").
+                            if parsed.get("custom_name"):
+                                row["name"] = parsed["custom_name"]
+                                # Rebuild short_name: strip leading article
+                                cn = parsed["custom_name"]
+                                words = cn.split(" ", 1)
+                                if len(words) == 2 and words[0].lower() in ("a", "an", "the"):
+                                    row["short_name"] = words[1]
+                                else:
+                                    row["short_name"] = cn
 
-                    # ── Restore material-based stat overrides ─────────────
-                    # enchant_bonus, attack_bonus, defense_bonus may have been
-                    # raised by the chosen material.  extra_data values win
-                    # over whatever the base items table row says.
-                    for stat in ("enchant_bonus", "attack_bonus", "defense_bonus"):
-                        if stat in parsed:
-                            row[stat] = parsed[stat]
+                            # ── Restore material-based stat overrides ─────────────
+                            # enchant_bonus, attack_bonus, defense_bonus may have been
+                            # raised by the chosen material.  extra_data values win
+                            # over whatever the base items table row says.
+                            for stat in ("enchant_bonus", "attack_bonus", "defense_bonus"):
+                                if stat in parsed:
+                                    row[stat] = parsed[stat]
 
-                    # ── Restore material display field ────────────────────
-                    if parsed.get("material"):
-                        row["material"] = parsed["material"]
+                            # ── Restore material display field ────────────────────
+                            if parsed.get("material"):
+                                row["material"] = parsed["material"]
 
-                    # ── Restore color field ───────────────────────────────
-                    if parsed.get("color"):
-                        row["color"] = parsed["color"]
+                            # ── Restore color field ───────────────────────────────
+                            if parsed.get("color"):
+                                row["color"] = parsed["color"]
 
-                except Exception:
-                    pass
+                            # ── Restore flare_type from extra_data ────────────────
+                            if parsed.get("flare_type"):
+                                row["flare_type"] = parsed["flare_type"]
+
+                    except Exception:
+                        pass
+
+                # ── Resolve flare_type from material if still unset ───────────────────────
+                # extra_data (shop ORDER customization) stores the material name but not
+                # always the matching flare_type.  Resolve it here so flare_system.lua
+                # always receives a populated flare_type field when the material warrants it.
+                _MATERIAL_FLARE_TYPES = {
+                    "gornar":  "vibration",
+                    "rhimar":  "cold",
+                    "zorchar": "lightning",
+                    "drakar":  "fire",
+                }
+                if not row.get("flare_type"):
+                    mat_key = (row.get("material") or "").lower()
+                    resolved = _MATERIAL_FLARE_TYPES.get(mat_key)
+                    if resolved:
+                        row["flare_type"] = resolved
+
+                _normalize_loaded_item_fields(row)
             return rows
         finally:
             conn.close()

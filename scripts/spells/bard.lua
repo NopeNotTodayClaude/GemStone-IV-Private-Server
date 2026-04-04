@@ -123,8 +123,7 @@ end
 handlers[1002] = function(ctx) -- Vibration Chant bolt
     if not ctx.result.hit then return end
     local dmg = sonic_bolt(ctx, 8, 0.95, { lore="manipulation", lore_scale=0.05, stat="avg_aura_int" })
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format("Shattering vibrations rip through %s for %d damage!", tname(ctx), dmg)
 end
 
@@ -285,8 +284,7 @@ end
 handlers[1030] = function(ctx) -- Song of Sonic Disruption bolt
     if not ctx.result.hit then return end
     local dmg = sonic_bolt(ctx, 18, 1.55, { lore="manipulation", lore_scale=0.06, stat="avg_aura_int", flat_bonus=4 })
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format("A devastating sonic disruption TEARS through %s for %d damage!", tname(ctx), dmg)
 end
 

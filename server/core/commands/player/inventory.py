@@ -909,6 +909,20 @@ def auto_stow_item(session, server, item_dict, *, allow_hands=True, allow_specia
     )
     if best_cont:
         item_id = item_dict.get('item_id') or item_dict.get('id')
+        # Dynamically-generated items (wands, fallback gems/herbs) may have no DB
+        # record yet.  Resolve one now so add_item_to_inventory can proceed.
+        # This mirrors the get_or_create_item pattern used in cmd_loot.
+        if not item_id and server.db:
+            item_id = server.db.get_or_create_item(
+                name=item_dict.get('name', 'something'),
+                short_name=(item_dict.get('short_name') or item_dict.get('name') or 'something'),
+                noun=item_dict.get('noun', 'item'),
+                item_type=item_dict.get('item_type', 'misc'),
+                value=int(item_dict.get('value', 0) or 0),
+                description=item_dict.get('description', ''),
+            )
+            if item_id:
+                item_dict['item_id'] = item_id
         quantity = max(1, int(item_dict.get('quantity', 1) or 1))
         max_stack = item_dict.get('max_stack')
         if server.db and session.character_id and item_id:
@@ -940,6 +954,17 @@ def auto_stow_item(session, server, item_dict, *, allow_hands=True, allow_specia
     # Try hands
     if not session.right_hand:
         item_id = item_dict.get('item_id') or item_dict.get('id')
+        if not item_id and server.db:
+            item_id = server.db.get_or_create_item(
+                name=item_dict.get('name', 'something'),
+                short_name=(item_dict.get('short_name') or item_dict.get('name') or 'something'),
+                noun=item_dict.get('noun', 'item'),
+                item_type=item_dict.get('item_type', 'misc'),
+                value=int(item_dict.get('value', 0) or 0),
+                description=item_dict.get('description', ''),
+            )
+            if item_id:
+                item_dict['item_id'] = item_id
         quantity = max(1, int(item_dict.get('quantity', 1) or 1))
         max_stack = item_dict.get('max_stack')
         if server.db and session.character_id and item_id:
@@ -968,6 +993,17 @@ def auto_stow_item(session, server, item_dict, *, allow_hands=True, allow_specia
 
     elif not session.left_hand:
         item_id = item_dict.get('item_id') or item_dict.get('id')
+        if not item_id and server.db:
+            item_id = server.db.get_or_create_item(
+                name=item_dict.get('name', 'something'),
+                short_name=(item_dict.get('short_name') or item_dict.get('name') or 'something'),
+                noun=item_dict.get('noun', 'item'),
+                item_type=item_dict.get('item_type', 'misc'),
+                value=int(item_dict.get('value', 0) or 0),
+                description=item_dict.get('description', ''),
+            )
+            if item_id:
+                item_dict['item_id'] = item_id
         quantity = max(1, int(item_dict.get('quantity', 1) or 1))
         max_stack = item_dict.get('max_stack')
         if server.db and session.character_id and item_id:

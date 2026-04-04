@@ -82,9 +82,12 @@ async def resolve_flare(session, creature, weapon: dict, hand: str) -> Optional[
     if not weapon:
         return None
 
-    # Fast out — no flare_type on this weapon (covers non-flare materials)
+    # Fast out — skip only if BOTH flare_type and material are absent.
+    # Lua tryFlare resolves material → flare_type internally via Materials.flareType();
+    # we must not short-circuit before calling it just because flare_type is unset.
     flare_type = weapon.get("flare_type") or ""
-    if not flare_type:
+    material   = (weapon.get("material") or "").lower()
+    if not flare_type and not material:
         return None
 
     lua_engine = getattr(getattr(session, "server", None), "lua", None)

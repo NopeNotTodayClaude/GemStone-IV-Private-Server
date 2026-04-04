@@ -717,9 +717,10 @@ class ExperienceManager:
         session.health_max     += hp_gain
         session.health_current  = session.health_max
 
-        aur_bonus = max(0, (getattr(session, 'stat_aura', 50) - 50) // 10)
-        mana_gain = 3 + aur_bonus
-        session.mana_max     += mana_gain
+        # Recalculate mana_max from Harness Power ranks — level-up increases
+        # the rank cap (min(hp_ranks, level)) so this naturally grants more mana
+        # when HP ranks are trained.
+        apply_mana_max_recalc(session, self.server)
         session.mana_current  = session.mana_max
 
         session.stamina_max     += 5
@@ -740,7 +741,7 @@ class ExperienceManager:
         # Example: TWC limit=2 base=2/2, old level had ranks 39(slot1) and 40(slot2).
         #   Rank 40 cost 4/4 but is now prior-level -> refund 2/2.
         from server.core.commands.player.training import (
-            SKILL_COSTS, get_train_limit
+            SKILL_COSTS, get_train_limit, apply_mana_max_recalc
         )
         old_level   = new_level - 1
         refund_ptp  = 0

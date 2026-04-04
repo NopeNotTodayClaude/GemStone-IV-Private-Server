@@ -65,8 +65,7 @@ handlers[1700] = function(ctx)
         stat_scale = 0.30,
         skill_scale = 0.10,
     })
-    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, ctx.target.id })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format("A focused blast of raw arcana slams into %s for %d damage!", ctx.target.name or "your target", dmg)
 end
 
@@ -113,8 +112,7 @@ handlers[1707] = function(ctx)
         mana_control = "mental",
         lore = "water",
     })
-    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, ctx.target.id })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format("A hiss of superheated steam scalds %s for %d damage!", ctx.target.name or "your target", dmg)
 end
 
@@ -141,8 +139,7 @@ handlers[1709] = function(ctx)
         aiming_scale = 0.10,
         lore_scale = 0.05,
     })
-    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, ctx.target.id })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     ActiveBuffs.apply(ctx.target.id, 1709, CIRCLE_ID, ctx.caster.id, 6, { slowed=true, ds=-5 })
     return string.format("An arc of bitter cold freezes through %s for %d damage!", ctx.target.name or "your target", dmg)
 end
@@ -165,8 +162,7 @@ handlers[1710] = function(ctx)
         lore_scale = 0.06,
         flat_bonus = 1,
     })
-    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, ctx.target.id })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     ActiveBuffs.apply(ctx.target.id, 1710, CIRCLE_ID, ctx.caster.id, 10, { ds=-10, acid_corroded=true })
     return string.format("A wash of major acid tears into %s for %d damage!", ctx.target.name or "your target", dmg)
 end
@@ -190,6 +186,7 @@ handlers[1713] = function(ctx)
     end
     local targets = DB.query("SELECT id, name, health_current FROM characters WHERE current_room_id=? AND id!=?", { room_id, ctx.caster.id })
     local count = 0
+    ctx.result.room_damage = (ctx.result.room_damage or 0) + (14 + math.floor((ctx.circle_ranks or 1) / 3))
     for _, row in ipairs(targets) do
         local hp = math.max(0, tonumber(row.health_current or 0) - (14 + math.floor((ctx.circle_ranks or 1) / 3)))
         DB.execute("UPDATE characters SET health_current=? WHERE id=?", { hp, row.id })
@@ -215,6 +212,7 @@ handlers[1715] = function(ctx)
     end
     local targets = DB.query("SELECT id, health_current FROM characters WHERE current_room_id=? AND id!=?", { room_id, ctx.caster.id })
     local count = 0
+    ctx.result.room_damage = (ctx.result.room_damage or 0) + (16 + math.floor((ctx.circle_ranks or 1) / 2))
     for _, row in ipairs(targets) do
         local dmg = 16 + math.floor((ctx.circle_ranks or 1) / 2)
         local hp = math.max(0, tonumber(row.health_current or 0) - dmg)

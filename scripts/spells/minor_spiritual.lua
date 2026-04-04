@@ -251,8 +251,7 @@ handlers[111] = function(ctx)
         aiming_scale = 0.10,
         lore_scale = 0.05,
     })
-    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format(
         "A spirit of fire streaks toward %s and scorches them for %d damage!",
         ctx.target and ctx.target.name or "your target", dmg
@@ -370,9 +369,7 @@ handlers[125] = function(ctx)
         aiming_scale = 0.10,
         lore_scale = 0.06,
     })
-    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?",
-        { new_hp, target_id(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format(
         "A searing bolt of lightning strikes %s for %d damage!",
         ctx.target and ctx.target.name or "your target", dmg
@@ -408,9 +405,7 @@ handlers[135] = function(ctx)
         aiming_scale = 0.10,
         lore_scale = 0.06,
     })
-    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?",
-        { new_hp, target_id(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format(
         "Searing spiritual light engulfs %s for %d damage!",
         ctx.target and ctx.target.name or "your target", dmg

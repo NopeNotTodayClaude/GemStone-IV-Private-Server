@@ -137,8 +137,7 @@ handlers[1603] = function(ctx) -- Templar's Verdict
     if not ctx.result.hit then return end
     local dmg = holy_dmg(ctx, 12, 1.45, { lore="religion", lore_scale=0.05 })
     if is_undead_or_evil(ctx) then dmg = math.floor(dmg * 1.5) end
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format("The Templar's verdict strikes %s for %d damage!", tname(ctx), dmg)
 end
 
@@ -227,8 +226,7 @@ handlers[1614] = function(ctx) -- Aura of the Arkati
     local religion = (ctx.lore_ranks and ctx.lore_ranks.religion) or 0
     local dmg = holy_dmg(ctx, 10, 1.05, { lore="religion", lore_scale=0.06 })
     if is_undead_or_evil(ctx) then dmg = math.floor(dmg * (1.75 + religion / 200)) end
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format("The Arkati's aura BLAZES through %s for %d damage!", tname(ctx), dmg)
 end
 
@@ -237,8 +235,7 @@ handlers[1615] = function(ctx) -- Repentance
     local religion = (ctx.lore_ranks and ctx.lore_ranks.religion) or 0
     local dmg = holy_dmg(ctx, 12, 1.10, { lore="religion", lore_scale=0.07, flat_bonus=2 })
     if is_undead_or_evil(ctx) then dmg = math.floor(dmg * (3 + religion / 150)) end
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format("Repentance BURNS through %s for %d damage!", tname(ctx), dmg)
 end
 
@@ -301,8 +298,7 @@ handlers[1630] = function(ctx) -- Judgment
     if not ctx.result.hit then return end
     local dmg = holy_dmg(ctx, 18, 1.80, { lore="religion", lore_scale=0.08, flat_bonus=6 })
     if is_undead_or_evil(ctx) then dmg = math.floor(dmg * 2) end
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format("DIVINE JUDGMENT descends upon %s for %d damage!", tname(ctx), dmg)
 end
 
@@ -326,6 +322,8 @@ handlers[1640] = function(ctx) -- Divine Word
         local undead = DB.query(
             "SELECT id, level FROM characters WHERE current_room_id=? AND is_undead=1",
             { room_id })
+        ctx.result.room_damage = 99999
+        ctx.result.room_undead_only = true
         local banished = 0
         for _, u in ipairs(undead) do
             if (u.level or 1) < (ctx.caster.level or 1) then

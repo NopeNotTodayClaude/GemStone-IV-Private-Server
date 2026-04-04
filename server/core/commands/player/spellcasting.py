@@ -9,7 +9,7 @@ import logging
 import re
 import time
 
-from server.core.protocol.colors import colorize, roundtime_msg, TextPresets, healing_msg
+from server.core.protocol.colors import colorize, roundtime_msg, TextPresets, healing_msg, combat_death
 from server.core.engine.magic_effects import apply_roundtime_effects, get_active_buff_totals, is_visible_to
 
 log = logging.getLogger(__name__)
@@ -665,6 +665,159 @@ async def cmd_release(session, cmd, args, server):
     await session.send_line(colorize(f"  {message}", preset))
 
 
+def _lua_result_to_dict(engine, values):
+    """Safely extract the Lua result table (values[2]) as a plain Python dict."""
+    if not values or len(values) < 3 or values[2] is None:
+        return {}
+    try:
+        converted = engine.lua_to_python(values[2])
+        if isinstance(converted, dict):
+            return converted
+    except Exception:
+        pass
+    return {}
+
+
+async def _apply_spell_damage(session, server, target, result_dict):
+    """
+    Apply damage propagated from Lua via ctx.result.damage / ctx.result.room_damage
+    to the actual target creature(s) or player, with full crit/wound pipeline
+    matching the melee combat system.
+    """
+    if not result_dict:
+        return
+
+    import random as _random
+    damage           = int(result_dict.get('damage')           or 0)
+    room_damage      = int(result_dict.get('room_damage')      or 0)
+    knocked_down     = bool(result_dict.get('knocked_down'))
+    room_undead_only = bool(result_dict.get('room_undead_only'))
+    room_max_targets = int(result_dict.get('room_max_targets') or 0)
+    # damage_type hint from Lua (e.g. 'heat', 'cold', 'plasma').  Falls back to 'magic'.
+    damage_type      = (result_dict.get('damage_type') or 'magic').lower()
+
+    from server.core.engine.combat.combat_engine import (
+        _record_town_trouble_damage, _record_town_trouble_kill,
+        CRIT_MESSAGES, LETHAL_THRESHOLDS, SEVERABLE_LOCATIONS,
+        LOCATION_CRIT_DIV_MULT,
+    )
+    from server.core.scripting.loaders.body_types_loader import random_location
+    from server.core.protocol.colors import combat_damage, combat_crit
+
+    # Spell crit divisor — spells bypass physical armour; use a fixed per-type base.
+    # GS4: elemental spells drive crits through spell rank, not armour piercing.
+    # We approximate: every 20 HP of spell damage = 1 crit rank (caps at 9).
+    SPELL_CRIT_DIVISOR = 20
+
+    def _spell_crit(dmg, creature):
+        """Compute crit rank for a spell hit.  Returns (rank, location)."""
+        body_type = getattr(creature, 'body_type', 'humanoid') or 'humanoid'
+        location  = random_location(body_type)
+        loc_mult  = LOCATION_CRIT_DIV_MULT.get(location, 1.0)
+        divisor   = max(1, int(SPELL_CRIT_DIVISOR * loc_mult))
+        rank_max  = min(9, dmg // divisor)
+        if rank_max <= 0:
+            return 0, location
+        rank = _random.randint(max(1, (rank_max + 1) // 2), rank_max)
+        return rank, location
+
+    async def _apply_creature_hit(creature, dmg):
+        """Full hit pipeline: damage → crit → wound → death."""
+        actual = creature.take_damage(dmg)
+        _record_town_trouble_damage(server, session, creature, actual)
+
+        if knocked_down and not creature.is_dead and hasattr(creature, 'prone'):
+            creature.prone = True
+
+        # ── Crit / wound ──────────────────────────────────────────────────
+        crit_rank, location = _spell_crit(actual, creature)
+        await session.send_line(combat_damage(actual, location))
+        if crit_rank > 0:
+            crit_msgs = CRIT_MESSAGES.get(damage_type, CRIT_MESSAGES['magic'])
+            await session.send_line(combat_crit(crit_rank, crit_msgs.get(crit_rank, 'Critical hit!')))
+        if crit_rank >= 1 and hasattr(creature, 'apply_wound'):
+            old_sev = creature.wounds.get(location, 0) if hasattr(creature, 'wounds') else 0
+            new_sev = creature.apply_wound(location, crit_rank)
+            if new_sev > old_sev and hasattr(creature, 'evaluate_combat_impairment'):
+                impairment = creature.evaluate_combat_impairment(location, old_sev, new_sev)
+                if impairment.get('dropped_weapon'):
+                    await session.send_line(colorize(
+                        f'  {creature.full_name.capitalize()} drops its weapon!',
+                        TextPresets.COMBAT_HIT,
+                    ))
+                if impairment.get('severed') and location in SEVERABLE_LOCATIONS:
+                    await session.send_line(colorize(
+                        f'  The spell severs {creature.full_name}\'s {location}!',
+                        TextPresets.COMBAT_HIT,
+                    ))
+                if impairment.get('stance_shift'):
+                    creature.stance = impairment['stance_shift']
+
+        # ── Death check ───────────────────────────────────────────────────
+        if creature.is_dead or crit_rank >= LETHAL_THRESHOLDS.get(location, 99):
+            if not creature.is_dead:
+                creature.take_damage(creature.health_current)
+            await session.send_line(combat_death(creature.full_name.capitalize()))
+            if getattr(server, 'world', None):
+                await server.world.broadcast_to_room(
+                    session.current_room.id,
+                    f'  {creature.full_name.capitalize()} falls to the ground dead!',
+                    exclude=session,
+                )
+            server.creatures.mark_dead(creature)
+            await _record_town_trouble_kill(server, session, creature)
+            if session.target is creature:
+                session.target = None
+            remaining = [
+                c for c in server.creatures.get_creatures_in_room(session.current_room.id)
+                if c.alive and c.aggressive
+            ]
+            if not remaining:
+                from server.core.engine.combat.combat_engine import _exit_combat
+                _exit_combat(server, session)
+            if hasattr(server, 'experience'):
+                from server.core.commands.player.party import award_party_kill_xp
+                await award_party_kill_xp(session, creature, server)
+            return True  # killed
+        return False  # still alive
+
+    # ── Single-target ──────────────────────────────────────────────────────
+    if damage > 0 and target is not None:
+        if hasattr(target, 'take_damage'):
+            # Creature
+            await _apply_creature_hit(target, damage)
+        elif hasattr(target, 'health_current') and hasattr(target, 'character_id'):
+            # Player target (e.g. PvP or AoE hitting self)
+            new_hp = max(0, int(getattr(target, 'health_current', 0) or 0) - damage)
+            target.health_current = new_hp
+            if getattr(server, 'db', None) and getattr(target, 'character_id', None):
+                server.db.execute(
+                    'UPDATE characters SET health_current=? WHERE id=?',
+                    [new_hp, target.character_id],
+                )
+
+    # ── Room-wide ──────────────────────────────────────────────────────────
+    if room_damage > 0 and getattr(session, 'current_room', None):
+        creatures = list(server.creatures.get_creatures_in_room(session.current_room.id))
+        hit_count = 0
+        for c in creatures:
+            if not c.alive:
+                continue
+            if room_undead_only and not getattr(c, 'is_undead', False):
+                continue
+            if room_max_targets and hit_count >= room_max_targets:
+                break
+            await _apply_creature_hit(c, room_damage)
+            hit_count += 1
+        remaining = [
+            c for c in server.creatures.get_creatures_in_room(session.current_room.id)
+            if c.alive and c.aggressive
+        ]
+        if not remaining:
+            from server.core.engine.combat.combat_engine import _exit_combat
+            _exit_combat(server, session)
+
+
 async def cmd_cast(session, cmd, args, server):
     if _is_revival_shrouded(session, server):
         await session.send_line(colorize("  You are still wrapped in revival starlight and cannot cast yet.", TextPresets.WARNING))
@@ -708,6 +861,8 @@ async def cmd_cast(session, cmd, args, server):
         message = values[1] if len(values) > 1 else "The spell fizzles."
         if ok:
             _clear_prepared_scroll_state(session)
+            result_dict = _lua_result_to_dict(engine, values)
+            await _apply_spell_damage(session, server, target, result_dict)
             message = f"{message}{await _apply_post_cast_side_effects(session, server, spell_number, target, verb)}"
             _apply_lua_char_updates(engine, raw_char, session)
             _refresh_post_spell_state(session, server, target)
@@ -715,7 +870,8 @@ async def cmd_cast(session, cmd, args, server):
                 await session.send_line(healing_msg(f"  {message}"))
                 await _broadcast_healing_spell(session, server, spell_number, target, message)
             else:
-                await session.send_line(colorize(f"  {message}", TextPresets.SYSTEM))
+                _spell_color = TextPresets.COMBAT_HIT if (result_dict.get('damage') or result_dict.get('room_damage')) else TextPresets.SYSTEM
+                await session.send_line(colorize(f"  {message}", _spell_color))
             if getattr(server, "guild", None):
                 try:
                     await server.guild.record_event(session, "spell_cast_success")
@@ -733,8 +889,10 @@ async def cmd_cast(session, cmd, args, server):
     values = _lua_returns(raw)
     ok = bool(values[0]) if values else False
     message = values[1] if len(values) > 1 else "The spell fizzles."
+    result_dict = _lua_result_to_dict(engine, values)
     _apply_lua_char_updates(engine, raw_char, session)
     if ok:
+        await _apply_spell_damage(session, server, target, result_dict)
         message = f"{message}{await _apply_post_cast_side_effects(session, server, spell_number, target, verb)}"
         _refresh_post_spell_state(session, server, target)
         session._prepared_lua_spell_number = None
@@ -742,7 +900,8 @@ async def cmd_cast(session, cmd, args, server):
             await session.send_line(healing_msg(f"  {message}"))
             await _broadcast_healing_spell(session, server, spell_number, target, message)
         else:
-            await session.send_line(colorize(f"  {message}", TextPresets.SYSTEM))
+            _spell_color = TextPresets.COMBAT_HIT if (result_dict.get('damage') or result_dict.get('room_damage')) else TextPresets.SYSTEM
+            await session.send_line(colorize(f"  {message}", _spell_color))
         if getattr(server, "guild", None):
             try:
                 await server.guild.record_event(session, "spell_cast_success")
@@ -783,8 +942,10 @@ async def cmd_incant(session, cmd, args, server):
     values = _lua_returns(raw)
     ok = bool(values[0]) if values else False
     message = values[1] if len(values) > 1 else "The spell fizzles."
+    result_dict = _lua_result_to_dict(engine, values)
     _apply_lua_char_updates(engine, raw_char, session)
     if ok:
+        await _apply_spell_damage(session, server, target_obj, result_dict)
         _clear_prepared_scroll_state(session)
         message = f"{message}{await _apply_post_cast_side_effects(session, server, spell_number, target_obj, 'cast')}"
         _refresh_post_spell_state(session, server, target_obj)
@@ -792,7 +953,8 @@ async def cmd_incant(session, cmd, args, server):
             await session.send_line(healing_msg(f"  {message}"))
             await _broadcast_healing_spell(session, server, spell_number, target_obj, message)
         else:
-            await session.send_line(colorize(f"  {message}", TextPresets.SYSTEM))
+            _spell_color = TextPresets.COMBAT_HIT if (result_dict.get('damage') or result_dict.get('room_damage')) else TextPresets.SYSTEM
+            await session.send_line(colorize(f"  {message}", _spell_color))
         help_text = _spell_help_text(session, spell_number)
         if help_text:
             await session.send_line(colorize(help_text, TextPresets.NPC_EMOTE))

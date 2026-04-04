@@ -1,4 +1,4 @@
-------------------------------------------------------------------------
+﻿------------------------------------------------------------------------
 -- scripts/spells/empath.lua
 -- Empath Base (Emp) spell circle — spells 1101-1150.
 -- Circle id: 10 | Sphere: hybrid_sm (spiritual/mental) | CS/TD stat: wisdom
@@ -156,8 +156,7 @@ handlers[1101] = function(ctx) -- Harm/Heal
             flat_bonus = math.floor((ctx.circle_ranks or 1) / 3),
             min = 7,
         })
-        local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
-        DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+        ctx.result.damage = (ctx.result.damage or 0) + dmg
         return string.format("Empathic harm sears through %s for %d damage!", tname(ctx), dmg)
     end
 end
@@ -181,8 +180,7 @@ handlers[1114] = function(ctx) return make_healer(14, "organ scar")(ctx) end
 handlers[1106] = function(ctx) -- Bone Shatter
     if not ctx.result.hit then return end
     local dmg = empath_harm_damage(ctx, 10, 1.60, { lore = "manipulation", min = 10 })
-    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     local limbs = {"right_arm","left_arm","right_leg","left_leg"}
     ActiveBuffs.apply(tid(ctx), 1106, CIRCLE_ID, ctx.caster.id, 15,
         { broken_limb=limbs[math.random(1,4)], as_penalty=15 })
@@ -211,8 +209,7 @@ end
 handlers[1110] = function(ctx) -- Empathic Assault
     if not ctx.result.hit then return end
     local dmg = empath_harm_damage(ctx, 6, 1.10, { lore = "telepathy", min = 6 })
-    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format("Empathic force assaults %s for %d damage!", tname(ctx), dmg)
 end
 

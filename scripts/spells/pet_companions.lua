@@ -84,7 +84,7 @@ handlers[SPELL_COMFORTING_GLOW] = function(ctx)
     local owner_pet_id = tonumber(spell_data.owner_pet_id) or 0
     local pet_name = tostring(spell_data.pet_name or ctx.caster.pet_name or "your companion")
 
-    ActiveBuffs.apply(target_id(ctx), SPELL_NUMBER, CIRCLE_ID, ctx.caster.id, duration, {
+    ActiveBuffs.apply(target_id(ctx), SPELL_COMFORTING_GLOW, CIRCLE_ID, ctx.caster.id, duration, {
         floofer_glow = true,
         pet_regen_pct = heal_pct,
         pet_regen_owner_id = owner_pet_id,
@@ -115,13 +115,21 @@ handlers[SPELL_STATIC_LASH] = function(ctx)
     local spell_data = (ctx.target and ctx.target.pet_spell_data) or {}
     local pet_name = tostring(spell_data.pet_name or ctx.caster.pet_name or "your companion")
     local target_name = tostring((ctx.target and ctx.target.name) or "your foe")
-    return string.format("%s lashes out with a crackling arc of force at %s!", pet_name, target_name)
+    local min_dmg = tonumber(spell_data.min_damage) or 6
+    local max_dmg = tonumber(spell_data.max_damage) or 11
+    local dmg = min_dmg + math.random(0, math.max(0, max_dmg - min_dmg))
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
+    return string.format("%s lashes out with a crackling arc of force at %s for %d damage!", pet_name, target_name, dmg)
 end
 
 handlers[SPELL_STATIC_TEMPEST] = function(ctx)
     local spell_data = (ctx.target and ctx.target.pet_spell_data) or {}
     local pet_name = tostring(spell_data.pet_name or ctx.caster.pet_name or "your companion")
-    return string.format("%s unleashes a violent storm of crackling force across the whole room!", pet_name)
+    local min_dmg = tonumber(spell_data.min_damage) or 22
+    local max_dmg = tonumber(spell_data.max_damage) or 36
+    local dmg = min_dmg + math.random(0, math.max(0, max_dmg - min_dmg))
+    ctx.result.room_damage = (ctx.result.room_damage or 0) + dmg
+    return string.format("%s arches its back and detonates a room-wide storm of crackling force for %d damage!", pet_name, dmg)
 end
 
 function PetCompanions.on_cast(ctx)

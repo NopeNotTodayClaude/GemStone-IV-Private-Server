@@ -148,8 +148,8 @@ end
 handlers[1206] = function(ctx) -- Telekinesis
     if not ctx.result.hit then return end
     local dmg = mental_dmg(ctx, 9, 1.05, { lore="manipulation", lore_scale=0.06 })
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=?, position='prone' WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
+    ctx.result.knocked_down = true
     return string.format("Telekinetic force HURLS %s aside for %d damage!", tname(ctx), dmg)
 end
 
@@ -181,8 +181,7 @@ end
 handlers[1210] = function(ctx) -- Thought Lash bolt
     if not ctx.result.hit then return end
     local dmg = mental_bolt(ctx, 8, 1.00, { lore="telepathy", lore_scale=0.05, stat="avg_wis_int" })
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     -- Small stun chance on high result
     if (ctx.result.total or 0) > 130 then
         ActiveBuffs.apply(tid(ctx), 9920, nil, ctx.caster.id, 3, { stunned=true })

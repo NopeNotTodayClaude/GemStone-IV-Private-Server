@@ -194,12 +194,14 @@ for level = 1, 50 do
         recast_seconds = arc_recast,
     }
 
+    local tempest_cd = math.floor(3600 - ((level - 1) * ((3600 - 600) / 49)))
+    if tempest_cd < 600 then tempest_cd = 600 end
     scale_tempest_levels[level] = {
         level = level,
-        unlocked = (level >= 50),
-        cooldown_seconds = 3600,
-        min_damage = 22,
-        max_damage = 36,
+        unlocked = true,
+        cooldown_seconds = tempest_cd,
+        min_damage = 9999,
+        max_damage = 9999,
     }
 end
 

@@ -49,7 +49,7 @@ from server.core.engine.fake_player_manager import FakePlayerManager
 from server.core.engine.town_trouble_manager import TownTroubleManager
 from server.core.engine.spell_summon_manager import SpellSummonManager
 from server.core.services.persistence_writer import PersistenceWriterService
-from server.core.commands.player.training import _try_load_lua_skills
+from server.core.commands.player.training import _try_load_lua_skills, apply_mana_max_recalc
 from server.core.commands.player.inventory import restore_inventory_state
 from server.core.scripting.loaders.ambush_loader import load_ambush_cfg
 from server.core.scripting.loaders.perception_loader import load_perception_cfg
@@ -513,6 +513,7 @@ class GameServer:
 
         if char_data:
             session.load_from_db(char_data)
+            apply_mana_max_recalc(session, self)
         else:
             session.character_name = char["name"]
             session.character_id = char["id"]

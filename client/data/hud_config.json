@@ -1,5 +1,5 @@
 {
-  "geometry": "2104x1119+506+30",
+  "geometry": "2104x1119+523+59",
   "font_size": 14,
   "font_family": "Georgia",
   "panel_font_size": 13,
@@ -42,7 +42,7 @@
     },
     "_main_sashes": [
       279,
-      1570
+      1569
     ]
   },
   "input_mode": "command",

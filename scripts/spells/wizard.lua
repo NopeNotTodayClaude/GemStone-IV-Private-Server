@@ -1,4 +1,4 @@
-------------------------------------------------------------------------
+﻿------------------------------------------------------------------------
 -- scripts/spells/wizard.lua
 -- Wizard Base (Wiz) spell circle — spells 901-950.
 -- Circle id: 8 | Sphere: elemental | CS/TD stat: aura
@@ -102,8 +102,7 @@ local function bolt_dmg(ctx, min_dmg, mult, opts)
         lore_scale = opts.lore_scale or 0.05,
         flat_bonus = opts.flat_bonus or 0,
     })
-    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return dmg
 end
 
@@ -247,7 +246,7 @@ handlers[917] = function(ctx) -- Earthen Fury
     if dmg then
         local extra = math.floor(earth / 10)
         if extra > 0 then
-            DB.execute("UPDATE characters SET health_current=GREATEST(0,health_current-?) WHERE id=?", { extra, tid(ctx) })
+            ctx.result.damage = (ctx.result.damage or 0) + extra
         end
         if earth >= 20 then
             ActiveBuffs.apply(tid(ctx), 917, CIRCLE_ID, ctx.caster.id, 3 + math.floor(earth / 35), { stunned=true })

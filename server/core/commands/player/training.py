@@ -497,6 +497,75 @@ def calc_skill_bonus(ranks: int) -> int:
     return ranks + 100
 
 
+# ── Mana max recalculation from Harness Power ranks ───────────────────────────
+# Mirrors mana_system.lua calc_max_mana + professions.lua mana_stats exactly.
+# Called on login, after training HP, and after level-up.
+
+HARNESS_POWER_SKILL_ID = 18
+
+# Mana stats by profession: prof_id → (stat_field_1, stat_field_2)
+# Source: scripts/data/professions.lua Professions.mana_stats
+_MANA_STATS_BY_PROF = {
+    1:  ("stat_aura",      "stat_wisdom"),      # Warrior
+    2:  ("stat_aura",      "stat_wisdom"),      # Rogue
+    3:  ("stat_aura",      "stat_logic"),       # Wizard
+    4:  ("stat_wisdom",    "stat_aura"),        # Cleric
+    5:  ("stat_wisdom",    "stat_influence"),   # Empath
+    6:  ("stat_aura",      "stat_wisdom"),      # Sorcerer
+    7:  ("stat_wisdom",    "stat_aura"),        # Ranger
+    8:  ("stat_influence", "stat_aura"),        # Bard
+    9:  ("stat_wisdom",    "stat_aura"),        # Paladin
+    10: ("stat_logic",     "stat_wisdom"),      # Monk
+}
+
+
+def calc_mana_max_from_session(session) -> int:
+    """
+    Recalculate mana_max using the GS4 Harness Power formula.
+    Mirrors mana_system.lua calc_max_mana exactly.
+
+    base_mana = floor((stat_bonus_1 + stat_bonus_2) / 4)
+    hp_bonus  = min(hp_ranks, level) + skill_bonus_from_ranks(hp_ranks)
+    mana_max  = base_mana + hp_bonus
+    """
+    level   = int(getattr(session, "level", 1) or 1)
+    prof_id = int(getattr(session, "profession_id", 1) or 1)
+    skills  = getattr(session, "skills", {}) or {}
+
+    hp_data  = skills.get(HARNESS_POWER_SKILL_ID, {})
+    hp_ranks = int(hp_data.get("ranks", 0) if isinstance(hp_data, dict) else 0)
+
+    def _stat_bonus(field):
+        raw = int(getattr(session, field, 50) or 50)
+        return (raw - 50) // 2
+
+    stat_fields = _MANA_STATS_BY_PROF.get(prof_id, ("stat_aura", "stat_wisdom"))
+    b1 = _stat_bonus(stat_fields[0])
+    b2 = _stat_bonus(stat_fields[1])
+    base_mana = max(0, (b1 + b2) // 4)
+
+    capped_ranks   = min(hp_ranks, level)
+    hp_skill_bonus = calc_skill_bonus(hp_ranks)
+    hp_bonus       = capped_ranks + hp_skill_bonus
+
+    return max(0, base_mana + hp_bonus)
+
+
+def apply_mana_max_recalc(session, server):
+    """
+    Recalculate session.mana_max from HP ranks, update session, and save to DB.
+    Clamps mana_current to the new max.
+    """
+    new_max = calc_mana_max_from_session(session)
+    session.mana_max = new_max
+    if int(session.mana_current or 0) > new_max:
+        session.mana_current = new_max
+    if getattr(server, "db", None) and getattr(session, "character_id", None):
+        server.db.execute(
+            "UPDATE characters SET mana_max=?, mana_current=? WHERE id=?",
+            [new_max, int(session.mana_current or 0), session.character_id],
+        )
+
 def get_skill_cost(skill_id: int, prof_id: int):
     """Return (ptp_cost, mtp_cost) base cost per rank for this skill/profession."""
     if is_spell_circle_subject(skill_id):
@@ -830,6 +899,14 @@ async def cmd_train(session, cmd, args, server):
         TextPresets.SYSTEM
     ))
     await session.send_line(colorize(limit_note, TextPresets.SYSTEM))
+
+    # ── Harness Power mana recalculation ────────────────────────────────────
+    if skill_id == HARNESS_POWER_SKILL_ID:
+        apply_mana_max_recalc(session, server)
+        await session.send_line(colorize(
+            f"  Your mana pool has grown to {session.mana_max} points.",
+            TextPresets.EXPERIENCE
+        ))
 
     # ── Weapon Technique auto-grant ───────────────────────────────────────────
     if not is_spell_circle_subject(skill_id):

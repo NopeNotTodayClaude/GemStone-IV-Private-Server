@@ -723,6 +723,30 @@ class CreatureManager:
             if room_id <= 0 or room_id not in bubble_rooms:
                 self.remove_creature(creature)
 
+    # Matches SyntheticPlayer._SYNTH_SESSION_OFFSET — used to give synthetic
+    # players a stable planner ID that cannot collide with real session IDs.
+    _SYNTH_SESSION_OFFSET: int = 1_000_000
+
+    def _resolve_target_session(self, target_session_id: int):
+        """Look up the target of a planner action by ID.
+
+        Real player sessions have small positive IDs (1, 2, 3 …).
+        Synthetic players use  synthetic_id + _SYNTH_SESSION_OFFSET  so they
+        sit above the real-session range without collision.
+        """
+        sid = int(target_session_id or 0)
+        if sid <= 0:
+            return None
+        if sid < self._SYNTH_SESSION_OFFSET:
+            # Real player session
+            return self.server.sessions.get_session(sid)
+        # Synthetic player
+        synth_id = sid - self._SYNTH_SESSION_OFFSET
+        fake_mgr = getattr(self.server, "fake_players", None)
+        if fake_mgr:
+            return fake_mgr._actors.get(synth_id)
+        return None
+
     def _submit_planner_actions(self, now: float, *, allow_wander: bool):
         if not self._planner_pool or self._planner_future is not None:
             return
@@ -736,6 +760,8 @@ class CreatureManager:
                 "alive": bool(creature.alive),
                 "aggressive": bool(creature.aggressive),
                 "in_combat": bool(creature.in_combat),
+                # getattr(target, "id", 0) works for both real sessions and
+                # SyntheticPlayer (which now exposes .id = synthetic_id + offset)
                 "target_session_id": int(getattr(getattr(creature, "target", None), "id", 0) or 0),
                 "roundtime_end": float(getattr(creature, "roundtime_end", 0.0) or 0.0),
                 "stunned_until": float(getattr(creature, "stunned_until", 0.0) or 0.0),
@@ -744,6 +770,8 @@ class CreatureManager:
                 "can_wander": bool(creature.alive and not creature.in_combat),
                 "exits": {str(k): int(v) for k, v in exits.items() if not str(k).startswith("go_") and int(v or 0) > 0},
             })
+
+        # ── Real player sessions ─────────────────────────────────────────────
         players = []
         for session in self.server.sessions.playing():
             room = getattr(session, "current_room", None)
@@ -754,7 +782,33 @@ class CreatureManager:
                 "hidden": bool(getattr(session, "hidden", False)),
                 "invisible": bool(has_effect(self.server, session, "invisible")),
                 "is_dead": bool(getattr(session, "is_dead", False)),
+                "is_synthetic": False,
             })
+
+        # ── Synthetic players (fake population) ──────────────────────────────
+        # Previously missing: the creature planner subprocess had no knowledge of
+        # synthetic players so invasion creatures and aggressive mobs never picked
+        # them as targets.  We include them here using their stable .id property
+        # (synthetic_id + _SYNTH_SESSION_OFFSET) so the planner can treat them
+        # identically to real players.
+        fake_mgr = getattr(self.server, "fake_players", None)
+        if fake_mgr:
+            for actor in list(fake_mgr._actors.values()):
+                actor_room = getattr(actor, "current_room", None)
+                if not actor_room:
+                    continue
+                if not actor.connected or actor.state != "playing":
+                    continue
+                players.append({
+                    "session_id": int(actor.id),   # synthetic_id + _SYNTH_SESSION_OFFSET
+                    "room_id": int(getattr(actor_room, "id", 0) or 0),
+                    "state": str(getattr(actor, "state", "") or ""),
+                    "hidden": bool(getattr(actor, "hidden", False)),
+                    "invisible": False,             # synthetic players are never invisible
+                    "is_dead": bool(getattr(actor, "is_dead", False)),
+                    "is_synthetic": True,
+                })
+
         payload = {
             "now": float(now),
             "allow_wander": bool(allow_wander),
@@ -787,7 +841,7 @@ class CreatureManager:
                 creature.target = None
                 continue
             if kind == "attack":
-                session = self.server.sessions.get_session(int(action.get("target_session_id") or 0))
+                session = self._resolve_target_session(int(action.get("target_session_id") or 0))
                 if not session:
                     creature.in_combat = False
                     creature.target = None
@@ -800,15 +854,16 @@ class CreatureManager:
                 await self._creature_attack(creature, session)
                 continue
             if kind == "engage":
-                session = self.server.sessions.get_session(int(action.get("target_session_id") or 0))
+                session = self._resolve_target_session(int(action.get("target_session_id") or 0))
                 if not session:
                     continue
                 creature.in_combat = True
                 creature.target = session
                 creature.choose_stance()
                 attack = creature.choose_attack()
-                verb = (attack["verb_third"].replace("{target}", session.character_name)
-                        if attack else f"attacks {session.character_name}")
+                target_name = getattr(session, "character_name", str(session))
+                verb = (attack["verb_third"].replace("{target}", target_name)
+                        if attack else f"attacks {target_name}")
                 await self.server.world.broadcast_to_room(
                     creature.current_room_id,
                     colorize(creature.full_name.capitalize(), TextPresets.CREATURE_NAME) + " " + verb + "!"

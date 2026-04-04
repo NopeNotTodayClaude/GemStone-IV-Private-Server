@@ -1,4 +1,4 @@
-------------------------------------------------------------------------
+﻿------------------------------------------------------------------------
 -- scripts/spells/cleric.lua
 -- Cleric Base (Cle) spell circle — spells 301-350.
 -- Circle id: 3 | Sphere: spiritual | CS/TD stat: wisdom
@@ -108,8 +108,7 @@ local function ward_dmg(ctx, base, mult, opts)
     if opts.undead_mult and is_undead(ctx) then
         dmg = math.floor(dmg * opts.undead_mult)
     end
-    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return dmg
 end
 
@@ -176,8 +175,7 @@ handlers[306] = function(ctx) -- Holy Bolt
         lore_scale = 0.04,
     })
     if is_undead(ctx) then dmg = math.floor(dmg * 1.35) end
-    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format("A bolt of holy energy strikes %s for %d damage!", tname(ctx), dmg)
 end
 
@@ -296,11 +294,13 @@ handlers[320] = function(ctx) -- Ethereal Censer (room-wide undead attack)
         local undead = DB.query(
             "SELECT id, health_current FROM characters WHERE current_room_id=? AND is_undead=1",
             { room_id })
+        local room_dmg = 20 + (ctx.circle_ranks or 1) + math.floor(religion / 8)
         for _, u in ipairs(undead) do
-            local dmg = 20 + (ctx.circle_ranks or 1) + math.floor(religion / 8)
             DB.execute("UPDATE characters SET health_current=? WHERE id=?",
-                { math.max(0, (u.health_current or 0) - dmg), u.id })
+                { math.max(0, (u.health_current or 0) - room_dmg), u.id })
         end
+        ctx.result.room_damage = room_dmg
+        ctx.result.room_undead_only = true
         return string.format("An ethereal censer sweeps through the room, scorching %d undead!", #undead)
     end
 end
@@ -321,8 +321,7 @@ end
 handlers[335] = function(ctx) -- Divine Wrath bolt
     if not ctx.result.hit then return end
     local dmg = math.max(10, math.floor((ctx.result.total or 101) - 100) * 2)
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format("Divine wrath EXPLODES upon %s for %d damage!", tname(ctx), dmg)
 end
 
@@ -343,6 +342,8 @@ handlers[350] = function(ctx) -- Miracle (conditional effects)
     local room_id = ctx.caster.current_room_id
     if room_id then
         DB.execute("UPDATE characters SET health_current=0 WHERE current_room_id=? AND is_undead=1", { room_id })
+        ctx.result.room_damage = 99999  -- lethal to undead creatures
+        ctx.result.room_undead_only = true
     end
     return "A divine miracle sweeps through the area, annihilating undead!"
 end

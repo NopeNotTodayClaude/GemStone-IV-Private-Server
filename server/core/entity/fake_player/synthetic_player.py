@@ -115,6 +115,22 @@ class SyntheticPlayer:
         self.pets = list(self.synthetic_flags.get("pets") or [])
         self.active_pet = dict(self.synthetic_flags.get("active_pet") or {}) or None
 
+    # Offset added to synthetic_id to produce a stable session-like integer ID
+    # that the creature planner can use without colliding with real session IDs.
+    # Real session IDs are small counters (1, 2, 3 …).  1_000_000 gives ample room.
+    _SYNTH_SESSION_OFFSET: int = 1_000_000
+
+    @property
+    def id(self) -> int:
+        """Stable pseudo-session ID for the creature planner pipeline.
+
+        creature_manager._submit_planner_actions uses getattr(target, "id", 0)
+        to populate target_session_id in the planner payload.  Returning
+        synthetic_id + _SYNTH_SESSION_OFFSET ensures no collision with real
+        session IDs while remaining reversible in _collect_planner_actions.
+        """
+        return self.synthetic_id + self._SYNTH_SESSION_OFFSET
+
     @property
     def display_name(self) -> str:
         return self.character_name

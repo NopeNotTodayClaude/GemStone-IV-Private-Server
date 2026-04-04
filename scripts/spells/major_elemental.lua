@@ -1,4 +1,4 @@
-------------------------------------------------------------------------
+﻿------------------------------------------------------------------------
 -- scripts/spells/major_elemental.lua
 -- Major Elemental (MjE) spell circle — spells 501-550.
 -- Circle id: 5 | Sphere: elemental | CS/TD stat: aura
@@ -132,8 +132,7 @@ handlers[502] = function(ctx) -- Chromatic Circle
     local elements = {"fire","ice","lightning","acid","impact"}
     local elem = elements[math.random(1,#elements)]
     local dmg = ward_dmg(ctx, 8, 1.05, { stat="avg_aura_int" })
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format("A %s chromatic strike hits %s for %d damage!", elem, tname(ctx), dmg)
 end
 
@@ -154,8 +153,9 @@ handlers[505] = function(ctx) -- Hand of Tonis
     if not ctx.result.hit then return end
     local air = (ctx.lore_ranks and ctx.lore_ranks.air) or 0
     local dmg = ward_dmg(ctx, 10, 1.10, { lore="air", lore_scale=0.08, flat_bonus=math.floor(air / 18) })
-    DB.execute("UPDATE characters SET health_current=MAX(0,health_current-?), position='prone' WHERE id=?",
-        { dmg, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
+    ctx.result.knocked_down = true
+    DB.execute("UPDATE characters SET position='prone' WHERE id=?", { tid(ctx) })
     if air >= 30 then
         ActiveBuffs.apply(tid(ctx), 505, CIRCLE_ID, ctx.caster.id, 4 + math.floor(air / 40), { stunned=true })
     end
@@ -191,8 +191,9 @@ end
 handlers[510] = function(ctx) -- Hurl Boulder
     if not ctx.result.hit then return end
     local dmg = bolt_dmg(ctx, 14, 1.55, { lore="earth", lore_scale=0.07, flat_bonus=4 })
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=?, position='prone' WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
+    ctx.result.knocked_down = true
+    DB.execute("UPDATE characters SET position='prone' WHERE id=?", { tid(ctx) })
     return string.format("A massive boulder smashes into %s for %d damage!", tname(ctx), dmg)
 end
 
@@ -216,8 +217,7 @@ handlers[512] = function(ctx) -- Cold Snap
     local water = (ctx.lore_ranks and ctx.lore_ranks.water) or 0
     local dmg = ward_dmg(ctx, 9, 1.00, { lore="water", lore_scale=0.07 })
     local sdur = 3 + math.floor(dmg / 10) + math.floor(water / 30)
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     ActiveBuffs.apply(tid(ctx), 512, CIRCLE_ID, ctx.caster.id, sdur, { slowed=true })
     return string.format("A snap of intense cold strikes %s for %d damage and slows them!", tname(ctx), dmg)
 end
@@ -233,8 +233,9 @@ handlers[514] = function(ctx) -- Stone Fist
     local earth = (ctx.lore_ranks and ctx.lore_ranks.earth) or 0
     local dmg = bolt_dmg(ctx, 12, 1.15, { lore="earth", lore_scale=0.08, flat_bonus=math.floor(earth / 20) })
     local sdur = 15 + math.floor(math.max(0, 100 - (ctx.result.total or 100)) / 4)
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=?, position='prone' WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
+    ctx.result.knocked_down = true
+    DB.execute("UPDATE characters SET position='prone' WHERE id=?", { tid(ctx) })
     ActiveBuffs.apply(tid(ctx), 514, CIRCLE_ID, ctx.caster.id, sdur, { rooted=true, immobilized=true, prone=true, rt_penalty=2 })
     return string.format("A stone fist SLAMS into %s for %d damage, pinning them in place!", tname(ctx), dmg)
 end
@@ -300,6 +301,8 @@ handlers[518] = function(ctx) -- Cone of Elements
                 hit_count = hit_count + 1
             end
         end
+        ctx.result.room_damage = dmg
+        ctx.result.room_max_targets = 3
     end
     return string.format("A cone of elemental fire scorches %d targets!", hit_count)
 end
@@ -309,8 +312,7 @@ handlers[519] = function(ctx) -- Immolation
     local fire = (ctx.lore_ranks and ctx.lore_ranks.fire) or 0
     local dmg = bolt_dmg(ctx, 14, 1.20, { lore="fire", lore_scale=0.08, flat_bonus=math.floor(fire / 16) })
     local burn_dur = 5 + math.floor((ctx.circle_ranks or 1) / 5) + math.floor(fire / 25)
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     ActiveBuffs.apply(tid(ctx), 519, CIRCLE_ID, ctx.caster.id, burn_dur, { burning=true, burn_dmg=5 + math.floor(fire / 30) })
     return string.format("%s bursts into flames, taking %d damage and continuing to burn!", tname(ctx), dmg)
 end
@@ -325,8 +327,7 @@ end
 handlers[525] = function(ctx) -- Meteor Swarm
     if not ctx.result.hit then return end
     local dmg = bolt_dmg(ctx, 20, 1.85, { lore="fire", lore_scale=0.06, flat_bonus=8 })
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format("A swarm of meteors crashes down upon %s for %d damage!", tname(ctx), dmg)
 end
 

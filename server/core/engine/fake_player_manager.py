@@ -1388,7 +1388,7 @@ class FakePlayerManager:
             "rude_bias": float(self._personality(actor, "rude", 0.12)),
             "craft_bias": float(self._personality(actor, "craft", 0.15)),
             "roam_bias": float(self._personality(actor, "roam", 0.20)),
-            "hunt_bias": float(self._personality(actor, "hunt", 0.18)),
+            "hunt_bias": min(1.0, float(self._personality(actor, "hunt", 0.18)) + float(self._archetype_bias(actor, "hunt_bias", 0.0))),
             "crime_bias": float(self._personality(actor, "crime", 0.03)),
             "inn_bias": float(self._archetype_bias(actor, "inn_bias", 0.10)),
             "idle_bias": float(self._archetype_bias(actor, "idle_bias", 0.55)),
@@ -2189,7 +2189,13 @@ class FakePlayerManager:
         return True
 
     async def _maybe_hunt(self, actor: SyntheticPlayer, bubble_rooms: set[int]) -> bool:
-        if random.random() > float(self._personality(actor, "hunt", 0.18)):
+        # Combine MBTI personality with archetype hunt_bias so mercenaries (0.82)
+        # and rogue_runners (0.54) actually hunt at their configured rate instead of
+        # being gated by the much-lower MBTI-only value.
+        personality_hunt  = float(self._personality(actor, "hunt", 0.18))
+        archetype_hunt    = float(self._archetype_bias(actor, "hunt_bias", 0.0))
+        combined_hunt     = min(1.0, personality_hunt + archetype_hunt)
+        if random.random() > combined_hunt:
             return False
         room = getattr(actor, "current_room", None)
         if not room:
@@ -3277,22 +3283,63 @@ class FakePlayerManager:
         row = next((dict(item or {}) for item in self._archetypes if str((item or {}).get("key") or "").strip().lower() == key), {})
         return float(row.get(field, fallback) or fallback)
 
+    # Item types that count as a real held weapon for loadout purposes
+    _WEAPON_ITEM_TYPES = frozenset({
+        "weapon", "edged", "blunt", "two_handed", "ranged", "polearm", "thrown",
+        "edged_weapon", "blunt_weapon", "two_handed_weapon", "ranged_weapon",
+    })
+
+    @staticmethod
+    def _hand_has_real_weapon(item) -> bool:
+        """Return True only if *item* is a proper weapon the actor should keep."""
+        if not item or not isinstance(item, dict):
+            return False
+        # Placeholder sentinel: {"inv_id": -1} with no useful item data
+        if int(item.get("inv_id", 0) or 0) < 0 and not item.get("item_type") and not item.get("item_id"):
+            return False
+        itype = str(item.get("item_type") or "").strip().lower()
+        return itype in FakePlayerManager._WEAPON_ITEM_TYPES
+
     def _ensure_actor_loadout(self, actor: SyntheticPlayer):
+        """Ensure the actor has a proper weapon loadout.
+
+        Fixes:
+        - Forage/herb items in right_hand no longer block weapon assignment.
+        - Placeholder dicts {"inv_id": -1} are treated as empty hand.
+        - Inventory slots (armour etc.) are refreshed if missing.
+        """
         inventory = list(getattr(actor, "inventory", []) or [])
         needs_refresh = not any(i for i in inventory if str(i.get("slot") or "").lower() not in {"", "right_hand", "left_hand"})
-        if not needs_refresh and getattr(actor, "right_hand", None):
+
+        rh = getattr(actor, "right_hand", None)
+        lh = getattr(actor, "left_hand", None)
+        rh_is_weapon = self._hand_has_real_weapon(rh)
+        lh_is_weapon = self._hand_has_real_weapon(lh)
+
+        if not needs_refresh and rh_is_weapon:
             return
+
         built = self._build_loadout(actor.profession, int(actor.level or 1))
         if not built:
             return
+
         if needs_refresh:
             loose = [i for i in inventory if not i or not i.get("slot")]
             inventory = list(built["inventory"]) + loose
             actor.inventory = inventory
-        if not getattr(actor, "right_hand", None) and built.get("right_hand"):
+
+        # Assign right-hand weapon if missing or currently holds a non-weapon
+        if not rh_is_weapon and built.get("right_hand"):
+            # If a forage/herb item is there, drop it (move to inventory as loose item)
+            if rh and isinstance(rh, dict) and rh.get("item_type") and rh.get("item_type") not in ("", None):
+                actor.inventory = list(actor.inventory or []) + [dict(rh)]
             actor.right_hand = dict(built["right_hand"])
-        if not getattr(actor, "left_hand", None) and built.get("left_hand"):
+
+        if not lh_is_weapon and built.get("left_hand"):
+            if lh and isinstance(lh, dict) and lh.get("item_type") and lh.get("item_type") not in ("", None):
+                actor.inventory = list(actor.inventory or []) + [dict(lh)]
             actor.left_hand = dict(built["left_hand"])
+
         self._assign_synthetic_inventory_refs(actor)
 
     def _build_loadout(self, profession_name: str, level: int) -> dict:
@@ -3680,13 +3727,109 @@ class FakePlayerManager:
         return {key: _clamp(value + random.randint(-4, 4), 45, 100) for key, value in stats.items()}
 
     def _build_skills(self, profession_name: str, level: int) -> dict:
+        """Build a complete profession-appropriate skill dict for a synthetic player.
+
+        Skill ID reference (matches DB skills table):
+          1=TWC  2=Armor Use  3=Shield Use  4=CM  5=Edged  6=Blunt  7=Two-Handed
+          8=Ranged  9=Thrown  10=Polearm  11=Brawling  12=MOC  13=Physical Fitness
+          14=Dodging  15=Arcane Symbols  16=Magic Item Use  17=Spell Aiming
+          18=Harness Power  19=Elemental MC  20=Spiritual MC  21=Mental MC
+          23=Survival  25=Picking Locks  26=Stalking/Hiding  27=Ambush  32=Perception
+
+        All keys stored as STRINGS to survive JSON round-trip (json.loads always
+        returns string keys).  _sr/_sb now handle both int and str lookup.
+        """
         prof = profession_name.lower()
-        ranks = {4: {"ranks": max(1, level // 2), "bonus": max(5, level * 2)}, 11: {"ranks": max(1, level), "bonus": max(10, level * 5)}, 14: {"ranks": max(1, level), "bonus": max(10, level * 5)}, 2: {"ranks": max(0, level // 2), "bonus": max(0, (level // 2) * 5)}}
-        if "rogue" in prof:
-            ranks[32] = {"ranks": max(1, level), "bonus": max(10, level * 5)}
-            ranks[27] = {"ranks": max(1, level // 2), "bonus": max(5, (level // 2) * 5)}
-        if "warrior" in prof or "paladin" in prof:
-            ranks[3] = {"ranks": max(0, level // 2), "bonus": max(0, (level // 2) * 5)}
+        lv = max(1, int(level or 1))
+
+        def sk(r: int, bonus_per_rank: int = 5) -> dict:
+            r = max(0, r)
+            return {"ranks": r, "bonus": max(0, r * bonus_per_rank)}
+
+        # ── universal base skills ────────────────────────────────────────────
+        ranks: dict[str, dict] = {
+            "4":  sk(max(1, lv // 2), 4),          # Combat Maneuvers
+            "14": sk(max(1, lv), 5),                # Dodging
+            "2":  sk(max(1, lv // 2), 5),           # Armor Use
+            "13": sk(max(1, lv // 2), 5),           # Physical Fitness
+            "11": sk(max(1, lv // 2), 5),           # Brawling (fallback for all)
+        }
+
+        # ── per-profession weapon + magic skills ─────────────────────────────
+        if "warrior" in prof:
+            ranks["5"]  = sk(lv * 2, 5)             # Edged Weapons
+            ranks["6"]  = sk(lv, 5)                 # Blunt Weapons
+            ranks["7"]  = sk(lv, 5)                 # Two-Handed Weapons
+            ranks["3"]  = sk(lv, 5)                 # Shield Use
+            ranks["4"]  = sk(max(1, lv), 4)         # CM (override — warriors train harder)
+            ranks["13"] = sk(lv, 5)                 # Physical Fitness
+
+        elif "rogue" in prof:
+            ranks["5"]  = sk(lv * 2, 5)             # Edged Weapons
+            ranks["11"] = sk(lv, 5)                 # Brawling
+            ranks["25"] = sk(lv, 5)                 # Picking Locks
+            ranks["26"] = sk(lv, 5)                 # Stalking / Hiding
+            ranks["27"] = sk(lv // 2, 5)            # Ambush
+            ranks["32"] = sk(lv, 5)                 # Perception
+
+        elif "wizard" in prof:
+            ranks["5"]  = sk(max(1, lv // 2), 5)   # Edged Weapons (light)
+            ranks["18"] = sk(lv, 5)                 # Harness Power
+            ranks["19"] = sk(lv, 5)                 # Elemental Mana Control
+            ranks["17"] = sk(lv, 5)                 # Spell Aiming
+            ranks["15"] = sk(lv, 5)                 # Arcane Symbols
+
+        elif "cleric" in prof:
+            ranks["6"]  = sk(lv * 2, 5)             # Blunt Weapons
+            ranks["3"]  = sk(lv, 5)                 # Shield Use
+            ranks["18"] = sk(lv, 5)                 # Harness Power
+            ranks["20"] = sk(lv, 5)                 # Spiritual Mana Control
+
+        elif "empath" in prof:
+            ranks["6"]  = sk(lv, 5)                 # Blunt Weapons
+            ranks["18"] = sk(lv, 5)                 # Harness Power
+            ranks["20"] = sk(lv, 5)                 # Spiritual Mana Control
+            ranks["21"] = sk(lv // 2, 5)            # Mental Mana Control
+
+        elif "sorcerer" in prof:
+            ranks["5"]  = sk(max(1, lv // 2), 5)   # Edged Weapons (light)
+            ranks["18"] = sk(lv, 5)                 # Harness Power
+            ranks["19"] = sk(lv, 5)                 # Elemental Mana Control
+            ranks["21"] = sk(lv, 5)                 # Mental Mana Control
+            ranks["15"] = sk(lv, 5)                 # Arcane Symbols
+
+        elif "ranger" in prof:
+            ranks["5"]  = sk(int(lv * 1.5), 5)     # Edged Weapons
+            ranks["8"]  = sk(int(lv * 1.5), 5)     # Ranged Weapons
+            ranks["1"]  = sk(lv // 2, 5)            # TWC
+            ranks["23"] = sk(lv, 5)                 # Survival
+            ranks["18"] = sk(lv // 2, 5)            # Harness Power
+
+        elif "bard" in prof:
+            ranks["5"]  = sk(lv, 5)                 # Edged Weapons
+            ranks["18"] = sk(lv, 5)                 # Harness Power
+            ranks["21"] = sk(lv, 5)                 # Mental Mana Control
+            ranks["17"] = sk(lv // 2, 5)            # Spell Aiming
+
+        elif "paladin" in prof:
+            ranks["5"]  = sk(int(lv * 1.5), 5)     # Edged Weapons
+            ranks["6"]  = sk(lv, 5)                 # Blunt Weapons
+            ranks["3"]  = sk(lv, 5)                 # Shield Use
+            ranks["18"] = sk(lv, 5)                 # Harness Power
+            ranks["20"] = sk(lv, 5)                 # Spiritual Mana Control
+            ranks["4"]  = sk(max(1, lv), 4)         # CM
+
+        elif "monk" in prof:
+            ranks["12"] = sk(lv * 2, 5)             # MOC
+            ranks["11"] = sk(lv * 2, 5)             # Brawling
+            ranks["13"] = sk(lv * 2, 5)             # Physical Fitness
+            ranks["4"]  = sk(lv, 4)                 # CM
+
+        # Recompute bonuses at 5 pts/rank unless already set above
+        for sid, entry in ranks.items():
+            if entry["bonus"] == 0 and entry["ranks"] > 0:
+                ranks[sid]["bonus"] = entry["ranks"] * 5
+
         return ranks
 
     def _unique_name(self) -> str:

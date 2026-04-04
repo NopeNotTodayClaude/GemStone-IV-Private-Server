@@ -18,7 +18,7 @@ local SpellEngine = {}
 -- prepared[character_id] = { spell_number=N, expires=os.time()+30, spell_ranks={} }
 local prepared = {}
 
-local PREPARE_EXPIRE_SECS = 30
+local PREPARE_EXPIRE_SECS = 90
 
 local function load_spell(spell_number)
     return DB.queryOne(

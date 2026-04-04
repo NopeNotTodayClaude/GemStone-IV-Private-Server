@@ -81,8 +81,7 @@ handlers[1408] = function(ctx)
         stat_scale = 0.28,
         aiming_scale = 0.10,
     })
-    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, ctx.target.id })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format("An astral spear punches through %s for %d damage!", ctx.target.name or "your target", dmg)
 end
 
@@ -110,8 +109,7 @@ handlers[1414] = function(ctx)
         skill_scale = 0.06,
     })
     local total = pulses * per_pulse
-    local new_hp = SpellFx.hp_after_damage(ctx.target, total)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, ctx.target.id })
+    ctx.result.damage = (ctx.result.damage or 0) + total
     DB.execute("UPDATE characters SET mana_current=GREATEST(0, mana_current-?) WHERE id=?", { pulses, ctx.target.id })
     return string.format("A mana burst hammers %s with %d astral pulses for %d damage!", ctx.target.name or "your target", pulses, total)
 end

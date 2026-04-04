@@ -165,14 +165,20 @@ SKILL_DODGING           = 14
 
 
 def _sr(session, skill_id):
-    """Get skill ranks by integer ID, safe default 0."""
-    d = (getattr(session, 'skills', {}) or {}).get(skill_id, {})
+    """Get skill ranks by skill ID (int or str key), safe default 0.
+
+    JSON deserialization always produces string keys, but _build_skills uses
+    integer keys.  Try both so combat works regardless of which form is stored.
+    """
+    skills = getattr(session, 'skills', {}) or {}
+    d = skills.get(skill_id) or skills.get(str(skill_id)) or {}
     return int(d.get('ranks', 0)) if isinstance(d, dict) else 0
 
 
 def _sb(session, skill_id):
-    """Get skill bonus by integer ID. Falls back to ranks*3."""
-    d = (getattr(session, 'skills', {}) or {}).get(skill_id, {})
+    """Get skill bonus by skill ID (int or str key).  Falls back to ranks*3."""
+    skills = getattr(session, 'skills', {}) or {}
+    d = skills.get(skill_id) or skills.get(str(skill_id)) or {}
     if isinstance(d, dict):
         b = int(d.get('bonus', 0))
         return b if b else _sr(session, skill_id) * 3
@@ -192,7 +198,7 @@ def _buff_totals(session, server):
 
 def _weapon_skill_id(weapon):
     """Map weapon_category string to its skill ID."""
-    cat = (weapon.get('weapon_category', 'edged') or 'edged').lower() if weapon else 'edged'
+    cat = _weapon_category(weapon)
     return {
         'edged':     SKILL_EDGED_WEAPONS,
         'blunt':     SKILL_BLUNT_WEAPONS,
@@ -202,6 +208,19 @@ def _weapon_skill_id(weapon):
         'thrown':    SKILL_THROWN,
         'brawling':  SKILL_BRAWLING,
     }.get(cat, SKILL_EDGED_WEAPONS)
+
+
+def _weapon_category(weapon, default='edged'):
+    """Normalize weapon class lookups when live item rows are missing category."""
+    if not weapon:
+        return default
+    weapon_category = str(weapon.get('weapon_category') or '').strip().lower()
+    if weapon_category:
+        return weapon_category
+    weapon_type = str(weapon.get('weapon_type') or '').strip().lower()
+    if weapon_type in {'edged', 'blunt', 'twohanded', 'polearm', 'ranged', 'thrown', 'brawling'}:
+        return weapon_type
+    return default
 
 
 # Base Damage Factor for natural attacks when no weapon template DF exists.
@@ -370,6 +389,50 @@ CRIT_MESSAGES = {
         8: "Near-fatal wound!  Life force fading!",
         9: "*** CRITICAL *** Lethal impalement!",
     },
+    "heat": {
+        1: "Minor scorch mark.",
+        2: "Searing heat blisters skin.",
+        3: "Flames char flesh!",
+        4: "Fire burns deep!  Flesh blackens!",
+        5: "Intense heat sears muscle to bone!",
+        6: "Horrifying burns across a wide area!",
+        7: "Flesh rendered to ash!  Bone exposed!",
+        8: "Catastrophic burns!  Vitals searing!",
+        9: "*** CRITICAL *** Immolating strike!  The target writhes in flames!",
+    },
+    "cold": {
+        1: "Chill bites into skin.",
+        2: "Ice crystals form across flesh.",
+        3: "Frostbite sets in!  Flesh whitens!",
+        4: "Deep freeze!  Muscle stiffens painfully!",
+        5: "Flesh goes numb and cracks from cold!",
+        6: "Bone-deep freeze!  Limb barely responds!",
+        7: "Tissue frozen solid!  Shatters on impact!",
+        8: "Critical freeze!  Vitals crystallizing!",
+        9: "*** CRITICAL *** Glacial strike!  The target is encased in ice!",
+    },
+    "plasma": {
+        1: "Crackling discharge stings.",
+        2: "Lightning arcs across skin!",
+        3: "Jolting strike burns and stuns!",
+        4: "Savage shock!  Nerves seize!",
+        5: "Blinding discharge!  Muscles convulse!",
+        6: "Arcing plasma chars deep!",
+        7: "Searing plasma cuts through!  Organs burning!",
+        8: "Catastrophic shock!  Heart stuttering!",
+        9: "*** CRITICAL *** Electrocuting blast!  The target convulses!",
+    },
+    "magic": {
+        1: "Magical force grazes the target.",
+        2: "Force wave strikes hard.",
+        3: "Magical impact shakes the target!",
+        4: "Sorcerous blast tears into flesh!",
+        5: "Devastating spell impact!  Bones crack!",
+        6: "Massive arcane force!  Vital organs disrupted!",
+        7: "Reality-warping strike!  The target staggers!",
+        8: "Catastrophic magical force!  Body failing!",
+        9: "*** CRITICAL *** Obliterating arcane blast!",
+    },
 }
 
 # Lethal critical thresholds by location
@@ -488,7 +551,7 @@ def _calc_twc_offhand_as(session, off_weapon):
     cm_bonus  = _sr(session, SKILL_COMBAT_MANEUVERS) // 2
 
     # Off-hand weapon skill
-    off_cat = off_weapon.get('weapon_category', 'edged') if off_weapon else 'edged'
+    off_cat = _weapon_category(off_weapon)
     off_skill_id = {
         'edged':     SKILL_EDGED_WEAPONS,
         'blunt':     SKILL_BLUNT_WEAPONS,
@@ -812,7 +875,7 @@ class CombatEngine:
     def _get_weapon_category(self, weapon) -> str:
         if not weapon:
             return "unarmed"
-        return (weapon.get("weapon_category", "edged") or "edged").lower()
+        return _weapon_category(weapon)
 
     def _get_weapon_base_name(self, weapon) -> str:
         if not weapon:
@@ -2313,7 +2376,7 @@ class CombatEngine:
         if weapon:
             w_ranks = _sr(session, _weapon_skill_id(weapon))
             w_enc   = weapon.get("enchant_bonus", 0) or 0
-            w_cat   = (weapon.get("weapon_category", "edged") or "edged").lower()
+            w_cat   = _weapon_category(weapon)
             if w_cat == "twohanded":
                 p_base = w_ranks + int(str_bonus / 4) + int(dex_bonus / 4) + w_enc
                 p_mod  = thw_mod.get(stance, 0.75)
@@ -2528,7 +2591,7 @@ class CombatEngine:
             if weapon:
                 weapon_skill = _sr(session, _weapon_skill_id(weapon))
                 weapon_bonus = int((weapon.get("enchant_bonus", 0) or 0) / 2)
-                weapon_cat = str(weapon.get("weapon_category", "edged") or "edged").lower()
+                weapon_cat = _weapon_category(weapon)
                 parry_base = weapon_skill + int(str_bonus / 4) + int(dex_bonus / 4) + weapon_bonus
                 if weapon_cat == "twohanded":
                     parry_base += weapon_bonus

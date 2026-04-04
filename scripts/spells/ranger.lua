@@ -1,4 +1,4 @@
-------------------------------------------------------------------------
+﻿------------------------------------------------------------------------
 -- scripts/spells/ranger.lua
 -- Ranger Base (Ran) spell circle — spells 601-650.
 -- Circle id: 6 | Sphere: spiritual | CS/TD stat: wisdom
@@ -124,8 +124,7 @@ end
 handlers[603] = function(ctx)
     if not ctx.result.hit then return end
     local dmg = ward_dmg(ctx, 8, 1.00, { lore="summoning", lore_scale=0.04, stat="avg_wis_int" })
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format("Wild entropy tears through %s for %d damage!", tname(ctx), dmg)
 end
 
@@ -169,8 +168,7 @@ handlers[609] = function(ctx) -- Sun Burst bolt
     local dmg = bolt_dmg(ctx, 10, 1.10, { lore="summoning", lore_scale=0.03, stat="wisdom", flat_bonus=2 })
     local is_undead = ctx.target and (ctx.target.is_undead == 1 or ctx.target.is_undead == true)
     if is_undead then dmg = math.floor(dmg * 1.5) end
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format("A burst of sunlight strikes %s for %d damage!", tname(ctx), dmg)
 end
 
@@ -220,8 +218,7 @@ end
 handlers[616] = function(ctx) -- Spike Thorn bolt
     if not ctx.result.hit then return end
     local dmg = bolt_dmg(ctx, 11, 1.00, { lore="summoning", lore_scale=0.04, flat_bonus=math.floor((ctx.circle_ranks or 1) / 3) })
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format("A volley of thorns pierces %s for %d damage!", tname(ctx), dmg)
 end
 
@@ -282,8 +279,7 @@ end
 handlers[635] = function(ctx) -- Nature's Fury bolt
     if not ctx.result.hit then return end
     local dmg = bolt_dmg(ctx, 18, 1.45, { lore="summoning", lore_scale=0.05, stat="avg_wis_int", flat_bonus=4 })
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format("The fury of nature UNLEASHES upon %s for %d damage!", tname(ctx), dmg)
 end
 

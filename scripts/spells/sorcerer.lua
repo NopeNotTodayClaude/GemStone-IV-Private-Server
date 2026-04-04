@@ -1,4 +1,4 @@
-------------------------------------------------------------------------
+﻿------------------------------------------------------------------------
 -- scripts/spells/sorcerer.lua
 -- Sorcerer Base (Sor) spell circle — spells 701-740.
 -- Circle id: 7 | Sphere: hybrid_es (elemental/spiritual) | CS/TD stat: avg_aura_wis
@@ -103,8 +103,7 @@ local function sor_dmg(ctx, base, mult, opts)
         lore_scale = opts.lore_scale or 0.06,
         flat_bonus = opts.flat_bonus or 0,
     })
-    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return dmg
 end
 
@@ -153,8 +152,7 @@ handlers[705] = function(ctx) -- Disintegrate bolt
         aiming_scale = 0.10,
         lore_scale = 0.06,
     })
-    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format("Void energy tears %s apart for %d damage!", tname(ctx), dmg)
 end
 
@@ -218,10 +216,12 @@ handlers[710] = function(ctx) -- Energy Maelstrom bolt AoE
             { room_id, ctx.caster.id })
         local dmg = math.max(10, math.floor((ctx.result.total or 101) - 100))
         for _, t in ipairs(targets) do
+            -- Player HP reduced via DB (room-wide spell; creature HP applied by Python via result.room_damage)
             DB.execute("UPDATE characters SET health_current=? WHERE id=?",
                 { math.max(0, (t.health_current or 0) - dmg), t.id })
             hit_count = hit_count + 1
         end
+        ctx.result.room_damage = dmg
     end
     return string.format("An energy maelstrom rips through the area striking %d targets!", hit_count)
 end
@@ -259,8 +259,7 @@ handlers[713] = function(ctx) -- Balefire bolt
         aiming_scale = 0.10,
         lore_scale = 0.06,
     })
-    local new_hp = SpellFx.hp_after_damage(ctx.target, dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format("Balefire scorches %s for %d damage, burning through their defenses!", tname(ctx), dmg)
 end
 
@@ -327,16 +326,14 @@ end
 handlers[719] = function(ctx) -- Dark Catalyst
     if not ctx.result.hit then return end
     local dmg = math.max(20, math.floor((ctx.result.total or 101) - 100) * 4)
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format("Dark energies catalyze within %s in a devastating explosion for %d damage!", tname(ctx), dmg)
 end
 
 handlers[720] = function(ctx) -- Implosion
     if not ctx.result.hit then return end
     local dmg = math.max(25, math.floor((ctx.result.total or 101) - 100) * 5)
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format("%s IMPLODES for %d catastrophic damage!", tname(ctx), dmg)
 end
 

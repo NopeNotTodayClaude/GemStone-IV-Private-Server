@@ -1,4 +1,4 @@
-------------------------------------------------------------------------
+﻿------------------------------------------------------------------------
 -- scripts/spells/minor_elemental.lua
 -- Minor Elemental (MnE) spell circle - spells 401-435.
 ------------------------------------------------------------------------
@@ -174,8 +174,7 @@ end
 handlers[409] = function(ctx)
     if not ctx.result.hit then return end
     local dmg = bolt_dmg(ctx, 8, 0.95, { lore="earth", lore_scale=0.04 })
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format("An elemental blast strikes %s for %d damage!", tname(ctx), dmg)
 end
 
@@ -224,8 +223,7 @@ end
 handlers[415] = function(ctx)
     if not ctx.result.hit then return end
     local dmg = bolt_dmg(ctx, 12, 1.10, { lore="air", lore_scale=0.05, flat_bonus=2 })
-    local new_hp = math.max(0, (ctx.target.health_current or 0) - dmg)
-    DB.execute("UPDATE characters SET health_current=? WHERE id=?", { new_hp, tid(ctx) })
+    ctx.result.damage = (ctx.result.damage or 0) + dmg
     return string.format("A lightning strike crackles through %s for %d damage!", tname(ctx), dmg)
 end
 
@@ -316,11 +314,12 @@ handlers[435] = function(ctx)
             { room_id, ctx.caster.id })
         local dmg = bolt_dmg(ctx, 16, 1.20, { lore="air", lore_scale=0.04, flat_bonus=4 })
         for _, t in ipairs(targets) do
-            local new_hp = math.max(0, (t.health_current or 0) - dmg)
             DB.execute("UPDATE characters SET health_current=?, position='prone' WHERE id=?",
-                { new_hp, t.id })
+                { math.max(0, (t.health_current or 0) - dmg), t.id })
             hit_count = hit_count + 1
         end
+        ctx.result.room_damage = dmg
+        ctx.result.room_knocked_down = true
     end
     return string.format("A massive elemental wave crashes through the room, striking %d targets!", hit_count)
 end
