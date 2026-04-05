@@ -705,6 +705,9 @@ class ExperienceManager:
     # ── Level up ──────────────────────────────────────────────────────────────
 
     async def _level_up(self, session):
+        from server.core.commands.player.training import (
+            SKILL_COSTS, get_train_limit, apply_mana_max_recalc
+        )
         old_level = int(getattr(session, "level", 1) or 1)
         session.level += 1
         new_level = session.level
@@ -721,6 +724,7 @@ class ExperienceManager:
         # the rank cap (min(hp_ranks, level)) so this naturally grants more mana
         # when HP ranks are trained.
         apply_mana_max_recalc(session, self.server)
+        mana_gain = max(0, int(getattr(session, "mana_max", 0) or 0) - int(old_mana or 0))
         session.mana_current  = session.mana_max
 
         session.stamina_max     += 5
@@ -740,9 +744,6 @@ class ExperienceManager:
         # Refund: base x (slot_pos - 1) per such rank actually held.
         # Example: TWC limit=2 base=2/2, old level had ranks 39(slot1) and 40(slot2).
         #   Rank 40 cost 4/4 but is now prior-level -> refund 2/2.
-        from server.core.commands.player.training import (
-            SKILL_COSTS, get_train_limit, apply_mana_max_recalc
-        )
         old_level   = new_level - 1
         refund_ptp  = 0
         refund_mtp  = 0

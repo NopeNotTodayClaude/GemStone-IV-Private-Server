@@ -189,8 +189,8 @@ for level = 1, 50 do
     if arc_recast < 16 then arc_recast = 16 end
     scale_arc_levels[level] = {
         level = level,
-        min_damage = 6 + math.floor((level - 1) * (10 / 49)),
-        max_damage = 11 + math.floor((level - 1) * (18 / 49)),
+        min_damage = 18 + math.floor((level - 1) * (90 / 49)),
+        max_damage = 22 + math.floor((level - 1) * (110 / 49)),
         recast_seconds = arc_recast,
     }
 
@@ -198,10 +198,10 @@ for level = 1, 50 do
     if tempest_cd < 600 then tempest_cd = 600 end
     scale_tempest_levels[level] = {
         level = level,
-        unlocked = true,
+        unlocked = (level >= 50),
         cooldown_seconds = tempest_cd,
-        min_damage = 9999,
-        max_damage = 9999,
+        min_damage = 475,
+        max_damage = 525,
     }
 end
 
@@ -313,10 +313,10 @@ PetData.species = {
             scaleguard_ward = {
                 key = "scaleguard_ward",
                 label = "Scaleguard Ward",
-                type = "pet_spell",
-                trigger = "low_health",
+                type = "pet_reactive_spell",
+                trigger = "on_enemy_swing",
                 spell_number = 5002,
-                description = "When the owner is pressured, the Scale casts a layered ward that absorbs a chunk of incoming damage and stiffens the owner's defenses.",
+                description = "When an enemy swings at the owner (hit or miss), the Scale casts a layered ward that absorbs a chunk of incoming damage and stiffens the owner's defenses.",
                 cast_lines = {
                     self = "{pet} snaps its jaws and a sapphire ward settles over you.",
                     room = "{pet} snaps its jaws and a sapphire ward settles over {owner}.",

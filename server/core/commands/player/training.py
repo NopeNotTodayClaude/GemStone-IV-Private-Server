@@ -561,10 +561,16 @@ def apply_mana_max_recalc(session, server):
     if int(session.mana_current or 0) > new_max:
         session.mana_current = new_max
     if getattr(server, "db", None) and getattr(session, "character_id", None):
-        server.db.execute(
-            "UPDATE characters SET mana_max=?, mana_current=? WHERE id=?",
-            [new_max, int(session.mana_current or 0), session.character_id],
-        )
+        conn = server.db._get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE characters SET mana_max=%s, mana_current=%s WHERE id=%s",
+                (new_max, int(session.mana_current or 0), session.character_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
 def get_skill_cost(skill_id: int, prof_id: int):
     """Return (ptp_cost, mtp_cost) base cost per rank for this skill/profession."""

@@ -616,6 +616,12 @@ class PetManager:
             recast = self._format_duration_short(int(scaling.get("recast_seconds") or 0))
             threshold = int(round(float(scaling.get("threshold_pct") or 0.0) * 100.0))
             return f"Absorbs {absorb} incoming damage and adds +{ds_bonus} DS for {duration} when the owner falls below {threshold}% HP. Recasts every {recast}."
+        if ability_type == "pet_reactive_spell":
+            absorb = int(scaling.get("absorb_amount") or 0)
+            ds_bonus = int(scaling.get("ds_bonus") or 0)
+            duration = self._format_duration_short(int(scaling.get("duration_seconds") or 0))
+            recast = self._format_duration_short(int(scaling.get("recast_seconds") or 0))
+            return f"Absorbs {absorb} incoming damage and adds +{ds_bonus} DS for {duration} on any enemy swing. Recasts every {recast}."
         if ability_type == "pet_attack_spell":
             recast = self._format_duration_short(int(scaling.get("recast_seconds") or 0))
             return f"Strikes the owner's current foe for {int(scaling.get('min_damage') or 0)}-{int(scaling.get('max_damage') or 0)} damage. Recasts every {recast}."
@@ -643,6 +649,14 @@ class PetManager:
                 return "Active on owner"
             if cooldown_remaining > 0:
                 return f"Recast: {self._format_duration_short(cooldown_remaining)} remaining"
+            return "Ready to cast"
+        if ability_type == "pet_reactive_spell":
+            if cooldown_remaining > 0:
+                return f"Recast: {self._format_duration_short(cooldown_remaining)} remaining"
+            ward_expires = getattr(session, "_scale_ward_expires", 0)
+            import time as _t
+            if ward_expires and _t.time() < ward_expires:
+                return "Ward active"
             return "Ready to cast"
         if ability_type == "pet_attack_spell":
             if cooldown_remaining > 0:
@@ -1003,6 +1017,76 @@ class PetManager:
             self._save_pet_ability(pet, ability_key)
 
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Reactive swing hooks
+    # ------------------------------------------------------------------
+
+    async def on_enemy_swing(self, session, creature) -> None:
+        """Called by combat_engine.creature_attacks_player on every creature swing
+        (regardless of whether the swing hits or misses).  Fires pet_reactive_spell
+        abilities whose trigger is on_enemy_swing — currently Scaleguard Ward.
+        The low_health / _maybe_cast_pet_support_spells path is completely separate
+        and untouched."""
+        if getattr(session, "is_dead", False):
+            return
+        pet = getattr(session, "active_pet", None)
+        if not pet or pet.get("is_released"):
+            return
+        if self.is_companion_hidden(session, pet):
+            return
+        species = self.species_cfg(pet.get("species_key"))
+        if not species:
+            return
+
+        now = int(time.time())
+
+        for ability_key, ability in (species.get("abilities") or {}).items():
+            if str(ability.get("type") or "") != "pet_reactive_spell":
+                continue
+            if str(ability.get("trigger") or "") != "on_enemy_swing":
+                continue
+
+            scaling = self._ability_scaling_for_level(
+                pet.get("species_key"), ability_key, pet.get("pet_level")
+            )
+            if not scaling:
+                continue
+
+            state = self._ensure_ability_state(pet, ability_key)
+            if int(state.get("cooldown_until") or 0) > now:
+                continue
+
+            # Cast the spell (handles RT check, spell number lookup, etc.)
+            ok, _, _ = await self._cast_pet_spell(
+                session,
+                pet,
+                int(ability.get("spell_number") or 0),
+                session,
+                dict(scaling),
+            )
+            if not ok:
+                continue
+
+            await self._emit_pet_ability_sfx(session, pet, ability)
+            await self._emit_pet_cast_lines(session, pet, ability)
+
+            # Store ward state directly on the session so combat_engine can
+            # read it without a DB round-trip.  Safe for a 25s reactive buff.
+            #   session._scale_ward_absorb : remaining damage-absorption pool
+            #   session._scale_ward_ds     : flat DS bonus for the duration
+            #   session._scale_ward_expires: unix timestamp when ward expires
+            absorb_amount = int(scaling.get("absorb_amount") or 0)
+            ds_bonus      = int(scaling.get("ds_bonus") or 0)
+            duration      = float(scaling.get("duration_seconds") or 25)
+
+            session._scale_ward_absorb  = absorb_amount
+            session._scale_ward_ds      = ds_bonus
+            session._scale_ward_expires = time.time() + duration
+            state["last_triggered_at"] = now
+            state["cooldown_until"] = now + int(scaling.get("recast_seconds") or 75)
+            self._save_pet_ability(pet, ability_key)
+
     # Death / revival hooks
     # ------------------------------------------------------------------
 

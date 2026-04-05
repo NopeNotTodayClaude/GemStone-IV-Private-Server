@@ -310,11 +310,38 @@ class EventManager:
         Returns the Lumnis absorption multiplier for a specific session.
         Checks the session's lumnis_phase and whether the global event is active.
         Returns 1.0 if Lumnis is inactive or character's pool is exhausted.
+
+        Auto-initializes characters created or not updated during the activation
+        sweep (lumnis_cycle_id is NULL or belongs to a prior cycle).  This covers
+        new characters created while the event is already running.
         """
         if not self._lumnis_active:
             return 1.0
-        phase = getattr(session, "lumnis_phase", 0)
+        phase = int(getattr(session, "lumnis_phase", 0) or 0)
         cfg   = self.cfg.get("lumnis", _DEFAULTS["lumnis"])
+
+        # If phase is 0, check whether the character just missed the activation sweep.
+        # lumnis_cycle_id == None or != _lumnis_started means they were never initialised
+        # for this cycle.  Grant phase 1 immediately and persist it.
+        if phase == 0:
+            cycle_id = getattr(session, "lumnis_cycle_id", None)
+            if cycle_id != self._lumnis_started:
+                session.lumnis_phase        = 1
+                session.lumnis_bonus_earned = 0
+                session.lumnis_cycle_id     = self._lumnis_started
+                db = getattr(self.server, "db", None)
+                char_id = getattr(session, "character_id", None)
+                if db and char_id:
+                    try:
+                        db.execute_update(
+                            "UPDATE characters SET lumnis_phase=1, lumnis_bonus_earned=0, "
+                            "lumnis_cycle_id=%s WHERE id=%s",
+                            (self._lumnis_started, char_id),
+                        )
+                    except Exception:
+                        pass
+                phase = 1
+
         if phase == 1:
             return float(cfg.get("phase1_multiplier", 3))
         elif phase == 2:

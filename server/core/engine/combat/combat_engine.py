@@ -126,6 +126,16 @@ def _apply_player_wards(server, session, hp_damage: int) -> tuple[int, list[str]
         damage -= redirected
         notes.append(f"An empathic link diverts {redirected} damage away from you.")
 
+    # ── Scale pet ward absorption (Scaleguard Ward) ─────────────────
+    import time as _ward_time
+    _ward_absorb  = int(getattr(session, "_scale_ward_absorb", 0) or 0)
+    _ward_expires = float(getattr(session, "_scale_ward_expires", 0) or 0)
+    if _ward_absorb > 0 and damage > 0 and _ward_time.time() < _ward_expires:
+        absorbed = min(damage, _ward_absorb)
+        damage -= absorbed
+        session._scale_ward_absorb = max(0, _ward_absorb - absorbed)
+        notes.append(f"A sapphire ward absorbs {absorbed} damage.")
+
     return damage, notes
 
 
@@ -1839,6 +1849,11 @@ class CombatEngine:
                     await self.player_attacks_creature(session, creature)
             return
 
+        # ── Pet reactive swing hook (Scaleguard Ward etc.) ──────────────
+        _pet_mgr = getattr(self.server, "pets", None)
+        if _pet_mgr:
+            await _pet_mgr.on_enemy_swing(session, creature)
+
         # Roll
         d100 = random.randint(1, 100)
         endroll = d100 + creature_as - player_ds + avd
@@ -2471,6 +2486,13 @@ class CombatEngine:
 
         # Encumbrance DS penalty (applies after death_stat_mult)
         total += encumbrance_as_ds_penalty(session)
+        # ── Scale pet ward DS bonus (Scaleguard Ward) ───────────────────
+        import time as _ds_time
+        _ward_ds      = int(getattr(session, "_scale_ward_ds", 0) or 0)
+        _ward_expires = float(getattr(session, "_scale_ward_expires", 0) or 0)
+        if _ward_ds > 0 and _ds_time.time() < _ward_expires:
+            total += _ward_ds
+
         total = max(0, total)
 
         return total, evade_ds, parry_ds, block_ds
