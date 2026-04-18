@@ -53,8 +53,6 @@ from server.core.scripting.loaders.npc_room_resolver import (
     resolve_npc_home_rooms_from_registry_affiliation_segments,
     resolve_npc_home_rooms_from_registry_family_clusters,
     resolve_npc_home_rooms_from_role_tags,
-    resolve_npc_home_rooms_from_sql_dump,
-    resolve_npc_home_rooms_from_sql_exact_names,
     resolve_npc_home_rooms_from_template_prefixes,
     resolve_npc_home_rooms_from_template_title_overrides,
     resolve_npc_home_rooms_from_template_titles,
@@ -1138,7 +1136,6 @@ class NPCManager:
             ("template_room_prefixes", resolve_npc_home_rooms_from_template_prefixes(templates, scripts_path)),
             ("template_room_titles", resolve_npc_home_rooms_from_template_titles(templates, scripts_path)),
             ("wiki_shop_titles", resolve_npc_home_rooms_from_wiki_metadata(templates, scripts_path)),
-            ("sql_exact_names", resolve_npc_home_rooms_from_sql_exact_names(templates, scripts_path)),
             ("wiki_affiliations", resolve_npc_home_rooms_from_affiliations(templates, scripts_path)),
             ("registry_affiliation_clusters", resolve_npc_home_rooms_from_registry_affiliation_clusters(templates, registry_rows or {}, scripts_path)),
             ("registry_affiliation_segments", resolve_npc_home_rooms_from_registry_affiliation_segments(templates, registry_rows or {}, scripts_path)),
@@ -1146,7 +1143,6 @@ class NPCManager:
             ("role_tag_shops", resolve_npc_home_rooms_from_role_tags(templates, scripts_path)),
             ("wiki_area_hubs", resolve_npc_home_rooms_from_wiki_areas(templates, scripts_path)),
             ("room_graph_titles", resolve_npc_home_rooms(templates, scripts_path)),
-            ("sql_dump_refs", resolve_npc_home_rooms_from_sql_dump(templates, scripts_path)),
         ):
             added, conflicts = self._merge_authoritative_room_map(room_map, source_name)
             counts.append((source_name, added, conflicts))
