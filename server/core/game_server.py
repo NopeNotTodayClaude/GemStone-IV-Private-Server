@@ -187,13 +187,6 @@ class GameServer:
         await self.wound_bridge.initialize()
         log.info("WoundBridge ready (Lua-backed: %s)", self.wound_bridge.available)
 
-        # Load perception system config from Lua
-        self.perception_cfg = load_perception_cfg(self.lua.engine)
-        log.info("Perception system config loaded (skill_id=%d)", self.perception_cfg.get("skill_id", 27))
-
-        self.ambush_cfg = load_ambush_cfg(self.lua.engine)
-        log.info("Ambush system config loaded (skill_id=%d)", self.ambush_cfg.get("skill_id", 43))
-
         # Seed spells table from Lua circle modules
         log.info("Seeding spell circles...")
         _spell_summary = await self.lua.seed_spells()

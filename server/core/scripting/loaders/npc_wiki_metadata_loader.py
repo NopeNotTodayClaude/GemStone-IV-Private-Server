@@ -16,6 +16,9 @@ import re
 
 log = logging.getLogger(__name__)
 
+_CACHE_KEY = None
+_CACHE_ROWS: dict[str, dict] = {}
+
 _LIST_FIELDS = {"venues", "storylines", "shop_links"}
 _SCALAR_FIELDS = {"wiki_template", "hometown", "profession", "service", "affiliation"}
 
@@ -125,10 +128,23 @@ def _clean_list(values) -> list[str]:
     return cleaned
 
 
+def _cache_key_for(path: str):
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return (os.path.abspath(path), int(stat.st_mtime_ns), int(stat.st_size))
+
+
 def load_npc_wiki_metadata(scripts_path: str) -> dict[str, dict]:
+    global _CACHE_KEY, _CACHE_ROWS
     data_path = os.path.join(scripts_path, "data", "npc_wiki_metadata.lua")
     if not os.path.isfile(data_path):
         return {}
+
+    cache_key = _cache_key_for(data_path)
+    if cache_key and cache_key == _CACHE_KEY:
+        return _CACHE_ROWS
 
     try:
         with open(data_path, "r", encoding="utf-8") as handle:
@@ -183,5 +199,7 @@ def load_npc_wiki_metadata(scripts_path: str) -> dict[str, dict]:
                 current[field] = re.findall(r'"((?:\\"|[^"])*)"', list_match.group(2))
             continue
 
+    _CACHE_KEY = cache_key
+    _CACHE_ROWS = rows
     log.info("npc_wiki_metadata_loader: loaded %d cleaned NPC wiki metadata rows", len(rows))
     return rows

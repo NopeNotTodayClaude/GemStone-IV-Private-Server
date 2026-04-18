@@ -23,6 +23,9 @@ from server.core.scripting.loaders.npc_wiki_metadata_loader import load_npc_wiki
 
 log = logging.getLogger(__name__)
 
+_ROOM_INDEX_CACHE_KEY = None
+_ROOM_INDEX_CACHE = {}
+
 def _normalize_hint_key(text: str) -> str:
     text = str(text or "").lower()
     text = text.replace("'", "")
@@ -258,11 +261,20 @@ def _distinctive_name_tokens(name: str, title: str) -> list[str]:
 
 
 def _load_room_index(scripts_path: str) -> dict:
+    global _ROOM_INDEX_CACHE_KEY, _ROOM_INDEX_CACHE
     project_root = os.path.abspath(os.path.join(scripts_path, ".."))
     room_graph_path = os.path.join(project_root, "client", "data", "room_graph.json")
     if not os.path.isfile(room_graph_path):
         log.warning("npc_room_resolver: room graph not found at %s", room_graph_path)
         return []
+
+    try:
+        stat = os.stat(room_graph_path)
+        cache_key = (os.path.abspath(room_graph_path), int(stat.st_mtime_ns), int(stat.st_size))
+    except OSError:
+        cache_key = None
+    if cache_key and cache_key == _ROOM_INDEX_CACHE_KEY:
+        return _ROOM_INDEX_CACHE
 
     rooms_by_id = {}
     title_index = defaultdict(set)
@@ -373,12 +385,15 @@ def _load_room_index(scripts_path: str) -> dict:
         log.error("npc_room_resolver: failed scanning %s (%s)", room_graph_path, exc, exc_info=True)
         return {"rooms_by_id": {}, "title_index": {}, "area_index": {}}
 
-    return {
+    room_index = {
         "rooms_by_id": rooms_by_id,
         "title_index": dict(title_index),
         "exact_title_index": dict(exact_title_index),
         "area_index": dict(area_index),
     }
+    _ROOM_INDEX_CACHE_KEY = cache_key
+    _ROOM_INDEX_CACHE = room_index
+    return room_index
 
 
 def _hint_matches_room(location_hint: str, room: dict) -> bool:

@@ -15,6 +15,20 @@ import re
 
 log = logging.getLogger(__name__)
 
+_EMPTY_ALIAS_SET = {
+    "affiliation_aliases": {},
+    "affiliation_room_tags": {},
+    "affiliation_room_titles": {},
+    "location_hint_room_titles": {},
+    "template_room_prefixes": {},
+    "template_room_titles_override_hint": {},
+    "template_room_titles": {},
+    "role_room_tags": {},
+}
+
+_CACHE_KEY = None
+_CACHE_DATA = dict(_EMPTY_ALIAS_SET)
+
 
 def _parse_list_sections(text: str, section_names: list[str]) -> dict[str, dict[str, list[str]]]:
     sections: dict[str, dict[str, list[str]]] = {name: {} for name in section_names}
@@ -62,35 +76,30 @@ def _parse_list_sections(text: str, section_names: list[str]) -> dict[str, dict[
     return sections
 
 
+def _cache_key_for(path: str):
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return (os.path.abspath(path), int(stat.st_mtime_ns), int(stat.st_size))
+
+
 def load_npc_placement_aliases(scripts_path: str) -> dict[str, dict[str, list[str]]]:
+    global _CACHE_KEY, _CACHE_DATA
     data_path = os.path.join(scripts_path, "data", "npc_placement_aliases.lua")
     if not os.path.isfile(data_path):
-        return {
-            "affiliation_aliases": {},
-            "affiliation_room_tags": {},
-            "affiliation_room_titles": {},
-            "location_hint_room_titles": {},
-            "template_room_prefixes": {},
-            "template_room_titles_override_hint": {},
-            "template_room_titles": {},
-            "role_room_tags": {},
-        }
+        return dict(_EMPTY_ALIAS_SET)
+
+    cache_key = _cache_key_for(data_path)
+    if cache_key and cache_key == _CACHE_KEY:
+        return _CACHE_DATA
 
     try:
         with open(data_path, "r", encoding="utf-8") as handle:
             text = handle.read()
     except Exception as exc:
         log.warning("npc_placement_alias_loader: failed reading %s (%s)", data_path, exc)
-        return {
-            "affiliation_aliases": {},
-            "affiliation_room_tags": {},
-            "affiliation_room_titles": {},
-            "location_hint_room_titles": {},
-            "template_room_prefixes": {},
-            "template_room_titles_override_hint": {},
-            "template_room_titles": {},
-            "role_room_tags": {},
-        }
+        return dict(_EMPTY_ALIAS_SET)
 
     sections = _parse_list_sections(
         text,
@@ -106,18 +115,7 @@ def load_npc_placement_aliases(scripts_path: str) -> dict[str, dict[str, list[st
         ],
     )
 
-    log.info(
-        "npc_placement_alias_loader: loaded %d affiliation alias rows, %d room-tag rows, %d room-title rows, %d hint-title rows, %d template-prefix rows, %d override-title rows, %d template-title rows, %d role-tag rows",
-        len(sections.get("affiliation_aliases") or {}),
-        len(sections.get("affiliation_room_tags") or {}),
-        len(sections.get("affiliation_room_titles") or {}),
-        len(sections.get("location_hint_room_titles") or {}),
-        len(sections.get("template_room_prefixes") or {}),
-        len(sections.get("template_room_titles_override_hint") or {}),
-        len(sections.get("template_room_titles") or {}),
-        len(sections.get("role_room_tags") or {}),
-    )
-    return {
+    data = {
         "affiliation_aliases": dict(sections.get("affiliation_aliases") or {}),
         "affiliation_room_tags": dict(sections.get("affiliation_room_tags") or {}),
         "affiliation_room_titles": dict(sections.get("affiliation_room_titles") or {}),
@@ -127,3 +125,18 @@ def load_npc_placement_aliases(scripts_path: str) -> dict[str, dict[str, list[st
         "template_room_titles": dict(sections.get("template_room_titles") or {}),
         "role_room_tags": dict(sections.get("role_room_tags") or {}),
     }
+    _CACHE_KEY = cache_key
+    _CACHE_DATA = data
+
+    log.info(
+        "npc_placement_alias_loader: loaded %d affiliation alias rows, %d room-tag rows, %d room-title rows, %d hint-title rows, %d template-prefix rows, %d override-title rows, %d template-title rows, %d role-tag rows",
+        len(data.get("affiliation_aliases") or {}),
+        len(data.get("affiliation_room_tags") or {}),
+        len(data.get("affiliation_room_titles") or {}),
+        len(data.get("location_hint_room_titles") or {}),
+        len(data.get("template_room_prefixes") or {}),
+        len(data.get("template_room_titles_override_hint") or {}),
+        len(data.get("template_room_titles") or {}),
+        len(data.get("role_room_tags") or {}),
+    )
+    return data
