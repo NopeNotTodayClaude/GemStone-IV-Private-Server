@@ -5,12 +5,17 @@ Quest.guild_id    = "rogue"
 Quest.title       = "Locks Within Locks"
 Quest.description = "The guild expects more than brute persistence from a locksmith."
 Quest.repeatable  = false
+Quest.prereq_quests = {
+    "rogue_orientation",
+}
 Quest.start_npc_template_ids = {
     "tv_rogue_lockmaster",
 }
 Quest.turnin_npc_template_ids = {
     "tv_rogue_lockmaster",
 }
+Quest.start_room_id = 17827
+Quest.turnin_room_id = 17827
 Quest.start_message = "Then stop pawing at locks like a dock thug.  Read the room, measure the mechanism, and prove you can detect, disarm, and pick cleanly."
 Quest.rewards = {
     unlocks = {

@@ -29,45 +29,24 @@ SHOP_TYPE_HINTS = {
     "default": ("Shop",       ["ORDER", "BUY {#}", "SELL {item}", "APPRAISE {item}"]),
 }
 
-LOCKSMITH_TEMPLATE_IDS = {
-    "shind",
-    "wl_locksmith_jyhm",
-    "tai_locksmith_tai",
-    "ti_locksmith_ti",
-    "zl_locksmith_zl",
-    "cys_locksmith_hihaeim",
-    "kf_locksmith_kf",
-    "imt_blackfinger",
-}
-
-NPC_SERVICE_HINTS = {
-    "bank_teller":       ("Bank",       ["CHECK BALANCE", "DEPOSIT {#|ALL|NOTE}", "WITHDRAW {#} [NOTE]", "LOCKER INFO"]),
-    "empath_healer":     ("Healer",     ["TALK TO {healer}", "ASK {healer} ABOUT healing"]),
-    "guild_clerk":       ("Guild",      ["TALK TO {clerk}", "ASK {clerk} ABOUT register", "ASK {clerk} ABOUT bounty", "ASK {clerk} ABOUT rank", "ASK {clerk} ABOUT checkin", "ASK {clerk} ABOUT vouchers"]),
-    "hall_steward":      ("Hall",       ["TALK TO {steward}", "ASK {steward} ABOUT hall"]),
-    "wyvern_registrar":  ("Registry",   ["TALK TO {registrar}", "ASK {registrar} ABOUT registration"]),
-    "justice_clerk":     ("Justice",    ["TALK TO {clerk}", "ASK {clerk} ABOUT justice"]),
-    "travel_clerk":      ("Travel",     ["TALK TO {clerk}", "ASK {clerk} ABOUT travel"]),
-    "moving_foreman":    ("Moving Co.", ["TALK TO {foreman}", "ASK {foreman} ABOUT moving"]),
-    "historian":         ("Historical Society", ["TALK TO {historian}", "ASK {historian} ABOUT history"]),
-    "springs_attendant": ("Spa",        ["TALK TO {attendant}", "ASK {attendant} ABOUT springs"]),
-    "arkarti_priest":    ("Temple",     ["TALK TO {priest}", "ASK {priest} ABOUT arkati"]),
-    "garden_keeper":     ("Garden",     ["TALK TO {keeper}", "ASK {keeper} ABOUT garden"]),
-    "fisherman":         ("Fisherman",  ["TALK TO {fisherman}", "ASK {fisherman} ABOUT fishing"]),
-    "halline":           ("Taskmaster", ["TALK TO {taskmaster}", "ASK {taskmaster} ABOUT register", "ASK {taskmaster} ABOUT bounty", "ASK {taskmaster} ABOUT rank", "ASK {taskmaster} ABOUT checkin", "ASK {taskmaster} ABOUT vouchers", "BOUNTY STATUS", "BOUNTY SWAP", "BOUNTY REMOVE"]),
-    "rheteger":          ("Taskmaster", ["TALK TO {taskmaster}", "ASK {taskmaster} ABOUT register", "ASK {taskmaster} ABOUT bounty", "ASK {taskmaster} ABOUT rank", "ASK {taskmaster} ABOUT checkin", "ASK {taskmaster} ABOUT vouchers", "BOUNTY STATUS", "BOUNTY SWAP", "BOUNTY REMOVE"]),
-    "torsidr":           ("Taskmaster", ["TALK TO {taskmaster}", "ASK {taskmaster} ABOUT register", "ASK {taskmaster} ABOUT bounty", "ASK {taskmaster} ABOUT rank", "ASK {taskmaster} ABOUT checkin", "ASK {taskmaster} ABOUT vouchers", "BOUNTY STATUS", "BOUNTY SWAP", "BOUNTY REMOVE"]),
-}
-
 SERVICE_TAG_HINTS = {
+    "adventurers_guild": ("Taskmaster", ["TALK TO {taskmaster}", "ASK {taskmaster} ABOUT register", "ASK {taskmaster} ABOUT bounty", "ASK {taskmaster} ABOUT rank", "ASK {taskmaster} ABOUT checkin", "ASK {taskmaster} ABOUT vouchers", "BOUNTY STATUS", "BOUNTY SWAP", "BOUNTY REMOVE"]),
     "bank":       ("Bank",       ["CHECK BALANCE", "DEPOSIT {#|ALL|NOTE}", "WITHDRAW {#} [NOTE]", "LOCKER INFO"]),
+    "justice":    ("Justice",    ["TALK TO {clerk}", "ASK {clerk} ABOUT justice"]),
     "healer":     ("Healer",     ["TALK TO {healer}", "ASK {healer} ABOUT healing"]),
-    "guild":      ("Guild",      ["TALK TO {clerk}", "ASK {clerk} ABOUT guild"]),
-    "travel":     ("Travel",     ["TALK TO {clerk}", "ASK {clerk} ABOUT travel"]),
+    "hall":       ("Hall",       ["TALK TO {steward}", "ASK {steward} ABOUT hall"]),
+    "history":    ("Historical Society", ["TALK TO {historian}", "ASK {historian} ABOUT history"]),
+    "guild":      ("Guild",      ["TALK TO {clerk}", "ASK {clerk} ABOUT guild", "GLD STATUS", "GLD JOIN", "GLD PAY {months}", "GLD CHECKIN", "GLD RANK", "GLD SKILLS", "GLD TASK {skill}", "GLD PRACTICE", "GLD COMPLETE", "GLD QUEST START", "GLD QUEST"]),
+    "moving":     ("Moving Co.", ["TALK TO {foreman}", "ASK {foreman} ABOUT moving"]),
+    "travel":     ("Travel",     ["TALK TO {clerk}", "ASK {clerk} ABOUT destinations", "ASK {clerk} ABOUT {town}"]),
+    "locksmith":  ("Locksmith",  ["APPRAISE {pick}", "RING BELL", "PAY {amount}", "BOXPICK", "CLAIM {#}", "DONE {#}"]),
     "registrar":  ("Registry",   ["TALK TO {registrar}", "ASK {registrar} ABOUT registration"]),
-    "inn":        ("Inn",        ["TALK TO {innkeeper}"]),
+    "inn":        ("Inn",        ["TALK TO {innkeeper}", "CHECK IN", "CHECK ROOM", "CHECK OUT", "ASK {innkeeper} ABOUT table"]),
     "pawnbroker": ("Pawnbroker", ["ORDER", "APPRAISE {item}", "SELL {item}", "BACKROOM", "LOOK ON {weapon|armor|arcana|misc} TABLE", "BUY BACKROOM {table} {#}"]),
     "priest":     ("Temple",     ["TALK TO {priest}", "ASK {priest} ABOUT arkati"]),
+    "springs":    ("Spa",        ["TALK TO {attendant}", "ASK {attendant} ABOUT springs"]),
+    "garden":     ("Garden",     ["TALK TO {keeper}", "ASK {keeper} ABOUT garden"]),
+    "fishing":    ("Fisherman",  ["TALK TO {fisherman}", "ASK {fisherman} ABOUT fishing"]),
 }
 
 MENAGERIE_HINT = (
@@ -86,16 +65,6 @@ MENAGERIE_HINT = (
         "PET RELEASE",
     ],
 )
-
-ROGUE_GUILD_TEMPLATE_IDS = {
-    "tv_rogue_guild_contact",
-    "tv_rogue_lockmaster",
-    "tv_rogue_bruiser",
-    "tv_rogue_drillmaster",
-    "tv_rogue_training_admin",
-    "tv_rogue_guildmaster",
-    "tv_rogue_master_pyll",
-}
 
 ROGUE_ROOM_HINTS = {
     17806: (
@@ -297,9 +266,8 @@ def _get_locker_entry_commands(server, room, locker_ctx):
 
 
 def _is_locksmith_npc(npc):
-    """Best-effort locksmith detection without tying hints to one city."""
-    tid = (getattr(npc, "template_id", None) or "").lower().strip()
-    if tid in LOCKSMITH_TEMPLATE_IDS:
+    """Best-effort locksmith detection using authoritative service tags first."""
+    if getattr(npc, "matches_service", None) and npc.matches_service("locksmith"):
         return True
 
     text = " ".join([
@@ -417,7 +385,7 @@ async def show_room_hints(session, room, server):
 
     for npc in server.npcs.get_npcs_in_room(room.id):
         tid = getattr(npc, "template_id", None) or ""
-        is_rogue_guild_npc = tid in ROGUE_GUILD_TEMPLATE_IDS
+        is_rogue_guild_npc = room.id in ROGUE_ROOM_HINTS and str(getattr(npc, "guild_id", "") or "").lower() == "rogue"
 
         if getattr(npc, "guild_id", None) and "profession_guild" not in shown and not is_rogue_guild_npc:
             label = _get_guild_label(server, getattr(npc, "guild_id", None))
@@ -467,12 +435,6 @@ async def show_room_hints(session, room, server):
                 label, cmds = SHOP_TYPE_HINTS.get(shop_type, SHOP_TYPE_HINTS["default"])
                 await session.send_line(_fmt(label, cmds))
                 shown.add(tid)
-            continue
-
-        if tid and tid in NPC_SERVICE_HINTS and tid not in shown:
-            label, cmds = NPC_SERVICE_HINTS[tid]
-            await session.send_line(_fmt(label, cmds))
-            shown.add(tid)
             continue
 
         for service_tag, (label, cmds) in SERVICE_TAG_HINTS.items():

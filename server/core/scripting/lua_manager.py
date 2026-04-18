@@ -235,6 +235,10 @@ class LuaManager:
         from server.core.scripting.loaders.travel_offices_loader import load_travel_offices
         return self._load_once("travel_offices", lambda: load_travel_offices(self._engine))
 
+    def get_npc_service_roles(self) -> Optional[dict]:
+        from server.core.scripting.loaders.npc_service_roles_loader import load_npc_service_roles
+        return self._load_once("npc_service_roles", lambda: load_npc_service_roles(self._engine))
+
     def get_creature_spawns(self) -> Optional[dict]:
         from server.core.scripting.loaders.creature_spawns_loader import load_creature_spawns
         return self._load_once("creature_spawns", lambda: load_creature_spawns(self._engine))

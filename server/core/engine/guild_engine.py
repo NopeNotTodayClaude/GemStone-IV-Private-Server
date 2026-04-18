@@ -1934,15 +1934,18 @@ class GuildEngine:
         ):
             return False
 
-        ok, _err, quest = self.start_specific_quest(session, "rogue_entry")
+        ok, _err, quest = self.start_specific_quest(session, "rogue_entry", allow_remote_start=True)
         if ok and quest:
             await self.prepare_started_quest(session, quest)
         await self._send_rogue_invite_notice(session, access_point)
         return True
 
-    def start_specific_quest(self, session, quest_key: str):
+    def start_specific_quest(self, session, quest_key: str, *, actor_npc=None, allow_remote_start: bool = False):
         if not getattr(session, "character_id", None):
             return False, "The quest ledger cannot identify you right now.", None
+        quest_key = (quest_key or "").strip().lower()
+        if not quest_key:
+            return False, "That quest does not exist.", None
         rows = self.get_quest_journal(session.character_id, quest_key=quest_key)
         if rows:
             status = (rows[0].get("status") or "").lower()
@@ -1951,6 +1954,18 @@ class GuildEngine:
             if status == "complete":
                 return False, "That quest is already complete.", rows[0]
 
+        available_rows = self.get_quest_journal(session.character_id, quest_key=quest_key)
+        quest = available_rows[0] if available_rows else None
+        resolved_actor_npc = actor_npc or self._find_local_quest_npc(session, quest, phase="start")
+        error = self._quest_start_error(
+            session,
+            quest,
+            resolved_actor_npc,
+            allow_remote_start=allow_remote_start,
+        )
+        if error:
+            return False, error, quest
+
         conn = self._get_conn()
         if not conn:
             return False, "The quest ledger is unavailable right now.", None
@@ -1958,7 +1973,7 @@ class GuildEngine:
             cur = conn.cursor(dictionary=True)
             cur.execute(
                 """
-                SELECT id, min_level, max_level
+                SELECT id
                 FROM quest_definitions
                 WHERE key_name = %s
                 LIMIT 1
@@ -1968,9 +1983,6 @@ class GuildEngine:
             row = cur.fetchone()
             if not row:
                 return False, "That quest does not exist.", None
-            level = int(getattr(session, "level", 0) or 0)
-            if level < int(row.get("min_level") or 1) or level > int(row.get("max_level") or 100):
-                return False, "You are not eligible for that quest yet.", None
             cur = conn.cursor()
             cur.execute(
                 """
@@ -2277,7 +2289,7 @@ class GuildEngine:
                 return npc
         return None
 
-    def _quest_start_error(self, session, quest, actor_npc=None):
+    def _quest_start_error(self, session, quest, actor_npc=None, *, allow_remote_start: bool = False):
         if not quest:
             return "That quest could not be found."
         status = (quest.get("status") or "available").lower()
@@ -2311,6 +2323,8 @@ class GuildEngine:
         required_npcs = quest.get("start_npc_template_ids") or []
         if required_npcs:
             if actor_npc and self._quest_matches_npc(quest, actor_npc, phase="start"):
+                return None
+            if allow_remote_start:
                 return None
             return "You must speak with the proper quest giver to begin that quest."
         start_items = quest_meta.get("start_items") or []
@@ -3207,7 +3221,7 @@ class GuildEngine:
             active_orientation = self.get_active_quest(session.character_id, self._ROGUE_GUILD_ID)
             orientation_rows = self.get_quest_journal(session.character_id, quest_key="rogue_orientation")
             if not active_orientation and (not orientation_rows or (orientation_rows[0].get("status") or "").lower() != "complete"):
-                ok, _err, quest = self.start_specific_quest(session, "rogue_orientation")
+                ok, _err, quest = self.start_specific_quest(session, "rogue_orientation", allow_remote_start=True)
                 if ok and quest:
                     await self.prepare_started_quest(session, quest)
                     await self.handle_room_entry(session)

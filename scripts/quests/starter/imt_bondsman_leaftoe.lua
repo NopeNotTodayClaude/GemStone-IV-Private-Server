@@ -12,6 +12,8 @@ Quest.start_npc_template_id  = "imt_bondsman"
 Quest.turnin_npc_template_id = "imt_leaftoe"
 Quest.start_room_id          = 2438
 Quest.start_lich_room_id     = 4043042
+Quest.turnin_room_id         = 3363
+Quest.turnin_lich_room_id    = 4043866
 Quest.start_message          = "Leaftoe needs this packet.  Try not to misplace it in a drift."
 Quest.start_items            = {
     { short_name = "sealed packet for Leaftoe", noun = "packet" },

@@ -1,4 +1,4 @@
--------------------------------------------------------------------
+﻿-------------------------------------------------------------------
 -- status_effects.lua
 -- GemStone IV Status Effect Registry
 --
@@ -732,6 +732,23 @@ Effects["counter"] = {
     can_clear        = {},
     description      = "Counter-attack window open; next attack has +20 AS.",
 }
+Effects["scale_ward"] = {
+    name             = "Scaleguard Ward",
+    category         = "BUFF_REACTIVE",
+    prompt_char      = "W",
+    stackable        = false,
+    max_stacks       = 1,
+    tick_interval    = 0,
+    duration_default = 25,
+    -- Mechanics (absorb pool + DS bonus) are stored on session attributes by pet_manager.
+    -- This entry exists solely so the status manager can display "W" in the prompt
+    -- bar and list the ward in STATUS output.
+    combat_mods      = { as = 0, ds = 0, evade_pct = 0, parry_pct = 0, block_pct = 0 },
+    blocks           = {},
+    can_clear        = {},
+    description      = "Scaleguard Ward active: absorbs damage and grants DS bonus on any incoming swing.",
+}
+
 
 -- ============================================================
 -- BUFF_SPECIAL  (unique mechanics)

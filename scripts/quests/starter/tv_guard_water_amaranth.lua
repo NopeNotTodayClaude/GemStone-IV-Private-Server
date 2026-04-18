@@ -12,6 +12,8 @@ Quest.start_npc_template_id  = "guard_amaranth_sorvael"
 Quest.turnin_npc_template_id = "guard_amaranth_sorvael"
 Quest.start_room_id          = 3727
 Quest.start_lich_room_id     = 14100003
+Quest.turnin_room_id         = 3727
+Quest.turnin_lich_room_id    = 14100003
 Quest.start_message          = "Bring me a glass of water from Malwith Inn.  Promptly."
 
 Quest.stages = {

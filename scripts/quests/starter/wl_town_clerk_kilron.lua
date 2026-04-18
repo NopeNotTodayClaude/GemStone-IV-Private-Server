@@ -12,6 +12,8 @@ Quest.start_npc_template_id  = "wl_town_clerk"
 Quest.turnin_npc_template_id = "wl_kilron"
 Quest.start_room_id          = 7970
 Quest.start_lich_room_id     = 2020
+Quest.turnin_room_id         = 408
+Quest.turnin_lich_room_id    = 5163
 Quest.start_message          = "Kilron needs this notice.  Get it into his hands, not his doorway."
 Quest.start_items            = {
     { short_name = "sealed dispatch for Kilron", noun = "dispatch" },

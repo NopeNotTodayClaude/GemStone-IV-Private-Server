@@ -12,6 +12,8 @@ Quest.start_npc_template_id  = "sassion"
 Quest.turnin_npc_template_id = "tv_saphrie"
 Quest.start_room_id          = 3490
 Quest.start_lich_room_id     = 14100010
+Quest.turnin_room_id         = 10396
+Quest.turnin_lich_room_id    = 14103400
 Quest.start_message          = "Saphrie is waiting on this requisition note.  Take it to her before she starts complaining to me."
 Quest.start_items            = {
     { short_name = "sealed message for Saphrie", noun = "message" },

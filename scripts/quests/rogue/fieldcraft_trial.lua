@@ -5,6 +5,9 @@ Quest.guild_id    = "rogue"
 Quest.title       = "Never Lose the Edge"
 Quest.description = "When the work turns rough, a rogue keeps moving and keeps the advantage."
 Quest.repeatable  = false
+Quest.prereq_quests = {
+    "rogue_orientation",
+}
 Quest.start_npc_template_ids = {
     "tv_rogue_drillmaster",
     "tv_rogue_master_pyll",
@@ -12,6 +15,14 @@ Quest.start_npc_template_ids = {
 Quest.turnin_npc_template_ids = {
     "tv_rogue_drillmaster",
     "tv_rogue_master_pyll",
+}
+Quest.start_room_ids = {
+    17822,
+    18345,
+}
+Quest.turnin_room_ids = {
+    17822,
+    18345,
 }
 Quest.start_message = "You want fieldcraft, then prove you can keep moving through the ugly seconds.  Show me stun recovery, two clean gambits, and one that actually shifts the fight."
 Quest.rewards = {

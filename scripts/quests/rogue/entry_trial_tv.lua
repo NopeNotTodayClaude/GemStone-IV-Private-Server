@@ -5,6 +5,15 @@ Quest.guild_id    = "rogue"
 Quest.title       = "Quiet Entry"
 Quest.description = "A rogue is expected to prove they can find the way in, get through the inner door, and keep the guild ledger satisfied."
 Quest.repeatable  = false
+Quest.start_npc_template_ids = {
+    "tv_rogue_guild_contact",
+}
+Quest.turnin_npc_template_ids = {
+    "tv_rogue_guild_contact",
+}
+Quest.start_room_id = 17806
+Quest.turnin_room_id = 17806
+Quest.start_message = "Find the shed, work the hidden entry, get through the inner door, then make your name official on Kharst's ledger."
 
 Quest.stages = {
     {

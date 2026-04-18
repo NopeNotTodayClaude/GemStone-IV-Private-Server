@@ -87,6 +87,7 @@ _PREDATORY_ABILITIES = {
 
 _SELF_HEAL_ABILITIES = {
     "golem_reconstruct": (0.25, 28, "{name} draws splintered pieces back into place and reconstructs itself!"),
+    "healing_minor": (0.14, 22, "{name} draws a quick pulse of restorative power through its wounds."),
 }
 
 _SELF_BUFF_ABILITIES = {
@@ -121,6 +122,33 @@ _SELF_BUFF_ABILITIES = {
     "puncture_resistant": (18, 0, 10, "{name}'s hide shifts to blunt piercing blows."),
     "undead_resilience": (18, 0, 12, "{name}'s dead flesh stiffens with unnatural resilience."),
     "shambling_gait": (18, 0, 10, "{name} lurches into a stubborn, shambling guard."),
+    "spirit_warding_i_101": (18, 0, 10, "{name} murmurs a warding cant and draws in a pale spiritual screen."),
+    "spirit_barrier_102": (20, 0, 14, "{name} gathers a translucent spirit barrier around itself."),
+    "spirit_defense_103": (20, 0, 16, "{name} steadies into a disciplined spiritual defense."),
+    "fasthrs_reward_115": (18, 8, 8, "{name} surges with a sudden burst of swiftness and confidence."),
+    "lesser_shroud_120": (20, 0, 14, "{name} slips behind a wavering lesser shroud."),
+    "wall_of_force_140": (20, 0, 20, "{name} braces behind a shimmering wall of force."),
+    "spirit_shield_202": (20, 0, 18, "{name} sets a faint spiritual shield into place."),
+    "bravery_211": (18, 12, 6, "{name} draws itself up with sudden supernatural bravery."),
+    "heroism_215": (20, 14, 8, "{name} is filled with a heroic battle-fervor."),
+    "elemental_defense_i_401": (18, 0, 10, "{name} gathers a low elemental defense around itself."),
+    "elemental_defense_ii_406": (20, 0, 14, "{name} layers a stronger elemental defense into place."),
+    "elemental_defense_iii_414": (22, 0, 18, "{name} reinforces itself with a dense elemental ward."),
+    "elemental_targeting_425": (18, 12, 4, "{name}'s focus sharpens with precise elemental targeting."),
+    "elemental_barrier_430": (20, 0, 18, "{name} raises a humming elemental barrier."),
+    "thurfels_ward_503": (20, 0, 16, "{name} frosts over with the protection of Thurfel's Ward."),
+    "elemental_bias_508": (18, 10, 6, "{name} tilts the local mana in its favor."),
+    "strength_509": (18, 12, 4, "{name}'s limbs swell with a surge of raw strength."),
+    "natural_colors_601": (18, 8, 12, "{name}'s outline blurs into the natural palette around it."),
+    "resist_elements_602": (20, 0, 14, "{name} hardens against the bite of elemental power."),
+    "phoens_strength_606": (18, 12, 4, "{name} draws on Phoen's strength and squares up hard."),
+    "self_control_613": (18, 0, 12, "{name} settles into an unnervingly disciplined calm."),
+    "mobility_618": (18, 0, 14, "{name} shifts into a loose, mobile guard."),
+    "prismatic_guard_905": (20, 0, 20, "{name} flashes with a prismatic defensive sheen."),
+    "mass_blur_911": (18, 6, 16, "{name}'s outline splits into a blur of wavering afterimages."),
+    "mantle_of_faith_1601": (22, 0, 18, "{name} settles beneath a mantle of adamant faith."),
+    "blink_1215": (16, 0, 18, "{name} blinks erratically in and out of the immediate space."),
+    "iron_skin_1202": (22, 0, 20, "{name}'s skin darkens into an iron-hard shell."),
 }
 
 _DIRECT_ATTACK_ABILITIES = {

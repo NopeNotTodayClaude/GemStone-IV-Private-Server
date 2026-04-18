@@ -731,7 +731,6 @@ async def _apply_spell_damage(session, server, target, result_dict):
 
         # ── Crit / wound ──────────────────────────────────────────────────
         crit_rank, location = _spell_crit(actual, creature)
-        await session.send_line(combat_damage(actual, location))
         if crit_rank > 0:
             crit_msgs = CRIT_MESSAGES.get(damage_type, CRIT_MESSAGES['magic'])
             await session.send_line(combat_crit(crit_rank, crit_msgs.get(crit_rank, 'Critical hit!')))

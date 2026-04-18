@@ -168,9 +168,15 @@ class InnManager:
             return None
 
     def get_inn_for_npc(self, npc) -> Optional[dict]:
+        lua_context = getattr(npc, "lua_context", {}) or {}
+        inn_id = str(lua_context.get("inn_id") or "").strip().lower()
+        if inn_id and inn_id in self._inns:
+            return self._inns.get(inn_id)
+
         template_id = str(getattr(npc, "template_id", "") or "").strip()
         if template_id and template_id in self._template_to_inn:
             return self._template_to_inn[template_id]
+
         room_id = int(getattr(npc, "room_id", 0) or getattr(npc, "home_room_id", 0) or 0)
         return self._front_desks.get(room_id) or self.get_inn_for_room(room_id)
 

@@ -12,6 +12,8 @@ Quest.start_npc_template_id  = "sassion"
 Quest.turnin_npc_template_id = "tv_antiques_archivist"
 Quest.start_room_id          = 3490
 Quest.start_lich_room_id     = 14100010
+Quest.turnin_room_id         = 10379
+Quest.turnin_lich_room_id    = 14103175
 Quest.start_message          = "Take this message to Archivist Yendrel.  He dislikes delays almost as much as I do."
 Quest.start_items            = {
     { short_name = "sealed message for Yendrel", noun = "message" },

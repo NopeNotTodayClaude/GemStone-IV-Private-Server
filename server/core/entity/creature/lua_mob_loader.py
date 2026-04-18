@@ -63,13 +63,35 @@ FIXES (2026-03-22):
 """
 
 import copy
+import json
 import os
 import re
 import logging
+from collections import Counter
 
 from lupa import LuaRuntime  # type: ignore
 
 log = logging.getLogger(__name__)
+
+_AREA_ROOM_FILTERS = {
+    "Atoll": {"images": {"kf-atoll-1652294074.jpg"}},
+    "Czeroth Labyrinth": {"images": {"en-zul_czeroth.png"}},
+    "Hinterwilds": {"images": {"imt-Hinterwilds-1651886165.jpg"}},
+    "Kharam Dzu": {"title_contains": {"kharam dzu"}},
+    "Moonsedge": {"images": {"imt-Moonsedge-1770317665.png"}},
+    "Old Ta'Faendryl": {"images": {"en-old_ta_faendryl-1716923763.png"}},
+    "Ruined Temple": {"images": {"ti-nelemar-1262373036.png"}},
+    "Sailor's Grief": {"images": {"Sailors_Grief.jpg"}},
+    "Sanctum": {"images": {"SanctumMap-Eiadh-1643825243.png"}},
+    "Scatter": {"images": {"imt-scatter-1264234799.png"}},
+    "Ship Graveyard": {"title_contains": {"the mageborn", "the kyusharu", "the tonbury", "spicers sea", "sailors grief"}},
+    "Thanatoph": {"images": {"wl-stronghold-1264234799.png"}},
+    "The Contempt": {"title_contains": {"the contempt"}},
+    "The Broken Lands": {"images": {"wl-broken-1264234799.png"}},
+    "The Citadel": {"images": {"rr-citadel-1717856937.png"}},
+    "The Hive": {"images": {"en-zul_logoth_the_hive-1702229165.png"}},
+    "The Rift": {"images": {"imt-rift-1554575848.png"}},
+}
 
 # ── Attack verb templates ─────────────────────────────────────────────────────
 # Maps attack type -> (verb_first, verb_third, default_damage_type)
@@ -127,6 +149,90 @@ ATTACK_VERBS = {
 
 DEFAULT_VERB = ("attacks you", "attacks {target}", "crush")
 
+ATTACK_VERBS.update({
+    "attack": ATTACK_VERBS["closed_fist"],
+    "arm": ATTACK_VERBS["closed_fist"],
+    "arrow": ATTACK_VERBS["longbow"],
+    "ball_and_chain": ATTACK_VERBS["morning_star"],
+    "battle_axe": ATTACK_VERBS["waraxe"],
+    "bite_attack": ATTACK_VERBS["bite"],
+    "bite_enraged": ATTACK_VERBS["bite"],
+    "branch_rake": ATTACK_VERBS["claw"],
+    "charge_attack": ATTACK_VERBS["charge"],
+    "claw_attack": ATTACK_VERBS["claw"],
+    "claw_enraged": ATTACK_VERBS["claw"],
+    "claidhmore": ATTACK_VERBS["two_handed_sword"],
+    "closed_fist_closed_fist_wizards": ATTACK_VERBS["closed_fist"],
+    "cudgel": ATTACK_VERBS["club"],
+    "dart": ("flicks a dart at you", "flicks a dart at {target}", "puncture"),
+    "dhara_dhara_rogues": ATTACK_VERBS["closed_fist"],
+    "dual_armrake": ATTACK_VERBS["claw"],
+    "ensnare_attack": ATTACK_VERBS["ensnare"],
+    "ensnare_attack_ensnare": ATTACK_VERBS["ensnare"],
+    "espadon": ATTACK_VERBS["two_handed_sword"],
+    "fist": ATTACK_VERBS["closed_fist"],
+    "flamberge": ATTACK_VERBS["two_handed_sword"],
+    "flail": ATTACK_VERBS["morning_star"],
+    "giant_bee_stinger": ATTACK_VERBS["sting"],
+    "greatsword": ATTACK_VERBS["two_handed_sword"],
+    "greataxe": ATTACK_VERBS["waraxe"],
+    "hairy_hand": ATTACK_VERBS["claw"],
+    "hatchet": ATTACK_VERBS["handaxe"],
+    "hammer": ATTACK_VERBS["warhammer"],
+    "hammer_of_kai": ATTACK_VERBS["warhammer"],
+    "heavy_crossbow": ATTACK_VERBS["crossbow"],
+    "ice_pick": ATTACK_VERBS["military_pick"],
+    "impale": ATTACK_VERBS["gore"],
+    "impale_attack": ATTACK_VERBS["gore"],
+    "jeddart_axe": ATTACK_VERBS["handaxe"],
+    "kaskara": ATTACK_VERBS["broadsword"],
+    "lance": ATTACK_VERBS["spear"],
+    "lash": ("lashes you with a snapping strike", "lashes {target} with a snapping strike", "slash"),
+    "leather_whip": ("lashes you with a leather whip", "lashes {target} with a leather whip", "slash"),
+    "length_of_rusted_chain": ATTACK_VERBS["morning_star"],
+    "maul": ATTACK_VERBS["warhammer"],
+    "main_gauche": ATTACK_VERBS["dagger"],
+    "massive_icicle": ATTACK_VERBS["spear"],
+    "melee_stab": ATTACK_VERBS["dagger"],
+    "military_fork": ATTACK_VERBS["spear"],
+    "moon_axe": ATTACK_VERBS["waraxe"],
+    "pincer_attack": ATTACK_VERBS["pincer"],
+    "pound_attack": ATTACK_VERBS["pound"],
+    "pound_double_attack": ATTACK_VERBS["pound"],
+    "quarterstaff": ATTACK_VERBS["staff"],
+    "rapier": ATTACK_VERBS["dagger"],
+    "ranged_frost_covered_crystalline_flower": ("launches a frost-rimed blossom at you", "launches a frost-rimed blossom at {target}", "puncture"),
+    "ranged_frosty_seed": ("spits a frosty seed at you", "spits a frosty seed at {target}", "puncture"),
+    "rock_hurled": ("hurls a jagged rock at you", "hurls a jagged rock at {target}", "crush"),
+    "root_lash": ("lashes you with a whipping root", "lashes {target} with a whipping root", "slash"),
+    "root_slam": ATTACK_VERBS["slam"],
+    "runestaff": ATTACK_VERBS["staff"],
+    "scaling_fork": ATTACK_VERBS["spear"],
+    "scythe": ATTACK_VERBS["falchion"],
+    "short_sword": ATTACK_VERBS["shortsword"],
+    "sledgehammer": ATTACK_VERBS["warhammer"],
+    "small_glistening_thorn": ATTACK_VERBS["sting"],
+    "stalagmite": ATTACK_VERBS["spear"],
+    "stinger_attack": ATTACK_VERBS["sting"],
+    "strike": ATTACK_VERBS["closed_fist"],
+    "stomp_attack": ATTACK_VERBS["stomp"],
+    "stomp_attack_stomp": ATTACK_VERBS["stomp"],
+    "tail_swing": ATTACK_VERBS["tail_sweep"],
+    "thrown": ("hurls a missile at you", "hurls a missile at {target}", "puncture"),
+    "thrown_rock": ("hurls a heavy rock at you", "hurls a heavy rock at {target}", "crush"),
+    "tongue_strike": ("lashes at you with a snapping tongue", "lashes at {target} with a snapping tongue", "slash"),
+    "trident": ATTACK_VERBS["spear"],
+    "trunk_slam": ATTACK_VERBS["slam"],
+    "tusk_spear": ATTACK_VERBS["gore"],
+    "ucs": ATTACK_VERBS["closed_fist"],
+    "unarmed_combat": ATTACK_VERBS["closed_fist"],
+    "war_mattock": ATTACK_VERBS["military_pick"],
+    "war_hammer": ATTACK_VERBS["warhammer"],
+    "whip": ("lashes you with a vicious whip", "lashes {target} with a vicious whip", "slash"),
+    "wiry_arms": ATTACK_VERBS["closed_fist"],
+    "dive": ("dives at you in a tearing rush", "dives at {target} in a tearing rush", "slash"),
+})
+
 
 def _lua_table_to_python(tbl):
     """Recursively convert a Lua table returned by lupa into native Python values."""
@@ -162,6 +268,21 @@ def _dedupe_int_list(values):
     return out
 
 
+def _clean_catalog_description(text: str) -> str:
+    cleaned = str(text or "")
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"__[^_]+__", " ", cleaned)
+    cleaned = re.sub(r"\{\{Otheruses[^}]*\}\}", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\{\{TOC[^}]*\}\}", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\{\{[^}]+\}\}", " ", cleaned)
+    cleaned = re.sub(r"==+\s*[^=]+?\s*==+", " ", cleaned)
+    cleaned = re.sub(r"\[\[([^|\]]+)\|([^\]]+)\]\]", r"\2", cleaned)
+    cleaned = re.sub(r"\[\[([^\]]+)\]\]", r"\1", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
 def _normalize_template(template: dict) -> dict:
     """Ensure a template dict is runtime-safe after file/catalog merging."""
     result = copy.deepcopy(template)
@@ -186,7 +307,7 @@ def _normalize_template(template: dict) -> dict:
     result["body_type"] = str(result.get("body_type", "biped") or "biped")
     result["family"] = str(result.get("family", "") or "")
     result["classification"] = str(result.get("classification", "living") or "living")
-    result["description"] = str(result.get("description", "") or "")
+    result["description"] = _clean_catalog_description(result.get("description", "") or "")
     result["skin"] = str(result.get("skin", "") or "").strip() or None
     result["special_loot"] = list(result.get("special_loot", []) or [])
     result["spells"] = list(result.get("spells", []) or [])
@@ -395,11 +516,176 @@ def _resolve_room_sources(source, templates: dict, key: str):
     return rooms
 
 
-def _load_creature_catalog(scripts_path: str, templates: dict):
-    """Load Lua-authored creature overrides/additions from scripts/data/creature_catalog_15_35.lua."""
-    catalog_path = os.path.join(scripts_path, "data", "creature_catalog_15_35.lua")
-    if not os.path.isfile(catalog_path):
+def _normalize_area_tokens(text: str) -> list[str]:
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(text or "").lower().replace("'", ""))
+    stopwords = {"the", "of", "and", "a", "an", "to", "in", "on", "at", "mt", "mount"}
+    return [token for token in normalized.split() if token and token not in stopwords]
+
+
+def _load_room_area_index(scripts_path: str) -> list[dict]:
+    project_root = os.path.abspath(os.path.join(scripts_path, ".."))
+    room_graph_path = os.path.join(project_root, "client", "data", "room_graph.json")
+    if not os.path.isfile(room_graph_path):
+        log.warning("Creature catalog area resolver: room graph not found at %s", room_graph_path)
+        return []
+    try:
+        with open(room_graph_path, "r", encoding="utf-8-sig") as handle:
+            data = json.load(handle) or {}
+    except Exception as exc:
+        log.error("Creature catalog area resolver failed for %s: %s", room_graph_path, exc, exc_info=True)
+        return []
+
+    rooms = []
+    for room_id, room in (data.get("rooms") or {}).items():
+        try:
+            rid = int(room_id)
+        except Exception:
+            continue
+        title = str(room.get("title", "") or "")
+        zone_name = str(room.get("zone_name", "") or "")
+        location = str(room.get("location", "") or "")
+        region_name = str(room.get("region_name", "") or "")
+        image = str(room.get("image", "") or "")
+        strict_text = " | ".join(part for part in (title, zone_name, location) if part)
+        broad_text = " | ".join(part for part in (title, zone_name, location, region_name, image) if part)
+        rooms.append({
+            "room_id": rid,
+            "title": title,
+            "zone_name": zone_name,
+            "location": location,
+            "region_name": region_name,
+            "image": image,
+            "strict_tokens": set(_normalize_area_tokens(strict_text)),
+            "broad_tokens": set(_normalize_area_tokens(broad_text)),
+        })
+    return rooms
+
+
+def _apply_area_room_filter(area_name: str, matches: list[dict]) -> list[dict]:
+    if not matches:
+        return []
+
+    rule = _AREA_ROOM_FILTERS.get(str(area_name or "").strip())
+    if rule:
+        images = {str(value) for value in (rule.get("images") or set())}
+        regions = {str(value) for value in (rule.get("regions") or set())}
+        title_contains = {str(value).lower() for value in (rule.get("title_contains") or set())}
+        filtered = []
+        for room in matches:
+            if images and str(room.get("image", "") or "") in images:
+                filtered.append(room)
+                continue
+            if regions and str(room.get("region_name", "") or "") in regions:
+                filtered.append(room)
+                continue
+            if title_contains:
+                title_text = str(room.get("title", "") or "").lower()
+                zone_text = str(room.get("zone_name", "") or "").lower()
+                location_text = str(room.get("location", "") or "").lower()
+                joined = " | ".join((title_text, zone_text, location_text))
+                if any(token in joined for token in title_contains):
+                    filtered.append(room)
+                    continue
+        if filtered:
+            return filtered
+
+    buckets = Counter(
+        (str(room.get("region_name", "") or ""), str(room.get("image", "") or ""))
+        for room in matches
+    )
+    non_empty = [(key, count) for key, count in buckets.items() if key != ("", "")]
+    non_empty.sort(key=lambda row: (-row[1], row[0]))
+    if len(non_empty) >= 2:
+        (dominant_key, dominant_count), (_, second_count) = non_empty[0], non_empty[1]
+        total = len(matches)
+        if dominant_count >= max(8, int(total * 0.60)) and dominant_count >= max(2, second_count * 2):
+            filtered = [
+                room for room in matches
+                if (str(room.get("region_name", "") or ""), str(room.get("image", "") or "")) == dominant_key
+            ]
+            if filtered:
+                return filtered
+    return matches
+
+
+def _resolve_named_areas(area_names, room_index: list[dict]) -> list[int]:
+    if not area_names:
+        return []
+    values = area_names if isinstance(area_names, list) else [area_names]
+    room_ids = []
+    seen = set()
+    for raw_name in values:
+        area_name = str(raw_name or "").strip()
+        if not area_name:
+            continue
+        tokens = _normalize_area_tokens(area_name)
+        if not tokens:
+            continue
+
+        strict_matches = [
+            room
+            for room in room_index
+            if all(token in room["strict_tokens"] for token in tokens)
+        ]
+        broad_matches = strict_matches or [
+            room
+            for room in room_index
+            if all(token in room["broad_tokens"] for token in tokens)
+        ]
+        filtered_matches = _apply_area_room_filter(area_name, broad_matches)
+        if not filtered_matches:
+            log.warning("Creature catalog area '%s' did not resolve to any local wayto rooms", area_name)
+            continue
+        for room in filtered_matches:
+            room_id = int(room["room_id"])
+            if room_id in seen:
+                continue
+            seen.add(room_id)
+            room_ids.append(room_id)
+    return room_ids
+
+
+def _iter_creature_catalog_paths(scripts_path: str) -> list[str]:
+    data_dir = os.path.join(scripts_path, "data")
+    if not os.path.isdir(data_dir):
+        return []
+    paths = []
+    for file_name in os.listdir(data_dir):
+        if not file_name.startswith("creature_catalog") or not file_name.endswith(".lua"):
+            continue
+        paths.append(os.path.join(data_dir, file_name))
+
+    def _catalog_sort_key(path: str):
+        name = os.path.basename(path)
+        numbers = [int(value) for value in re.findall(r"(\d+)", name)]
+        primary = numbers[0] if numbers else 9999
+        secondary = numbers[1] if len(numbers) > 1 else primary
+        return (primary, secondary, name)
+
+    return sorted(paths, key=_catalog_sort_key)
+
+
+def _load_creature_catalogs(scripts_path: str, templates: dict):
+    catalog_paths = _iter_creature_catalog_paths(scripts_path)
+    if not catalog_paths:
         return templates
+    room_index = _load_room_area_index(scripts_path)
+    total_overrides = 0
+    total_creatures = 0
+    for catalog_path in catalog_paths:
+        templates, override_count, creature_count = _load_creature_catalog_file(catalog_path, templates, room_index)
+        total_overrides += override_count
+        total_creatures += creature_count
+    log.info(
+        "Creature catalog loader: applied %d overrides and %d catalog creature entries across %d file(s)",
+        total_overrides,
+        total_creatures,
+        len(catalog_paths),
+    )
+    return templates
+
+
+def _load_creature_catalog_file(catalog_path: str, templates: dict, room_index: list[dict]):
     try:
         lua = LuaRuntime(unpack_returned_tuples=True)
         with open(catalog_path, "r", encoding="utf-8") as handle:
@@ -407,7 +693,7 @@ def _load_creature_catalog(scripts_path: str, templates: dict):
         raw = _lua_table_to_python(lua.execute(catalog_src)) or {}
     except Exception as exc:
         log.error("Creature catalog loader failed for %s: %s", catalog_path, exc, exc_info=True)
-        return templates
+        return templates, 0, 0
 
     overrides = raw.get("overrides") or {}
     for template_id, override in overrides.items():
@@ -415,9 +701,13 @@ def _load_creature_catalog(scripts_path: str, templates: dict):
             log.warning("Creature catalog override skipped for unknown template '%s'", template_id)
             continue
         merged = _merge_template(templates[template_id], override)
-        if override.get("spawn_from"):
+        if override.get("spawn_areas"):
+            merged["spawn_rooms"] = _resolve_named_areas(override.get("spawn_areas"), room_index)
+        elif override.get("spawn_from"):
             merged["spawn_rooms"] = _resolve_room_sources(override.get("spawn_from"), templates, "spawn_rooms")
-        if override.get("roam_from") or override.get("spawn_from"):
+        if override.get("roam_areas"):
+            merged["wander_rooms"] = _resolve_named_areas(override.get("roam_areas"), room_index)
+        elif override.get("roam_from") or override.get("spawn_from"):
             merged["wander_rooms"] = _resolve_room_sources(override.get("roam_from") or override.get("spawn_from"), templates, "wander_rooms")
         merged["catalog_override"] = True
         templates[template_id] = _normalize_template(merged)
@@ -433,25 +723,33 @@ def _load_creature_catalog(scripts_path: str, templates: dict):
         merged = _merge_template(base, entry)
         if base_template and base:
             merged = _scale_catalog_template(base, merged, entry)
-        if entry.get("spawn_from"):
+        if entry.get("spawn_areas"):
+            merged["spawn_rooms"] = _resolve_named_areas(entry.get("spawn_areas"), room_index)
+        elif entry.get("spawn_from"):
             merged["spawn_rooms"] = _resolve_room_sources(entry.get("spawn_from"), templates, "spawn_rooms")
-        if entry.get("roam_from") or entry.get("spawn_from"):
+        elif base_template:
+            # No explicit spawn_from — do NOT inherit spawn_rooms from base_template.
+            # Catalog entries borrow COMBAT stats from a base, not spawn locations.
+            # Zone spawns.lua is the sole authority on where a creature spawns.
+            merged["spawn_rooms"] = []
+        if entry.get("roam_areas"):
+            merged["wander_rooms"] = _resolve_named_areas(entry.get("roam_areas"), room_index)
+        elif entry.get("roam_from") or entry.get("spawn_from"):
             merged["wander_rooms"] = _resolve_room_sources(entry.get("roam_from") or entry.get("spawn_from"), templates, "wander_rooms")
+        elif base_template:
+            # No explicit roam_from/spawn_from — do NOT inherit wander_rooms from base_template.
+            merged["wander_rooms"] = []
         normalized = _normalize_template(merged)
         normalized["template_origin"] = "catalog"
         normalized["catalog_base_template"] = base_template or None
         normalized["catalog_spawn_from"] = str(entry.get("spawn_from") or entry.get("roam_from") or "") or None
+        normalized["catalog_spawn_areas"] = list(entry.get("spawn_areas", []) or [])
         normalized["source_zone"] = None
         normalized["source_zones"] = []
         normalized["source_files"] = [catalog_path]
         templates[normalized["template_id"]] = normalized
 
-    log.info(
-        "Creature catalog loader: applied %d overrides and %d catalog creature entries",
-        len(overrides),
-        len(raw.get("creatures") or []),
-    )
-    return templates
+    return templates, len(overrides), len(raw.get("creatures") or [])
 
 
 def _verb_for(attack_type: str, damage_type: str = None):
@@ -996,7 +1294,7 @@ def load_all_mob_luas(scripts_path: str) -> dict:
         if zone_count:
             log.info("  Loaded %d mob templates from zone '%s'", zone_count, zone_slug)
 
-    templates = _load_creature_catalog(scripts_path, templates)
+    templates = _load_creature_catalogs(scripts_path, templates)
 
     if merged_count:
         log.info("Lua mob loader: %d creatures merged from multiple zones", merged_count)

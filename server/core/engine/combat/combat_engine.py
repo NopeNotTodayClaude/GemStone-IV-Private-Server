@@ -1,4 +1,4 @@
-"""
+﻿"""
 CombatEngine - GemStone IV combat system with authentic GS4/Lich messaging.
 
 Attack Roll Format (GS4 authentic):
@@ -135,6 +135,11 @@ def _apply_player_wards(server, session, hp_damage: int) -> tuple[int, list[str]
         damage -= absorbed
         session._scale_ward_absorb = max(0, _ward_absorb - absorbed)
         notes.append(f"A sapphire ward absorbs {absorbed} damage.")
+        # If absorb pool exhausted, drop the status icon immediately
+        if session._scale_ward_absorb <= 0:
+            _ward_sm = getattr(getattr(session, "server", None), "status", None)
+            if _ward_sm:
+                _ward_sm.remove(session, "scale_ward")
 
     return damage, notes
 

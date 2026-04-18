@@ -12,6 +12,8 @@ Quest.start_npc_template_id  = "trevor_dabbings"
 Quest.turnin_npc_template_id = "trevor_dabbings"
 Quest.start_room_id          = 9005
 Quest.start_lich_room_id     = 4043275
+Quest.turnin_room_id         = 9005
+Quest.turnin_lich_room_id    = 4043275
 Quest.start_message          = "Let us see whether your attention is as sharp as your ambition."
 
 Quest.stages = {

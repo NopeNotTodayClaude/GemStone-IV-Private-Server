@@ -206,7 +206,7 @@ Catalog.creatures = {
     { template_id = "giant_hawk_owl",      base_template = "blood_eagle",          name = "giant hawk-owl",      level = 28, spawn_from = "blood_eagle",  skin = "a hawk-owl feather",      preferred_stance = "offensive", stance_profile = "skirmisher" },
     { template_id = "ki_lin",              base_template = "great_stag",           name = "ki-lin",              level = 28, spawn_from = "wood_sprite",  skin = "a ki-lin lock",           preferred_stance = "guarded",   stance_profile = "caster" },
     { template_id = "martial_eagle",       base_template = "blood_eagle",          name = "martial eagle",       level = 28, spawn_from = "blood_eagle",  skin = "a martial eagle feather", preferred_stance = "offensive", stance_profile = "skirmisher" },
-    { template_id = "moaning_spirit",      base_template = "moaning_phantom",      name = "moaning spirit",      level = 28, spawn_from = "moaning_phantom", skin = nil,                     preferred_stance = "guarded",   stance_profile = "caster" },
+    { template_id = "moaning_spirit",      base_template = "moaning_phantom",      name = "moaning spirit",      level = 28,                                skin = nil,                     preferred_stance = "guarded",   stance_profile = "caster" },
 
     -- Level 29
     { template_id = "arctic_manticore",    base_template = "scaly_burgee",         name = "arctic manticore",    level = 29, spawn_from = "ice_troll",    skin = "a manticore tail",        preferred_stance = "forward",   stance_profile = "skirmisher" },

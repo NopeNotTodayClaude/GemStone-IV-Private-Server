@@ -12,6 +12,8 @@ Quest.start_npc_template_id  = "raging_thrak"
 Quest.turnin_npc_template_id = "raging_thrak"
 Quest.start_room_id          = 8722
 Quest.start_lich_room_id     = 4041001
+Quest.turnin_room_id         = 8722
+Quest.turnin_lich_room_id    = 4041001
 Quest.start_message          = "Good.  Listen close, answer straight, and don't embarrass yourself."
 
 Quest.stages = {

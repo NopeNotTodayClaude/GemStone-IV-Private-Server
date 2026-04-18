@@ -12,6 +12,8 @@ Quest.start_npc_template_id  = "sassion"
 Quest.turnin_npc_template_id = "guild_clerk"
 Quest.start_room_id          = 3490
 Quest.start_lich_room_id     = 14100010
+Quest.turnin_room_id         = 10331
+Quest.turnin_lich_room_id    = 14103500
 Quest.start_message          = "Thalindra needs this note.  Deliver it to the guild clerk and come back sharpish."
 Quest.start_items            = {
     { short_name = "sealed message for Thalindra", noun = "message" },

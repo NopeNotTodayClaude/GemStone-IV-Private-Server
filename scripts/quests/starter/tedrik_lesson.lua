@@ -12,6 +12,8 @@ Quest.start_npc_template_id  = "tedrik"
 Quest.turnin_npc_template_id = "tedrik"
 Quest.start_room_id          = 21223
 Quest.start_lich_room_id     = 14102009
+Quest.turnin_room_id         = 21223
+Quest.turnin_lich_room_id    = 14102009
 Quest.start_message          = "Listen up.  The basics keep more soldiers alive than talent does."
 
 Quest.stages = {

@@ -5,15 +5,27 @@ Quest.guild_id    = "rogue"
 Quest.title       = "The First Walkthrough"
 Quest.description = "A new rogue is expected to learn the rooms, the trainers, and the hands that actually keep the Ta'Vaalor chapter moving."
 Quest.repeatable  = false
+Quest.prereq_quests = {
+    "rogue_entry",
+}
 Quest.start_npc_template_ids = {
     "tv_rogue_guild_contact",
     "tv_rogue_guildmaster",
     "tv_rogue_training_admin",
 }
+Quest.start_room_ids = {
+    17806,
+    17831,
+    17836,
+}
 Quest.start_message = "Your dues are square.  Now learn the chapter properly.  Go back through the inner alley, then meet the lockmaster, the bruiser, and the drillmaster before you start pretending you belong here."
 Quest.turnin_npc_template_ids = {
     "tv_rogue_guild_contact",
     "tv_rogue_training_admin",
+}
+Quest.turnin_room_ids = {
+    17806,
+    17836,
 }
 
 Quest.stages = {

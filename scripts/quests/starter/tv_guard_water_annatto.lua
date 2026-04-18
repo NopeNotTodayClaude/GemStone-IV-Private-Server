@@ -12,6 +12,8 @@ Quest.start_npc_template_id  = "guard_annatto_daervith"
 Quest.turnin_npc_template_id = "guard_annatto_daervith"
 Quest.start_room_id          = 5906
 Quest.start_lich_room_id     = 14100039
+Quest.turnin_room_id         = 5906
+Quest.turnin_lich_room_id    = 14100039
 Quest.start_message          = "Bring me a glass of water from Malwith Inn and you'll have done the watch a service."
 
 Quest.stages = {

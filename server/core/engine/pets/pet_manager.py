@@ -1,4 +1,4 @@
-"""
+﻿"""
 pet_manager.py
 --------------
 Dedicated companion runtime for the GemStone IV private server.
@@ -915,7 +915,7 @@ class PetManager:
             if str(ability.get("type") or "") != "pet_attack_spell" or str(ability.get("trigger") or "") != "combat_target":
                 continue
             scaling = self._ability_scaling_for_level(pet.get("species_key"), ability_key, pet.get("pet_level"))
-            state = self._ensure_ability_state(pet, ability_key)
+            state   = self._ensure_ability_state(pet, ability_key)
             if int(state.get("cooldown_until") or 0) > now:
                 continue
             ok, _, _ = await self._cast_pet_spell(
@@ -928,6 +928,32 @@ class PetManager:
             if not ok:
                 continue
             await self._emit_pet_ability_sfx(session, pet, ability)
+
+            # --- Spell combat roll line (GS4 CS vs TD format) ---
+            pet_level   = int(pet.get("pet_level") or 1)
+            pet_cs      = 50 + pet_level * 3
+            ctr_level   = int(getattr(target, "level", 1) or 1)
+            creature_td = 30 + ctr_level * 2
+            d100        = random.randint(1, 100)
+            endroll     = pet_cs - creature_td + d100
+            hit_str     = "+" if endroll > 100 else ""
+            roll_line   = (
+                f"  CS: +{pet_cs} vs TD: +{creature_td} + d100 roll: +{d100} = "
+                f"{'+' if endroll >= 0 else ''}{endroll}"
+            )
+            roll_color = TextPresets.COMBAT_HIT if endroll > 100 else TextPresets.COMBAT_MISS
+            await session.send_line(colorize(roll_line, roll_color))
+            if getattr(session, "current_room", None):
+                await self.server.world.broadcast_to_room(
+                    session.current_room.id,
+                    colorize(
+                        f"  {pet.get('pet_name') or 'A companion'} casts at {self._pet_target_name(target)}!\n  {roll_line.strip()}",
+                        roll_color,
+                    ),
+                    exclude=session,
+                )
+
+            # --- Damage ---
             damage = random.randint(
                 int(scaling.get("min_damage") or 1),
                 max(int(scaling.get("min_damage") or 1), int(scaling.get("max_damage") or 1)),
@@ -947,22 +973,59 @@ class PetManager:
                         target.stamina_current,
                         target.silver,
                     )
-            if actual <= 0:
-                continue
-            await self._emit_pet_cast_lines(session, pet, ability, target=target)
-            if getattr(session, "current_room", None):
-                await self.server.world.broadcast_to_room(
-                    session.current_room.id,
-                    colorize(
-                        f"  {self._pet_target_name(target)} is struck for {actual} damage by {pet.get('pet_name')}'s spell.",
-                        TextPresets.EXPERIENCE,
-                    ),
-                    exclude=None,
-                )
-            state["last_triggered_at"] = now
-            state["cooldown_until"] = now + int(scaling.get("recast_seconds") or 30)
-            self._save_pet_ability(pet, ability_key)
+            if actual > 0:
+                await self._emit_pet_cast_lines(session, pet, ability, target=target)
+                if getattr(session, "current_room", None):
+                    await self.server.world.broadcast_to_room(
+                        session.current_room.id,
+                        colorize(
+                            f"  {self._pet_target_name(target)} is struck for {actual} damage by {pet.get('pet_name')}'s spell.",
+                            TextPresets.EXPERIENCE,
+                        ),
+                        exclude=None,
+                    )
 
+                # --- Death handling: pet spell killed the creature ---
+                if hasattr(target, "is_dead") and target.is_dead:
+                    from server.core.protocol.colors import combat_death as _cdeath
+                    from server.core.engine.combat.combat_engine import (
+                        _record_town_trouble_kill as _rttk,
+                        _exit_combat as _pet_exit_combat,
+                    )
+                    await session.send_line(_cdeath(target.full_name.capitalize()))
+                    if getattr(session, "current_room", None):
+                        await self.server.world.broadcast_to_room(
+                            session.current_room.id,
+                            f"  {target.full_name.capitalize()} falls to the ground dead!",
+                            exclude=session,
+                        )
+                    self.server.creatures.mark_dead(target)
+                    await _rttk(self.server, session, target)
+                    session.target = None
+                    _room = getattr(session, "current_room", None)
+                    if _room:
+                        _remaining = [
+                            c for c in self.server.creatures.get_creatures_in_room(_room.id)
+                            if c.alive and c.aggressive and c is not target
+                        ]
+                        if not _remaining:
+                            _pet_exit_combat(self.server, session)
+                    if not getattr(session, "tutorial_complete", True) and hasattr(self.server, "tutorial"):
+                        await self.server.tutorial.on_creature_death(session, target)
+                    if hasattr(self.server, "experience"):
+                        from server.core.commands.player.party import award_party_kill_xp
+                        await award_party_kill_xp(session, target, self.server)
+                    if self.server.db and getattr(session, "character_id", None):
+                        self.server.db.save_character_resources(
+                            session.character_id,
+                            session.health_current, session.mana_current,
+                            session.spirit_current, session.stamina_current,
+                            session.silver,
+                        )
+
+            state["last_triggered_at"] = now
+            state["cooldown_until"]    = now + int(scaling.get("recast_seconds") or 30)
+            self._save_pet_ability(pet, ability_key)
     async def _maybe_cast_pet_room_attack_spells(self, session, pet: dict, now: int):
         if getattr(session, "is_dead", False) or self.is_companion_hidden(session, pet):
             return
@@ -993,16 +1056,43 @@ class PetManager:
                 continue
             await self._emit_pet_ability_sfx(session, pet, ability)
             await self._emit_pet_cast_lines(session, pet, ability)
-            total_hits = 0
+            total_hits   = 0
             total_damage = 0
-            min_damage = int(scaling.get("min_damage") or 1)
-            max_damage = max(min_damage, int(scaling.get("max_damage") or 1))
-            for creature in hostiles:
-                dmg = random.randint(min_damage, max_damage)
+            min_damage   = int(scaling.get("min_damage") or 1)
+            max_damage   = max(min_damage, int(scaling.get("max_damage") or 1))
+
+            # Inline imports for death handling (avoids circular import at module level)
+            from server.core.protocol.colors import combat_death as _cdeath
+            from server.core.engine.combat.combat_engine import (
+                _record_town_trouble_kill as _rttk,
+                _exit_combat as _pet_exit_combat,
+            )
+            killed_any = False
+            for creature in list(hostiles):
+                dmg    = random.randint(min_damage, max_damage)
                 actual = int(creature.take_damage(dmg) or 0)
                 if actual > 0:
-                    total_hits += 1
+                    total_hits   += 1
                     total_damage += actual
+                    # --- Death check per creature ---
+                    if getattr(creature, "is_dead", False):
+                        killed_any = True
+                        await session.send_line(_cdeath(creature.full_name.capitalize()))
+                        await self.server.world.broadcast_to_room(
+                            room.id,
+                            f"  {creature.full_name.capitalize()} falls to the ground dead!",
+                            exclude=session,
+                        )
+                        self.server.creatures.mark_dead(creature)
+                        await _rttk(self.server, session, creature)
+                        if session.target is creature:
+                            session.target = None
+                        if not getattr(session, "tutorial_complete", True) and hasattr(self.server, "tutorial"):
+                            await self.server.tutorial.on_creature_death(session, creature)
+                        if hasattr(self.server, "experience"):
+                            from server.core.commands.player.party import award_party_kill_xp
+                            await award_party_kill_xp(session, creature, self.server)
+
             if total_hits > 0:
                 await self.server.world.broadcast_to_room(
                     room.id,
@@ -1012,8 +1102,25 @@ class PetManager:
                     ),
                     exclude=None,
                 )
+
+            # Exit combat if all hostiles are dead after the room blast
+            if killed_any:
+                _survivors = [
+                    c for c in self.server.creatures.get_creatures_in_room(room.id)
+                    if c.alive and c.aggressive
+                ]
+                if not _survivors:
+                    _pet_exit_combat(self.server, session)
+                if self.server.db and getattr(session, "character_id", None):
+                    self.server.db.save_character_resources(
+                        session.character_id,
+                        session.health_current, session.mana_current,
+                        session.spirit_current, session.stamina_current,
+                        session.silver,
+                    )
+
             state["last_triggered_at"] = now
-            state["cooldown_until"] = now + int(scaling.get("cooldown_seconds") or 3600)
+            state["cooldown_until"]    = now + int(scaling.get("cooldown_seconds") or 3600)
             self._save_pet_ability(pet, ability_key)
 
     # ------------------------------------------------------------------
@@ -1083,6 +1190,12 @@ class PetManager:
             session._scale_ward_absorb  = absorb_amount
             session._scale_ward_ds      = ds_bonus
             session._scale_ward_expires = time.time() + duration
+            # Register status effect so prompt bar shows "W" and STATUS lists the ward
+            _sm = getattr(self.server, "status", None)
+            if _sm:
+                _sm.apply(session, "scale_ward", duration=int(duration))
+                # Store pet name so expiry handler can print "Roary's Scaleguard Ward dissipates."
+                session._scale_ward_pet_name = pet.get("pet_name") or None
             state["last_triggered_at"] = now
             state["cooldown_until"] = now + int(scaling.get("recast_seconds") or 75)
             self._save_pet_ability(pet, ability_key)

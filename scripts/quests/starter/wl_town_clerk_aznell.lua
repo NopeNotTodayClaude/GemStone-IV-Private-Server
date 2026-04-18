@@ -12,6 +12,8 @@ Quest.start_npc_template_id  = "wl_town_clerk"
 Quest.turnin_npc_template_id = "wl_aznell_armorer"
 Quest.start_room_id          = 7970
 Quest.start_lich_room_id     = 2020
+Quest.turnin_room_id         = 401
+Quest.turnin_lich_room_id    = 2050
 Quest.start_message          = "Take this dispatch to Aznell's Armory and don't crumple it on the way."
 Quest.start_items            = {
     { short_name = "sealed dispatch for Aznell", noun = "dispatch" },

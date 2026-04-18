@@ -12,6 +12,8 @@ Quest.start_npc_template_id  = "imt_bondsman"
 Quest.turnin_npc_template_id = "imt_inn_keeper_imt"
 Quest.start_room_id          = 2438
 Quest.start_lich_room_id     = 4043042
+Quest.turnin_room_id         = 3427
+Quest.turnin_lich_room_id    = 4043233
 Quest.start_message          = "This packet goes to the Penguin.  Hand it to the innkeeper and keep moving."
 Quest.start_items            = {
     { short_name = "sealed packet for the Penguin", noun = "packet" },

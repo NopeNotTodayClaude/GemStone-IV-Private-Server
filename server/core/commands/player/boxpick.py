@@ -30,24 +30,11 @@ log = logging.getLogger(__name__)
 # House cut retained by the locksmith on completed jobs.
 HOUSE_CUT = 0.10
 
-LOCKSMITH_TEMPLATE_IDS = {
-    "shind",
-    "wl_locksmith_jyhm",
-    "tai_locksmith_tai",
-    "ti_locksmith_ti",
-    "zl_locksmith_zl",
-    "cys_locksmith_hihaeim",
-    "kf_locksmith_kf",
-    "imt_blackfinger",
-}
-
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _is_locksmith_npc(npc) -> bool:
-    """Best-effort locksmith detection without hardcoding a single room."""
-    tid = (getattr(npc, "template_id", None) or "").lower().strip()
-    if tid in LOCKSMITH_TEMPLATE_IDS:
+    """Best-effort locksmith detection using authoritative service tags first."""
+    if getattr(npc, "matches_service", None) and npc.matches_service("locksmith"):
         return True
 
     text = " ".join([

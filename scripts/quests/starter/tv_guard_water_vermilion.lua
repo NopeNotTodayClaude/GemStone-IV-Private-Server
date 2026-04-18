@@ -12,6 +12,8 @@ Quest.start_npc_template_id  = "guard_vermilion_raertria"
 Quest.turnin_npc_template_id = "guard_vermilion_raertria"
 Quest.start_room_id          = 5827
 Quest.start_lich_room_id     = 14100015
+Quest.turnin_room_id         = 5827
+Quest.turnin_lich_room_id    = 14100015
 Quest.start_message          = "Malwith Inn serves water.  Bring me a glass and return while it's still cold."
 
 Quest.stages = {

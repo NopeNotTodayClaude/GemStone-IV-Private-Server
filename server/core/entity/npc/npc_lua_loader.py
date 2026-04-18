@@ -1,7 +1,7 @@
 """
 npc_lua_loader.py
 -----------------
-Scans scripts/npcs/*.lua (flat — no subfolders by design) and parses each
+Scans scripts/npcs/**/*.lua and parses each
 NPC Lua file into a Python template dict that NPCManager understands.
 
 No Lua runtime is used here — this is a fast regex/text parser that reads
@@ -118,6 +118,22 @@ def _is_inline_block(line: str) -> bool:
     opens  = stripped.count("{")
     closes = stripped.count("}")
     return opens > 0 and opens == closes
+
+
+def _parse_comment_metadata(lines):
+    metadata = {}
+    for raw in lines[:16]:
+        line = str(raw or "").strip()
+        if not line.startswith("--"):
+            continue
+        m = re.match(r"^--\s*([^:]+):\s*(.+)$", line)
+        if not m:
+            continue
+        key = str(m.group(1) or "").strip().lower().replace(" ", "_")
+        value = str(m.group(2) or "").strip()
+        if key and value:
+            metadata[key] = value
+    return metadata
 
 
 # ── Parsers ───────────────────────────────────────────────────────────────────
@@ -276,6 +292,7 @@ def parse_npc_lua(filepath: str) -> dict:
         return None
 
     lines = [l.rstrip("\r\n") for l in raw_lines]
+    comment_meta = _parse_comment_metadata(lines)
     scalars = {}
     attacks_raw  = []
     patrol_rooms = []
@@ -449,6 +466,8 @@ def parse_npc_lua(filepath: str) -> dict:
         "description":    scalars.get("description", "You see nothing unusual."),
         "room_id":        home_room,
         "home_room_id":   home_room,
+        "location_hint":  comment_meta.get("location_hint", ""),
+        "source_ref":     comment_meta.get("source", ""),
         "lua_file":       filepath,
         "lua_module":     f"npcs/{os.path.splitext(os.path.basename(filepath))[0]}",
 
@@ -540,9 +559,28 @@ def parse_npc_lua(filepath: str) -> dict:
 
 # ── Directory scanner ─────────────────────────────────────────────────────────
 
+def _iter_npc_lua_files(npcs_path: str):
+    """Yield (absolute_path, relative_path_from_npcs) for loadable NPC Lua files."""
+    for root, dirnames, filenames in os.walk(npcs_path):
+        dirnames.sort()
+        for fname in sorted(filenames):
+            if not fname.endswith(".lua"):
+                continue
+            if fname in {"npc_base.lua", "merchant_base.lua"}:
+                continue
+            fpath = os.path.join(root, fname)
+            rel_path = os.path.relpath(fpath, npcs_path).replace("\\", "/")
+            yield fpath, rel_path
+
+
+def _lua_module_for_relpath(rel_path: str) -> str:
+    module_stem = os.path.splitext(rel_path)[0].replace("\\", "/")
+    return f"npcs/{module_stem}"
+
+
 def load_all_npc_luas(scripts_path: str) -> dict:
     """
-    Scan scripts/npcs/*.lua (flat) and parse every NPC file.
+    Scan scripts/npcs/**/*.lua and parse every NPC file.
 
     Returns:
         dict mapping template_id -> template dict
@@ -555,20 +593,15 @@ def load_all_npc_luas(scripts_path: str) -> dict:
         return templates
 
     count = 0
-    for fname in sorted(os.listdir(npcs_path)):
-        if not fname.endswith(".lua"):
-            continue
-        if fname == "npc_base.lua":
-            continue  # skip the template itself
-
-        fpath = os.path.join(npcs_path, fname)
-        tmpl  = parse_npc_lua(fpath)
+    for fpath, rel_path in _iter_npc_lua_files(npcs_path):
+        tmpl = parse_npc_lua(fpath)
         if tmpl is None:
             continue
 
+        tmpl["lua_module"] = _lua_module_for_relpath(rel_path)
         tid = tmpl["template_id"]
         if tid in templates:
-            log.warning("Duplicate NPC template_id '%s' in %s — skipping", tid, fname)
+            log.warning("Duplicate NPC template_id '%s' in %s — skipping", tid, rel_path)
             continue
 
         templates[tid] = tmpl

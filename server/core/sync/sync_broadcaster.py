@@ -547,8 +547,7 @@ def _build_npc_actions(session, server, npc) -> list[dict]:
     if has_social:
         add("Talk", f"talk to {npc_target}")
 
-    template_id = str(getattr(npc, "template_id", "") or "").strip()
-    rogue_custom_topics = _rogue_guild_topics_for_npc(template_id)
+    rogue_custom_topics = _rogue_guild_topics_for_npc(npc)
 
     dialogue_keys = [] if rogue_custom_topics else list((getattr(npc, "dialogues", {}) or {}).keys())
     for topic in dialogue_keys[:8]:
@@ -600,6 +599,15 @@ def _build_npc_actions(session, server, npc) -> list[dict]:
         add("Pet status", "pet status")
         add("Pet help", "pet help")
 
+    if "adventurers_guild" in service_tags:
+        add("Register", f"ask {npc_target} about register")
+        add("Bounty", f"ask {npc_target} about bounty")
+        add("Rank", f"ask {npc_target} about rank")
+        add("Check-in", f"ask {npc_target} about checkin")
+        add("Vouchers", f"ask {npc_target} about vouchers")
+        add("Bounty status", "bounty status")
+        add("Bounty swap", "bounty swap")
+        add("Bounty remove", "bounty remove")
     if "bank" in service_tags:
         add("Check balance", "check balance")
         add("Deposit...", "deposit ", prefill=True)
@@ -607,11 +615,22 @@ def _build_npc_actions(session, server, npc) -> list[dict]:
         add("Locker info", "locker info")
     if "healer" in service_tags:
         add("Ask about healing", f"ask {npc_target} about healing")
+    if "hall" in service_tags:
+        add("Ask about hall", f"ask {npc_target} about hall")
+    if "history" in service_tags:
+        add("Ask about history", f"ask {npc_target} about history")
+    if "moving" in service_tags:
+        add("Ask about moving", f"ask {npc_target} about moving")
     if "travel" in service_tags:
+        add("Destinations", f"ask {npc_target} about destinations")
         add("Ask about travel", f"ask {npc_target} about travel")
     if "registrar" in service_tags:
         add("Ask about registration", f"ask {npc_target} about registration")
     if "inn" in service_tags:
+        add("Check in", "check in")
+        add("Check room", "check room")
+        add("Check out", "check out")
+        add("Ask about table", f"ask {npc_target} about table")
         add("Ask about rooms", f"ask {npc_target} about room")
     if "pawnbroker" in service_tags:
         add("Order", "order")
@@ -625,6 +644,12 @@ def _build_npc_actions(session, server, npc) -> list[dict]:
         add("Buy backroom...", "buy backroom ", prefill=True)
     if "priest" in service_tags:
         add("Ask about arkati", f"ask {npc_target} about arkati")
+    if "springs" in service_tags:
+        add("Ask about springs", f"ask {npc_target} about springs")
+    if "garden" in service_tags:
+        add("Ask about garden", f"ask {npc_target} about garden")
+    if "fishing" in service_tags:
+        add("Ask about fishing", f"ask {npc_target} about fishing")
     if "locksmith" in service_tags:
         add("Order", "order")
         add("Ring bell", "ring bell")
@@ -840,51 +865,73 @@ def _extend_guild_actions(actions: list[dict], seen: set[tuple[str, str, bool]],
     add("Resign guild", "gld resign")
 
 
-def _rogue_guild_topics_for_npc(template_id: str) -> list[dict]:
-    topics = {
-        "tv_rogue_lockmaster": [
-            {"label": "Learn Lock Mastery", "topic": "lock mastery"},
-            {"label": "Lock Mastery Status", "topic": "lock"},
-            {"label": "Ask About Picktwirl", "topic": "picktwirl"},
-        ],
-        "tv_rogue_bruiser": [
-            {"label": "Start Dirty Fighting", "topic": "dirty fighting"},
-            {"label": "Learn Cheapshots", "topic": "cheapshots"},
-            {"label": "Learn Subdue", "topic": "subdue"},
-            {"label": "Learn Sweep", "topic": "sweep"},
-            {"label": "Ask About Coinroll", "topic": "coinroll"},
-        ],
-        "tv_rogue_drillmaster": [
-            {"label": "Start Fieldcraft", "topic": "fieldcraft"},
-            {"label": "Learn Rogue Gambits", "topic": "rogue gambits"},
-            {"label": "Learn Stun Maneuvers", "topic": "stun maneuvers"},
-            {"label": "Ask About Shadowpose", "topic": "shadowpose"},
-        ],
-        "tv_rogue_master_pyll": [
-            {"label": "Start Fieldcraft", "topic": "fieldcraft"},
-            {"label": "Learn Rogue Gambits", "topic": "rogue gambits"},
-            {"label": "Move To Alcove", "topic": "alcove"},
-        ],
-        "tv_rogue_training_admin": [
+def _rogue_guild_topics_for_npc(npc) -> list[dict]:
+    if str(getattr(npc, "guild_id", "") or "").strip().lower() != "rogue":
+        return []
+
+    lua_context = getattr(npc, "lua_context", {}) or {}
+    role_type = str(lua_context.get("guild_role_type") or "").strip().lower()
+    room_id = int(
+        getattr(npc, "room_id", 0)
+        or getattr(npc, "home_room_id", 0)
+        or 0
+    )
+
+    if role_type == "trainer":
+        trainer_topics = {
+            17827: [
+                {"label": "Learn Lock Mastery", "topic": "lock mastery"},
+                {"label": "Lock Mastery Status", "topic": "lock"},
+                {"label": "Ask About Picktwirl", "topic": "picktwirl"},
+            ],
+            17819: [
+                {"label": "Start Dirty Fighting", "topic": "dirty fighting"},
+                {"label": "Learn Cheapshots", "topic": "cheapshots"},
+                {"label": "Learn Subdue", "topic": "subdue"},
+                {"label": "Learn Sweep", "topic": "sweep"},
+                {"label": "Ask About Coinroll", "topic": "coinroll"},
+            ],
+            17822: [
+                {"label": "Start Fieldcraft", "topic": "fieldcraft"},
+                {"label": "Learn Rogue Gambits", "topic": "rogue gambits"},
+                {"label": "Learn Stun Maneuvers", "topic": "stun maneuvers"},
+                {"label": "Ask About Shadowpose", "topic": "shadowpose"},
+            ],
+            18345: [
+                {"label": "Start Fieldcraft", "topic": "fieldcraft"},
+                {"label": "Learn Rogue Gambits", "topic": "rogue gambits"},
+                {"label": "Move To Alcove", "topic": "alcove"},
+            ],
+        }
+        return list(trainer_topics.get(room_id, []))
+
+    if role_type == "administrator":
+        return [
             {"label": "Training Status", "topic": "status"},
             {"label": "Current Task", "topic": "task"},
             {"label": "Guild Quest", "topic": "quest"},
             {"label": "Guild Rank", "topic": "rank"},
-        ],
-        "tv_rogue_guildmaster": [
+        ]
+
+    if role_type == "master":
+        return [
             {"label": "Guild Rank", "topic": "rank"},
             {"label": "Training Status", "topic": "training"},
             {"label": "Guild Quest", "topic": "quest"},
-        ],
-        "tv_rogue_guild_contact": [
+        ]
+
+    if role_type == "contact":
+        topics = [
             {"label": "Guild Status", "topic": "status"},
             {"label": "Current Task", "topic": "task"},
             {"label": "Guild Quest", "topic": "quest"},
             {"label": "Guild Rank", "topic": "rank"},
-            {"label": "Guild Password", "topic": "password"},
-        ],
-    }
-    return list(topics.get(template_id, []))
+        ]
+        if room_id == 17806:
+            topics.append({"label": "Guild Password", "topic": "password"})
+        return topics
+
+    return []
 
 
 def _extend_quest_actions(actions: list[dict], seen: set[tuple[str, str, bool]], session, server, npc) -> None:

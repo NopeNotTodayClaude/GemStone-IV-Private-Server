@@ -5,12 +5,17 @@ Quest.guild_id    = "rogue"
 Quest.title       = "A Knife in the Dark"
 Quest.description = "A rogue survives by ending a fight on their own terms."
 Quest.repeatable  = false
+Quest.prereq_quests = {
+    "rogue_orientation",
+}
 Quest.start_npc_template_ids = {
     "tv_rogue_bruiser",
 }
 Quest.turnin_npc_template_ids = {
     "tv_rogue_bruiser",
 }
+Quest.start_room_id = 17819
+Quest.turnin_room_id = 17819
 Quest.start_message = "Good.  Hide first, strike second, and make sure the other fool never controls the pace.  Show me HIDE, AMBUSH, CHEAPSHOT, SUBDUE, and SWEEP in proper sequence."
 Quest.rewards = {
     unlocks = {

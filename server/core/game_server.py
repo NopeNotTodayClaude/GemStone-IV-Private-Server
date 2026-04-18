@@ -55,6 +55,10 @@ from server.core.scripting.loaders.ambush_loader import load_ambush_cfg
 from server.core.scripting.loaders.perception_loader import load_perception_cfg
 from server.core.scripting.loaders.weapon_techniques_loader import sync_weapon_techniques
 from server.core.scripting.loaders.combat_maneuvers_loader import sync_combat_maneuvers
+from server.core.scripting.loaders.quest_definition_loader import (
+    load_quest_definitions,
+    sync_quest_definitions,
+)
 from server.core.scripting.lua_bindings.weapon_api import (
     load_techniques_for_session,
     reconcile_techniques_for_session,
@@ -196,6 +200,14 @@ class GameServer:
         _spell_total   = sum(_spell_summary.values())
         log.info("Spell seeding complete: %d spell(s) across %d circle(s).",
                  _spell_total, len(_spell_summary))
+
+        try:
+            scripts_path = self.config.get("paths.scripts", "./scripts")
+            defs = load_quest_definitions(self.lua.engine, scripts_path)
+            synced = sync_quest_definitions(self.db, defs) if self.db and defs else 0
+            log.info("Quest definitions synced from Lua (%d defs)", synced)
+        except Exception as _quest_err:
+            log.error("Quest definition sync failed: %s", _quest_err, exc_info=True)
 
         # Boot material weight cache — reads weight_modifier from Lua materials
         # so encumbrance.py has zero I/O cost per-swing on weight lookups.

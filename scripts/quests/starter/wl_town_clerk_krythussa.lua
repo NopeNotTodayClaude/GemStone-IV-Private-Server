@@ -12,6 +12,8 @@ Quest.start_npc_template_id  = "wl_town_clerk"
 Quest.turnin_npc_template_id = "wl_krythussa_baker"
 Quest.start_room_id          = 7970
 Quest.start_lich_room_id     = 2020
+Quest.turnin_room_id         = 386
+Quest.turnin_lich_room_id    = 5160
 Quest.start_message          = "Krythussa is waiting on this receipt.  Take it there and come straight back."
 Quest.start_items            = {
     { short_name = "sealed dispatch for Krythussa", noun = "dispatch" },

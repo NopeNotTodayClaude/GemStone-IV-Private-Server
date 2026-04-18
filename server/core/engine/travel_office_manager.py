@@ -71,9 +71,15 @@ class TravelOfficeManager:
         await self._process_chronomage_departures(now)
 
     def get_office_for_npc(self, npc) -> Optional[dict]:
+        lua_context = getattr(npc, "lua_context", {}) or {}
+        office_id = str(lua_context.get("travel_office_id") or "").strip().lower()
+        if office_id and office_id in self._offices:
+            return self._offices.get(office_id)
+
         template_id = str(getattr(npc, "template_id", "") or "").strip()
         if template_id and template_id in self._by_template:
             return self._by_template[template_id]
+
         room_id = int(getattr(npc, "home_room_id", 0) or getattr(npc, "room_id", 0) or 0)
         return self._by_room.get(room_id)
 

@@ -1,4 +1,4 @@
-"""
+﻿"""
 status_manager.py
 -----------------
 GemStone IV Status Effect Manager.
@@ -741,6 +741,14 @@ class StatusManager:
             await entity.send_line(colorize("  Your bleeding has stopped.", TextPresets.SYSTEM))
         elif eid == "prone":
             entity.position = "standing"
+        elif eid == "scale_ward":
+            # Ward expired naturally: clear session absorb pool and DS bonus
+            entity._scale_ward_absorb  = 0
+            entity._scale_ward_ds      = 0
+            entity._scale_ward_expires = 0.0
+            _w_pet = getattr(entity, "_scale_ward_pet_name", None)
+            _w_msg = ("  " + _w_pet + "'s Scaleguard Ward dissipates.") if _w_pet else "  The Scaleguard Ward dissipates."
+            await entity.send_line(colorize(_w_msg, TextPresets.SYSTEM))
 
     async def _handle_combat_expire(self, entity, is_player: bool):
         """

@@ -1563,7 +1563,7 @@ async def maybe_handle_guild_npc_action(session, npc, topic, payload, server):
             existing_status = str((existing or {}).get("status") or "").lower()
             quest = existing
             if existing_status != "active":
-                ok, error, quest = server.guild.start_specific_quest(session, quest_key)
+                ok, error, quest = server.guild.start_specific_quest(session, quest_key, actor_npc=npc)
                 if ok and quest:
                     await server.guild.prepare_started_quest(session, quest, actor_npc=npc)
                     rows = server.guild.get_quest_journal(session.character_id, quest_key=quest_key)
@@ -1590,7 +1590,9 @@ def get_guild_npc_response(session, npc, topic, server):
     """Provide dynamic guild NPC responses before falling back to static dialogue."""
     topic_l = (topic or "guild").strip().lower()
     template_id = getattr(npc, "template_id", "") or ""
-    if template_id == "shind" and getattr(server, "guild", None):
+    service_tags = set(getattr(npc, "get_service_tags", lambda: set())() or [])
+    guild_role_type = str((getattr(npc, "lua_context", {}) or {}).get("guild_role_type") or "").strip().lower()
+    if "rogue_entry" in service_tags and getattr(server, "guild", None):
         guild_engine = server.guild
         prof_guild = _get_profession_guild(session, server)
         if prof_guild and prof_guild.get("guild_id") == "rogue":
@@ -1605,7 +1607,7 @@ def get_guild_npc_response(session, npc, topic, server):
                     return "Gaeld Var.  The shed.  Go in, LOOK TOOL, and mind the panel before you worry about the inner door.  Once the guild takes you in, this shop's chute becomes your regular entrance."
                 return "When the guild finally notices you, the first stop in Ta'Vaalor is a shed on Gaeld Var.  Until then, there is nothing here for you."
 
-    if template_id in {"tv_rogue_lockmaster", "tv_rogue_bruiser", "tv_rogue_drillmaster", "tv_rogue_master_pyll"}:
+    if str(getattr(npc, "guild_id", "") or "").lower() == "rogue" and guild_role_type == "trainer":
         if topic_l in ("join", "membership", "ledger", "dues", "pay", "checkin"):
             return "Kharst keeps the guild ledger in the alley.  I'm here to train you, not to sign your papers."
         if topic_l in ("training", "skills", "lock", "mastery", "cheapshot", "sweep", "subdue", "stun", "gambit", "drill"):

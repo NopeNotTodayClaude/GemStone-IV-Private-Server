@@ -1,5 +1,6 @@
 local Quest = {}
 
+Quest.disabled    = true
 Quest.key_name    = "rogue_entry"
 Quest.guild_id    = "rogue"
 Quest.title       = "Quiet Entry"

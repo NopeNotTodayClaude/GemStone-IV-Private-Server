@@ -12,6 +12,8 @@ Quest.start_npc_template_id  = "guard_victory_laerindra"
 Quest.turnin_npc_template_id = "guard_victory_laerindra"
 Quest.start_room_id          = 5907
 Quest.start_lich_room_id     = 14100052
+Quest.turnin_room_id         = 5907
+Quest.turnin_lich_room_id    = 14100052
 Quest.start_message          = "Good.  Bring me a fresh glass of water from the Malwith Inn and do not meander."
 
 Quest.stages = {

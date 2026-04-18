@@ -33,8 +33,15 @@ _GENERIC_DIALOGUE_DEFAULTS = {
 }
 
 _SERVICE_GREETING_FALLBACKS = {
+    "adventurers_guild": 'glances up from the contract ledgers.  "Registration, rank, or bounty business?"',
     "bank": 'looks up from the ledger and inclines %s head politely.  "Banking business?"',
+    "fishing": 'adjusts a net and squints at you.  "Looking to talk fish and waters?"',
+    "garden": 'straightens from the beds and gives a patient nod.  "Mind the grounds.  Need something?"',
+    "hall": 'offers a practiced nod from the entry desk.  "Hall business?"',
+    "history": 'brushes dust from a folio and peers up.  "Looking for a record or a tale?"',
     "locksmith": 'glances up from a half-worked lock.  "Need something opened or repaired?"',
+    "justice": 'reviews a docket and fixes you with a measured look.  "State your justice business."',
+    "moving": 'checks a marked crate and nods curtly.  "Moving or storage?"',
     "travel": 'looks up from a stack of schedules.  "Planning a journey?"',
     "healer": 'turns toward you with quiet concern.  "Are you hurt?"',
     "inn": 'offers a welcoming nod.  "Looking for a room or a meal?"',
@@ -45,12 +52,38 @@ _SERVICE_GREETING_FALLBACKS = {
 }
 
 _SERVICE_DIALOGUE_FALLBACKS = {
+    "adventurers_guild": {
+        "register": "Registration, rank review, check-ins, vouchers, and contracts are all handled through the Adventurer's Guild ledger here.",
+        "bounty": "Taskmasters can register you, issue cull, gem, skin, forage, heirloom, bandit, boss, escort, and rescue contracts, review rank, record check-ins, and close completed bounties.",
+        "rank": "Your Adventurer's Guild standing and vouchers are kept on the local guild ledger.",
+        "checkin": "Taskmasters and clerks can record your guild check-in here.",
+        "default": 'The taskmaster taps a ledger page.  "Registration, rank, vouchers, or a contract?"',
+    },
     "bank": {
         "deposit": "DEPOSIT places silver into your account.  WITHDRAW retrieves it, and CHECK BALANCE confirms the total.",
         "withdraw": "WITHDRAW <amount> pulls silver from your account.  WITHDRAW <amount> NOTE writes out a bank note when needed.",
         "account": "Your account balance is tracked securely.  CHECK BALANCE will tell you the current total.",
         "note": "Bank notes can be deposited directly if you are holding them.  Use DEPOSIT NOTE.",
         "default": 'The teller waits with professional patience.  "Deposit, withdraw, or check your balance?"',
+    },
+    "fishing": {
+        "fish": "Ask about local waters, bait, and fishing if you need guidance before you cast out.",
+        "fishing": "I can point you toward the local fishing waters and basics.",
+        "default": 'The fisherman gives a small shrug.  "If it swims here, I probably know it."',
+    },
+    "garden": {
+        "garden": "Grounds and plantings are tended here.  Ask if you need guidance about the local gardens.",
+        "grounds": "Mind the paths and the beds.  Ask if you need something specific.",
+        "default": "The groundskeeper brushes soil from their hands and waits.",
+    },
+    "hall": {
+        "hall": "Hall access, guests, and basic hall business are handled through the steward here.",
+        "default": 'The steward gives you a measured look.  "Hall business?"',
+    },
+    "history": {
+        "history": "Records, local history, and old accounts are the historian's trade here.",
+        "record": "If the archives hold it, I can likely point you toward it.",
+        "default": 'The historian closes a folio with one finger marking the page.  "What period interests you?"',
     },
     "locksmith": {
         "repair": "Hold the broken pick, APPRAISE it for the quote, then pay the locksmith to repair it.",
@@ -59,11 +92,22 @@ _SERVICE_DIALOGUE_FALLBACKS = {
         "pick": "I can sell picks, repair broken ones, and broker box work through the locksmith queue.",
         "default": 'The locksmith gives you a quick once-over.  "Locks, picks, or repairs?"',
     },
+    "justice": {
+        "justice": "Ask about warrants, history, sentencing, or service if you have justice business here.",
+        "warrant": "Local warrants and fines can be reviewed here.",
+        "default": 'The clerk regards you coolly.  "Justice status, warrants, or history?"',
+    },
+    "moving": {
+        "move": "Moving, freight, and handling arrangements are coordinated through the foreman here.",
+        "moving": "Crates, hauling, and moving work are all routed through this office.",
+        "default": 'The foreman thumbs through a manifest.  "Moving or storage?"',
+    },
     "travel": {
-        "travel": "I can discuss routes and local travel arrangements, but the actual travel network is not wired in here yet.",
-        "airship": "Airship and route information is handled here, though the actual travel transport still needs its backend.",
-        "route": "I can point you toward routes and destinations, but booking and transport still need to be implemented.",
-        "default": 'The clerk smooths a schedule sheet.  "If you need route information, ask."',
+        "travel": "Ask about destinations to hear the routes from this office, then ask about a town name to book the matching trip.",
+        "airship": "Airship clerks can list destinations here and route you onto the correct departure when a line is available.",
+        "route": "Ask about destinations for the full route list, or ask about a specific town to book that trip directly.",
+        "ticket": "Chronomages can issue tickets and day passes for listed routes from this office.",
+        "default": 'The clerk smooths a schedule sheet.  "Ask about destinations, or name the town you want."',
     },
     "healer": {
         "heal": "I can discuss healing, but the paid healer service itself is not wired yet.",
@@ -72,14 +116,17 @@ _SERVICE_DIALOGUE_FALLBACKS = {
         "default": 'The healer studies you with concern.  "If you need treatment, say so."',
     },
     "inn": {
-        "room": "The inn can offer lodging and rest, though room rental and stay tracking still need a proper backend.",
-        "rest": "This is a place to rest, though full inn service is not wired yet.",
-        "food": "Meals and lodging belong here, but only the social side is live at the moment.",
-        "default": 'The innkeeper waits patiently.  "Need a room, some food, or a place to rest?"',
+        "room": "CHECK IN first, then CHECK ROOM to be assigned a private room.  Once you are staying here, TRAIN and FIXSTATS are available through the inn.",
+        "table": "After you CHECK IN, ask about a table if you want a private booth or alcove assigned to your stay.",
+        "rest": "CHECK IN registers your stay here.  Once checked in, you can claim a room or private table where the inn supports it.",
+        "food": "The innkeeper handles your stay; private rooms and tables are assigned through CHECK ROOM and by asking about a table.",
+        "default": 'The innkeeper waits patiently.  "CHECK IN to register your stay, then ask if you need a room or a table."',
     },
     "guild": {
-        "guild": "Guild administration exists here, but the full guild backend still needs to be hooked up.",
-        "join": "Joining and rank handling will need the proper guild system before I can process it.",
+        "guild": "Use GLD STATUS for your standing, GLD JOIN to enroll where allowed, GLD PAY for dues, and GLD CHECKIN to update the guild ledger.",
+        "join": "Use GLD JOIN here if you meet the guild's entry requirements.",
+        "rank": "Use GLD RANK or GLD STATUS to review your standing on the guild ledger.",
+        "task": "Use GLD SKILLS to review training tracks, GLD TASK to receive work, GLD PRACTICE for drills, and GLD COMPLETE when you finish.",
         "bounty": "Taskmasters can register you, issue cull, gem, skin, forage, heirloom, bandit, boss, escort, and rescue contracts, review rank, record check-ins, and close completed bounties.",
         "default": 'The clerk gives you a measuring look.  "Guild business?"',
     },
@@ -101,6 +148,11 @@ _SERVICE_DIALOGUE_FALLBACKS = {
         "prayer": "The priest murmurs a few measured words about faith and devotion.",
         "death": "Death and afterlife guidance can be discussed here, though the service backend is still limited.",
         "default": "The priest offers a solemn, patient look.",
+    },
+    "springs": {
+        "springs": "The attendant can direct you regarding the local springs and bathing routines here.",
+        "spa": "Ask if you need guidance on the springs or their use.",
+        "default": 'The attendant gestures toward the bathing rooms.  "Here for the springs?"',
     },
 }
 
@@ -437,7 +489,7 @@ class NPC:
 
         desc = (self.description or "").lower()
         pronoun = "his" if any(word in desc for word in (" his ", " he ")) else "her"
-        for tag in ("locksmith", "bank", "travel", "healer", "inn", "guild", "registrar", "pawnbroker", "priest"):
+        for tag in ("adventurers_guild", "bank", "fishing", "garden", "hall", "history", "locksmith", "justice", "moving", "travel", "healer", "inn", "guild", "registrar", "pawnbroker", "priest", "springs"):
             if self.matches_service(tag):
                 template = _SERVICE_GREETING_FALLBACKS.get(tag)
                 if template:
@@ -449,7 +501,7 @@ class NPC:
         default_dialogue = (self.dialogues.get("default", "") or "").strip().lower()
         generic_default = default_dialogue in _GENERIC_DIALOGUE_DEFAULTS
 
-        for tag in ("locksmith", "bank", "travel", "healer", "inn", "guild", "registrar", "pawnbroker", "priest"):
+        for tag in ("adventurers_guild", "bank", "fishing", "garden", "hall", "history", "locksmith", "justice", "moving", "travel", "healer", "inn", "guild", "registrar", "pawnbroker", "priest", "springs"):
             if not self.matches_service(tag):
                 continue
             fallback = _SERVICE_DIALOGUE_FALLBACKS.get(tag, {})
